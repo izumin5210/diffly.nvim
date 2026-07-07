@@ -1,0 +1,317 @@
+-- Tests for lua/difit/ui/panel.lua + lua/difit/ui/hl.lua (WP-H). Panel rendering and
+-- keymaps run in a child Neovim (real buffers/windows/keymaps are needed); panel.lua is
+-- driven only through the documented `difit.Session` interface (see docs/plan.md, WP-E),
+-- so a scripted fake session -- never `lua/difit/session.lua` -- stands in here and
+-- records every call into `_G.calls` for the assertions below.
+
+local helpers = dofile("tests/helpers.lua")
+
+local eq = MiniTest.expect.equality
+
+---@return string dir
+local function new_tempdir()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  return dir
+end
+
+-- Fixture entries chosen to exercise: a compressible root file (depth 0), a
+-- single-file directory ("docs", depth 1 child), a multi-child directory ("lua/difit",
+-- depth 1 children covering every status letter), and a pre-viewed file (state.lua) so
+-- rendering the `[ ]`/`[✓]` split doesn't need any keypress. Row numbers below (used by
+-- `set_cursor`) assume this exact fixture and no folds:
+--   1 header, 2 progress,
+--   3 docs, 4 docs/guide.md,
+--   5 lua/difit, 6 gone.lua, 7 new.lua, 8 renamed.lua, 9 state.lua,
+--   10 README.md
+local FAKE_SESSION_SETUP = [[
+  _G.calls = {
+    open_file = {},
+    toggle_viewed = {},
+    next_unviewed = {},
+    set_mode = {},
+    refresh = 0,
+    close = 0,
+    subscribe = 0,
+  }
+  _G.subscribers = {}
+  _G.viewed = { ["lua/difit/state.lua"] = true }
+
+  local entries = {
+    { path = "README.md", status = "M", untracked = false, binary = false, additions = 1, deletions = 1 },
+    { path = "docs/guide.md", status = "A", untracked = false, binary = false, additions = 5, deletions = 0 },
+    {
+      path = "lua/difit/state.lua",
+      status = "M",
+      untracked = false,
+      binary = false,
+      additions = 42,
+      deletions = 3,
+    },
+    { path = "lua/difit/new.lua", status = "A", untracked = false, binary = false, additions = 10, deletions = 0 },
+    { path = "lua/difit/gone.lua", status = "D", untracked = false, binary = false, additions = 0, deletions = 7 },
+    {
+      path = "lua/difit/renamed.lua",
+      old_path = "lua/difit/old_name.lua",
+      status = "R",
+      untracked = false,
+      binary = false,
+      additions = 2,
+      deletions = 1,
+    },
+  }
+
+  _G.session = {
+    spec = {
+      repo = { id = "example/repo", toplevel = "/tmp/x", git_dir = "/tmp/x/.git" },
+      base_ref = "origin/main",
+      merge_base = "deadbeef",
+      right = "worktree",
+      review_key = { kind = "branch", repo = "example/repo", base = "main", head = "feature/x" },
+    },
+    entries = entries,
+    state = { version = 1, key = {}, last_opened = "", viewed = {} },
+    mode = "sidebyside",
+    current_path = nil,
+    _progress = { viewed = 1, total = 6 },
+    _next_unviewed_answer = nil,
+  }
+
+  function _G.session:subscribe(fn)
+    _G.calls.subscribe = _G.calls.subscribe + 1
+    table.insert(_G.subscribers, fn)
+  end
+
+  function _G.session:open_file(path)
+    table.insert(_G.calls.open_file, path)
+    self.current_path = path
+  end
+
+  function _G.session:toggle_viewed(path)
+    table.insert(_G.calls.toggle_viewed, path)
+    _G.viewed[path] = not _G.viewed[path]
+    for _, fn in ipairs(_G.subscribers) do
+      fn()
+    end
+    return _G.viewed[path]
+  end
+
+  function _G.session:is_viewed(path)
+    return _G.viewed[path] == true
+  end
+
+  function _G.session:next_unviewed(after_path)
+    table.insert(_G.calls.next_unviewed, after_path)
+    return self._next_unviewed_answer
+  end
+
+  function _G.session:progress()
+    return self._progress
+  end
+
+  function _G.session:set_mode(mode)
+    table.insert(_G.calls.set_mode, mode)
+    self.mode = mode
+    for _, fn in ipairs(_G.subscribers) do
+      fn()
+    end
+  end
+
+  function _G.session:refresh()
+    _G.calls.refresh = _G.calls.refresh + 1
+    for _, fn in ipairs(_G.subscribers) do
+      fn()
+    end
+  end
+
+  function _G.session:close()
+    _G.calls.close = _G.calls.close + 1
+  end
+
+  _G.panel = require("difit.ui.panel").open(_G.session)
+]]
+
+local EXPECTED_LINES = {
+  "difit  main…feature/x",
+  "1/6 viewed",
+  "▾ docs",
+  "    [ ] A guide.md  +5 −0",
+  "▾ lua/difit",
+  "    [ ] D gone.lua  +0 −7",
+  "    [ ] A new.lua  +10 −0",
+  "    [ ] R lua/difit/old_name.lua → lua/difit/renamed.lua  +2 −1",
+  "    [✓] M state.lua  +42 −3",
+  "  [ ] M README.md  +1 −1",
+}
+
+local dir, child
+
+local function lines()
+  return child.lua_get("vim.api.nvim_buf_get_lines(_G.panel.buf, 0, -1, false)")
+end
+
+local function cursor()
+  return child.lua_get("vim.api.nvim_win_get_cursor(_G.panel.win)")
+end
+
+local function set_cursor(lnum)
+  child.lua("local lnum = ...; vim.api.nvim_win_set_cursor(_G.panel.win, { lnum, 0 })", { lnum })
+end
+
+local T = MiniTest.new_set({
+  hooks = {
+    pre_case = function()
+      dir = new_tempdir()
+      child = helpers.new_child(dir)
+      -- Deterministic rows: no icon provider noise, and a width distinct enough from
+      -- the default (35) that the width assertion can't pass by coincidence.
+      child.lua([[require("difit.config").setup({ icons = false, panel = { width = 40 } })]])
+      child.lua(FAKE_SESSION_SETUP)
+    end,
+    post_case = function()
+      child.stop()
+      vim.fn.delete(dir, "rf")
+    end,
+  },
+})
+
+T["render() shows header, progress, and tree rows in flatten order"] = function()
+  eq(lines(), EXPECTED_LINES)
+end
+
+T["viewed file shows [✓], un-viewed files show [ ]"] = function()
+  local got = lines()
+  eq(got[9], "    [✓] M state.lua  +42 −3")
+  eq(got[4]:find("^%s*%[ %] A", 1), 1)
+  eq(got[10]:find("^%s*%[ %] M", 1), 1)
+end
+
+T["toggle_viewed key calls session:toggle_viewed and auto-advances to next_unviewed"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+
+  set_cursor(4) -- docs/guide.md
+  child.type_keys("v")
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
+  eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
+  eq(cursor(), { 7, 0 }) -- row for lua/difit/new.lua
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+end
+
+T["toggle_viewed does not auto-advance when config.auto_advance is false"] = function()
+  child.lua([[require("difit.config").setup({ auto_advance = false })]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+
+  set_cursor(4) -- docs/guide.md
+  child.type_keys("v")
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
+  eq(child.lua_get("_G.calls.next_unviewed"), {})
+  eq(child.lua_get("_G.calls.open_file"), {})
+end
+
+T["<CR> on a file row calls session:open_file"] = function()
+  set_cursor(9) -- lua/difit/state.lua
+  child.type_keys("<CR>")
+
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/state.lua" })
+end
+
+T["<CR> on a dir row folds it, hiding descendants after re-render"] = function()
+  set_cursor(5) -- lua/difit
+  child.type_keys("<CR>")
+
+  eq(lines(), {
+    "difit  main…feature/x",
+    "1/6 viewed",
+    "▾ docs",
+    "    [ ] A guide.md  +5 −0",
+    "▸ lua/difit",
+    "  [ ] M README.md  +1 −1",
+  })
+end
+
+T["za on a dir row folds it, hiding descendants"] = function()
+  set_cursor(3) -- docs
+  child.type_keys("za")
+
+  local got = lines()
+  eq(got[3], "▸ docs")
+  eq(#got, 9)
+  for _, l in ipairs(got) do
+    eq(l:find("guide.md", 1, true), nil)
+  end
+end
+
+T["za on a file row folds its parent directory"] = function()
+  set_cursor(4) -- docs/guide.md (only child of docs)
+  child.type_keys("za")
+
+  eq(lines()[3], "▸ docs")
+end
+
+T["R key calls session:refresh"] = function()
+  child.type_keys("R")
+  eq(child.lua_get("_G.calls.refresh"), 1)
+end
+
+T["s key calls session:set_mode with the flipped mode"] = function()
+  child.type_keys("s")
+  eq(child.lua_get("_G.calls.set_mode"), { "unified" })
+  eq(child.lua_get("_G.session.mode"), "unified")
+end
+
+T["q key calls session:close and closes the panel"] = function()
+  local buf = child.lua_get("_G.panel.buf")
+
+  child.type_keys("q")
+
+  eq(child.lua_get("_G.calls.close"), 1)
+  eq(child.lua_get("vim.api.nvim_buf_is_valid(...)", { buf }), false)
+end
+
+T["buffer is not modifiable outside render"] = function()
+  eq(child.lua_get("vim.bo[_G.panel.buf].modifiable"), false)
+end
+
+T["panel window width matches config.panel.width"] = function()
+  eq(child.lua_get("vim.api.nvim_win_get_width(_G.panel.win)"), 40)
+end
+
+T["panel window has cursorline on and no number/signcolumn"] = function()
+  eq(child.lua_get("vim.wo[_G.panel.win].cursorline"), true)
+  eq(child.lua_get("vim.wo[_G.panel.win].number"), false)
+  eq(child.lua_get("vim.wo[_G.panel.win].signcolumn"), "no")
+end
+
+T["focus() moves the current window back to the panel"] = function()
+  child.cmd("vsplit")
+  local moved_away = child.lua_get("vim.api.nvim_get_current_win() ~= _G.panel.win")
+  eq(moved_away, true)
+
+  child.lua("_G.panel:focus()")
+  eq(child.lua_get("vim.api.nvim_get_current_win() == _G.panel.win"), true)
+end
+
+T["hl.setup() links the documented groups with default = true"] = function()
+  local hl = require("difit.ui.hl")
+  hl.setup()
+
+  local expected = {
+    DifitPanelHeader = "Title",
+    DifitPanelDir = "Directory",
+    DifitStatusAdded = "Added",
+    DifitStatusModified = "Changed",
+    DifitStatusDeleted = "Removed",
+    DifitStatusRenamed = "Special",
+    DifitViewed = "Comment",
+    DifitCounts = "Comment",
+    DifitCheckbox = "Special",
+  }
+  for name, link in pairs(expected) do
+    local def = vim.api.nvim_get_hl(0, { name = name })
+    eq(def.link, link)
+  end
+end
+
+return T
