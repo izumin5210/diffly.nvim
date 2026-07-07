@@ -1,0 +1,187 @@
+*difit.txt*   A difit-inspired diff viewer for Neovim
+
+==============================================================================
+CONTENTS                                                      *difit-contents*
+
+  1. Introduction .......................... |difit-introduction|
+  2. Commands ............................... |difit-commands|
+  3. Configuration ........................... |difit-config|
+  4. Keymaps ................................. |difit-keymaps|
+  5. Viewed-state semantics .................. |difit-viewed-state|
+  6. GitHub integration ...................... |difit-github|
+
+==============================================================================
+1. Introduction                                           *difit-introduction*
+
+                                                                       *difit*
+difit.nvim is a `difit <https://github.com/yoshiko-pg/difit>`-inspired diff
+viewer: a file-tree diff viewer (like diffview.nvim) with per-file "viewed"
+marks that persist across viewer sessions for the same pull request.
+
+Diffs are always computed from local git: the current branch (or its
+checked-out state) is compared against `merge-base(base, HEAD)`. A GitHub
+pull request, when one is detected for the current branch, is used only as
+metadata: to resolve the base branch and to key the viewed state -- reviewing
+someone else's PR still means checking it out first (e.g. `gh pr checkout`).
+
+`setup()` is entirely optional; the plugin works with its defaults untouched.
+Call it only to override them: >lua
+  require("difit").setup({
+    right = "worktree",
+    panel = { width = 40 },
+  })
+<
+
+==============================================================================
+2. Commands                                                   *difit-commands*
+
+                                                                      *:Difit*
+:Difit [{base}]         Open the review UI in a dedicated tabpage, comparing
+                        the current branch against {base} (or the resolved
+                        default base branch; see |difit-viewed-state| for how
+                        the base is picked). If the UI is already open,
+                        focuses its tabpage instead of opening a second one.
+
+:Difit close            Close the review UI: saves viewed state, closes the
+                        dedicated tabpage, and returns to the tabpage `:Difit`
+                        was originally invoked from.
+
+:Difit toggle           `:Difit close` if open, otherwise the same as a bare
+                        `:Difit`.
+
+:Difit refresh          Recompute the diff (same as pressing the panel's
+                        `refresh` key, see |difit-keymaps|). Also runs
+                        automatically on `BufWritePost`/`FocusGained`.
+
+:Difit clean            Prompt to delete the *current* review's persisted
+                        viewed state (the key the currently open review uses,
+                        or the key that would be resolved if none is open).
+
+:Difit clean all        Prompt to delete every persisted viewed-state file
+                        for every review, across all repos.
+
+Completion offers the four subcommands above plus the repo's local branch
+names, so `:Difit <Tab>` can be used either to pick a subcommand or to jump
+straight to reviewing against a specific base branch.
+
+==============================================================================
+3. Configuration                                                *difit-config*
+
+Pass any subset of these to |difit.setup()| (called as
+`require("difit").setup({...})`); unset fields keep their default. Full
+defaults, exactly as declared in `lua/difit/config.lua`: >lua
+  {
+    base = nil,             -- string|nil: base branch override
+    right = "worktree",     -- "worktree"|"head"
+    include_untracked = true,
+    auto_advance = true,    -- jump to next un-viewed file after marking
+    icons = true,           -- use mini.icons / nvim-web-devicons when present
+    panel = { width = 35 },
+    keymaps = {
+      panel = {
+        open = "<CR>",      -- open file diff / toggle fold on a dir row
+        toggle_viewed = "v",
+        refresh = "R",
+        toggle_mode = "s",    -- side-by-side <-> unified
+        close = "q",
+        fold = "za",
+      },
+      -- applied ONLY in difit-owned buffers (blob/unified), never real files
+      diff = { toggle_viewed = "v" },
+    },
+  }
+<
+Notes:
+- `base`: overridden per-invocation by `:Difit {base}`; when both are unset,
+  the base is auto-detected (a GitHub PR's base branch when one exists for
+  the current branch, otherwise `origin/HEAD`/`main`/`master`).
+- `right`: which side of the diff the right-hand pane shows. `"worktree"`
+  (default) shows uncommitted edits immediately and lets you edit + `:w`
+  straight from the diff; `"head"` compares against the last commit instead.
+- `include_untracked`: whether untracked files show up as added ("A") files.
+- `icons`: silently does nothing when neither `mini.icons` nor
+  `nvim-web-devicons` is installed.
+- Setting any keymap value to `false` disables that mapping.
+
+==============================================================================
+4. Keymaps                                                     *difit-keymaps*
+
+No global keymaps are defined. All of the following are buffer-local and
+configurable via `keymaps.panel`/`keymaps.diff` (see |difit-config|).
+
+Panel (the left-hand file tree) ~
+  <CR>    Open the file under the cursor (or toggle a directory's fold).
+  v       Toggle the file under the cursor as viewed/un-viewed. When
+          `auto_advance` is enabled (the default), the cursor and diff jump
+          to the next un-viewed file.
+  R       Refresh: recompute the diff against the same base.
+  s       Toggle between side-by-side and unified diff modes.
+  q       Close the review UI (same as `:Difit close`).
+  za      Toggle the fold of the directory under the cursor (or its parent,
+          when the cursor is on a file row) -- mirrors native `za`.
+
+Diff buffers (difit-owned side-by-side/unified buffers only) ~
+  v       Toggle the current file as viewed/un-viewed (same key and
+          semantics as the panel's `v`). Never mapped in real file buffers --
+          use `<Plug>(difit-toggle-viewed)` for that (see below).
+
+  In the unified view specifically, `<CR>` (hardcoded, not configurable)
+  jumps from a diff line to the corresponding line of the real file.
+
+Real file buffers ~
+                                                 *<Plug>(difit-toggle-viewed)*
+`<Plug>(difit-toggle-viewed)` toggles the viewed mark for the file backing
+the current buffer, when that buffer belongs to the currently open review
+(e.g. the side-by-side view's right-hand window in `right = "worktree"`
+mode). It has no default binding; map it yourself if wanted: >lua
+  vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
+<
+
+==============================================================================
+5. Viewed-state semantics                                 *difit-viewed-state*
+
+Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
+and is shared between the panel and the diff buffers: the same `v` key (or
+`<Plug>(difit-toggle-viewed)`) works from any of them.
+
+Key ~
+Viewed marks are persisted keyed by:
+- `owner/repo#number`, when a GitHub PR for the current branch is detected
+  via `gh`; or otherwise
+- the repo identity plus the `base..head` branch pair.
+
+These two keyspaces never mix: opening the same branch pair through a PR one
+day and without `gh` the next tracks viewed state separately, by design (see
+docs/design.md). Repo identity is the normalized remote URL when one exists
+(so state is shared across worktrees and clones of the same remote),
+otherwise the worktree's toplevel path.
+
+Invalidation ~
+Marking a file records the pair of blob SHAs (base side, right-hand side) it
+had at that moment. If either side's blob no longer matches at render time --
+because either branch moved on -- the file counts as un-viewed again,
+GitHub-style. Files nobody touched keep their mark across any number of new
+commits on either side.
+
+Persistence ~
+State lives under `stdpath('data') .. '/difit'`, one JSON file per review key
+(named after a hash of the key, see `lua/difit/state.lua`). Use `:Difit
+clean` / `:Difit clean all` to remove it; there is no automatic
+garbage-collection.
+
+==============================================================================
+6. GitHub integration                                           *difit-github*
+
+The `gh` CLI is entirely optional. When it is missing, not authenticated, or
+the current branch has no associated pull request, difit.nvim silently falls
+back to the branch-pair key described in |difit-viewed-state| -- nothing
+about opening or reviewing a diff depends on `gh` being present.
+
+When `gh` *is* available and a PR is detected, it is used for two independent
+things: as a fallback source for the base branch (still beaten by `:Difit
+{base}` or `config.base`), and as the viewed-state key. The diff itself is
+always generated from local git against your current worktree/HEAD --
+reviewing someone else's PR still requires checking it out locally first
+(e.g. via `gh pr checkout`).
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
