@@ -290,6 +290,20 @@ function M.repo_identity(cwd)
   return { id = id, toplevel = toplevel, git_dir = git_dir }
 end
 
+--- List configured remote names (e.g. {"origin", "upstream"}). Used by `resolve_ref`/
+--- `default_branch` to fall back to a non-"origin" remote when that's the only one that
+--- actually has the ref being looked for (e.g. an "upstream"-only clone).
+---@param repo difit.RepoIdentity
+---@return string[]|nil names
+---@return string|nil err
+function M.remotes(repo)
+  local out, err = run(repo.toplevel, { "remote" })
+  if not out then
+    return nil, err
+  end
+  return vim.split(vim.trim(out), "\n", { plain = true, trimempty = true })
+end
+
 --- Resolve the remote's default branch, falling back to the first existing well-known
 --- local/remote branch name.
 ---@param repo difit.RepoIdentity
@@ -306,6 +320,20 @@ function M.default_branch(repo)
   for _, candidate in ipairs({ "origin/main", "origin/master", "main", "master" }) do
     if run(repo.toplevel, { "rev-parse", "--verify", "--quiet", candidate }) then
       return candidate
+    end
+  end
+
+  -- "origin/HEAD" is unset (or there is no "origin" remote at all): try the same
+  -- well-known branch names on every other configured remote too, e.g. an
+  -- "upstream"-only clone that never had an "origin" configured.
+  for _, remote in ipairs(M.remotes(repo) or {}) do
+    if remote ~= "origin" then
+      for _, branch in ipairs({ "main", "master" }) do
+        local candidate = remote .. "/" .. branch
+        if run(repo.toplevel, { "rev-parse", "--verify", "--quiet", candidate }) then
+          return candidate
+        end
+      end
     end
   end
 

@@ -166,12 +166,57 @@ local function render_file_row(row, session, icons_enabled)
   }
 end
 
+--- After `render()` rebuilds `row_nodes`, move the cursor back onto whichever node it
+--- was logically on before the rebuild (see the snapshot taken at the top of
+--- `Panel:render()`). A background refresh (BufWritePost/FocusGained/a *different* row's
+--- toggle_viewed all notify every subscriber, including this panel) must not leave the
+--- cursor sitting on a different file's row just because sorting shifted line numbers
+--- around -- otherwise the next `v`/`<CR>` would silently act on the wrong file. Falls
+--- back to clamping onto the nearest still-valid row when the exact node is gone (e.g.
+--- the file left the diff, or fold-compression restructured the tree), rather than
+--- leaving the cursor on a stale/out-of-range line.
+---@param panel difit.Panel
+---@param path string?
+---@param total_lines integer
+local function restore_cursor(panel, path, total_lines)
+  if not path or not vim.api.nvim_win_is_valid(panel.win) then
+    return
+  end
+
+  local target_lnum
+  for lnum, node in pairs(panel.row_nodes) do
+    if node.path == path then
+      target_lnum = lnum
+      break
+    end
+  end
+
+  if not target_lnum then
+    local current = vim.api.nvim_win_get_cursor(panel.win)[1]
+    target_lnum = math.max(1, math.min(current, total_lines))
+  end
+
+  pcall(vim.api.nvim_win_set_cursor, panel.win, { target_lnum, 0 })
+end
+
 --- Re-reads `session.entries`/`session:progress()`/`session:is_viewed()` and redraws
 --- the whole buffer. Rebuilds the row -> node map every time so keymaps always resolve
 --- against what's actually on screen (folds shift row numbers).
 function Panel:render()
   if not vim.api.nvim_buf_is_valid(self.buf) then
     return
+  end
+
+  -- Snapshot which node the cursor is logically on, against the OLD row_nodes, before
+  -- rebuilding anything below -- this is what lets the cursor follow that same node to
+  -- its new row further down, even though row numbers are about to be recomputed from
+  -- scratch.
+  local cursor_path
+  if vim.api.nvim_win_is_valid(self.win) then
+    local node = self.row_nodes[vim.api.nvim_win_get_cursor(self.win)[1]]
+    if node then
+      cursor_path = node.path
+    end
   end
 
   local session = self.session
@@ -214,6 +259,8 @@ function Panel:render()
     })
   end
   vim.bo[self.buf].modifiable = false
+
+  restore_cursor(self, cursor_path, #lines)
 end
 
 function Panel:close()
@@ -306,10 +353,16 @@ local function on_toggle_viewed(panel)
     return
   end
 
-  panel.session:toggle_viewed(node.path)
-  panel:render()
+  -- No explicit `panel:render()` here: `session:toggle_viewed` already notifies
+  -- subscribers synchronously, and this panel subscribed its own re-render callback in
+  -- `M.open` -- by the time `toggle_viewed` returns, `row_nodes` already reflects the
+  -- new state, which is exactly what `row_for_path` below needs.
+  local became_viewed = panel.session:toggle_viewed(node.path)
 
-  if config.get().auto_advance then
+  -- Auto-advance only on MARKING a file viewed, never on un-marking it (design.md:
+  -- "Marking advances to the next un-viewed file") -- otherwise un-marking a mistake
+  -- would also yank the cursor/diff away from the file the user is looking at.
+  if became_viewed and config.get().auto_advance then
     local nxt = panel.session:next_unviewed(node.path)
     if nxt then
       local lnum = row_for_path(panel, nxt)
@@ -384,6 +437,12 @@ function M.open(session)
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
+  -- Defense in depth (Neovim 0.12+): `ui/unified.lua`'s jump-to-file target-window
+  -- resolution already checks bufname prefixes to avoid landing a real file in this
+  -- window, but 'winfixbuf' makes Neovim itself refuse any `:edit`/`:buffer` that would
+  -- replace this window's buffer -- so a future code path that forgets that check still
+  -- can't silently destroy the tree.
+  vim.wo[win].winfixbuf = true
 
   local panel = setmetatable({
     buf = buf,

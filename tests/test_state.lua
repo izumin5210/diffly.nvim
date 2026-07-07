@@ -104,6 +104,28 @@ T["save() is atomic: no .tmp file left behind on success"] = function()
   eq(vim.uv.fs_stat(path .. ".tmp"), nil)
 end
 
+T["save() overwrites an existing state file on a second save (vim.uv.fs_rename, not os.rename)"] = function()
+  -- Regression for the Windows-only bug where `os.rename` (bare `MoveFileEx`, no
+  -- REPLACE_EXISTING there) fails with EEXIST once the destination already exists --
+  -- i.e. every save after the first one. This can't reproduce the Windows failure mode
+  -- on POSIX CI, but it does exercise "save a second time onto an existing file",
+  -- guarding against any regression in the atomic-overwrite path itself.
+  local st = state.load(branch_key)
+  state.mark(st, { path = "src/a.lua", base_sha = "aaa", head_sha = "bbb" })
+  state.save(st)
+
+  state.mark(st, { path = "src/b.lua", base_sha = "ccc", head_sha = "ddd" })
+  state.save(st)
+
+  local reloaded = state.load(branch_key)
+  eq(reloaded.viewed["src/a.lua"].base_sha, "aaa")
+  eq(reloaded.viewed["src/b.lua"].base_sha, "ccc")
+
+  local path = state.file_path(branch_key)
+  eq(vim.uv.fs_stat(path) ~= nil, true)
+  eq(vim.uv.fs_stat(path .. ".tmp"), nil)
+end
+
 T["save() stamps last_opened"] = function()
   local st = state.load(branch_key)
   eq(st.last_opened, nil)

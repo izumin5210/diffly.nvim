@@ -25,6 +25,12 @@ local M = {}
 local Session = {}
 Session.__index = Session
 
+-- This notice is meant to fire once per Neovim *session* (i.e. process lifetime), not
+-- once per `difit.Session` instance -- a plain module-level flag survives across
+-- however many reviews get opened/closed in one Neovim run, and resets naturally on the
+-- next Neovim start (or the next test's fresh child process).
+local gh_missing_notified = false
+
 --- Review keys/UI store the short branch name ("main"), never the resolved
 --- remote-tracking ref ("origin/main") `resolve_ref` may have needed internally.
 ---@param ref string
@@ -33,10 +39,12 @@ local function short_name(ref)
   return ref:match("^origin/(.+)$") or ref
 end
 
---- Resolve `name` to a ref `git rev-parse` accepts, trying the bare name first and
---- falling back to its `origin/`-prefixed remote-tracking form (e.g. a PR's
---- `baseRefName` or a config override is usually a short name like "main", which only
---- exists locally as `origin/main` when the branch itself was never checked out).
+--- Resolve `name` to a ref `git rev-parse` accepts: the bare name, its `origin/`-
+--- prefixed remote-tracking form (e.g. a PR's `baseRefName` or a config override is
+--- usually a short name like "main", which only exists locally as `origin/main` when the
+--- branch itself was never checked out), and finally the same short name prefixed by
+--- every *other* configured remote (e.g. an "upstream"-only clone with no "origin" at
+--- all, or a base branch that only exists on a secondary remote).
 ---@param repo difit.RepoIdentity
 ---@param name string
 ---@return string|nil resolved
@@ -44,23 +52,31 @@ local function resolve_ref(repo, name)
   if git.rev_parse(repo, name) then
     return name
   end
-  local remote = "origin/" .. name
-  if git.rev_parse(repo, remote) then
-    return remote
+  local origin_remote = "origin/" .. name
+  if git.rev_parse(repo, origin_remote) then
+    return origin_remote
   end
+
+  for _, remote in ipairs(git.remotes(repo) or {}) do
+    if remote ~= "origin" then
+      local candidate = remote .. "/" .. name
+      if git.rev_parse(repo, candidate) then
+        return candidate
+      end
+    end
+  end
+
   return nil
 end
 
 ---@param entries difit.FileEntry[]
----@param path string
----@return difit.FileEntry|nil
-local function find_entry(entries, path)
+---@return table<string, difit.FileEntry>
+local function index_by_path(entries)
+  local map = {}
   for _, entry in ipairs(entries) do
-    if entry.path == path then
-      return entry
-    end
+    map[entry.path] = entry
   end
-  return nil
+  return map
 end
 
 --- Call every subscriber. Errors from one subscriber must not stop the others (a
@@ -95,6 +111,16 @@ function M.new(opts)
   -- exists for the current branch, regardless of which base ultimately won).
   local pr_info = github.detect_pr(repo)
 
+  -- No PR was detected *and* `gh` itself isn't on PATH: the review key is about to fall
+  -- back to the branch-pair space silently, which design.md promises a one-time notice
+  -- about (so users understand why viewed state won't follow them into a PR-keyed space
+  -- later). Deliberately NOT triggered when `gh` works fine but this branch just has no
+  -- open PR -- that's an entirely normal, silent case.
+  if not pr_info and not github.available() and not gh_missing_notified then
+    gh_missing_notified = true
+    vim.notify("difit: gh not found; viewed state is keyed by branch pair", vim.log.levels.INFO)
+  end
+
   -- 2. Base resolution: arg > config > detected PR's base > repo default.
   local base_name = opts.base
     or config.get().base
@@ -108,7 +134,8 @@ function M.new(opts)
   if not base_ref then
     return nil,
       string.format(
-        "difit: base ref %q does not resolve (tried it and origin/%s)",
+        "difit: base ref %q does not resolve (tried it, origin/%s, and every other remote's %s)",
+        base_name,
         base_name,
         base_name
       )
@@ -157,6 +184,7 @@ function M.new(opts)
   local self = setmetatable({
     spec = spec,
     entries = entries,
+    _entries_by_path = index_by_path(entries),
     state = review_state,
     mode = "sidebyside",
     current_path = nil,
@@ -169,7 +197,12 @@ function M.new(opts)
 end
 
 --- Recompute the merge-base and entry list against the same `base_ref` (e.g. after new
---- commits land on either side) and notify subscribers so panels/views can redraw.
+--- commits land on either side) and notify subscribers so panels/views can redraw. Also
+--- keeps whatever the view is currently showing in sync: an open `current_path` gets
+--- reopened through the view with its fresh entry (so e.g. an already-open unified
+--- buffer picks up the new hunks instead of showing a stale diff), or -- if the file
+--- disappeared from the diff entirely -- `current_path` is cleared instead of leaving a
+--- diff open for a file that's no longer part of the review.
 function Session:refresh()
   local merge_base, err = git.merge_base(self.spec.repo, self.spec.base_ref, "HEAD")
   if merge_base then
@@ -182,6 +215,16 @@ function Session:refresh()
     if entries then
       self.spec.merge_base = merge_base
       self.entries = entries
+      self._entries_by_path = index_by_path(entries)
+
+      if self.current_path then
+        local entry = self._entries_by_path[self.current_path]
+        if entry then
+          self._view:open(entry, self.spec)
+        else
+          self.current_path = nil
+        end
+      end
     end
   end
   self:_notify()
@@ -199,7 +242,7 @@ end
 --- (e.g. a stale panel row after a refresh dropped the file).
 ---@param path string
 function Session:open_file(path)
-  local entry = find_entry(self.entries, path)
+  local entry = self._entries_by_path[path]
   if not entry then
     return
   end
@@ -211,7 +254,7 @@ end
 ---@param path string
 ---@return boolean new_value
 function Session:toggle_viewed(path)
-  local entry = find_entry(self.entries, path)
+  local entry = self._entries_by_path[path]
   if not entry then
     return false
   end
@@ -231,7 +274,7 @@ end
 ---@param path string
 ---@return boolean
 function Session:is_viewed(path)
-  local entry = find_entry(self.entries, path)
+  local entry = self._entries_by_path[path]
   if not entry then
     return false
   end
@@ -289,7 +332,7 @@ function Session:set_mode(mode)
   self._view = self._view_factory(mode)
 
   if self.current_path then
-    local entry = find_entry(self.entries, self.current_path)
+    local entry = self._entries_by_path[self.current_path]
     if entry then
       self._view:open(entry, self.spec)
     end

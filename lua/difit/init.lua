@@ -28,6 +28,16 @@ M._origin_tab = nil
 M._viewer_tab = nil
 ---@type uv.uv_timer_t?
 M._refresh_timer = nil
+--- Every window handle any view has used since the current session opened, accumulated
+--- (never replaced) rather than snapshotted from the *current* view alone: a mode switch
+--- away from `sidebyside` in worktree mode leaves its right window still showing the
+--- real, un-owned file buffer (by design -- see ui/sidebyside.lua's `close()`), so a
+--- pure "does this window's buffer look difit-owned" check can't tell that window apart
+--- from one the user split open independently. Window handles are never reused within a
+--- Neovim instance, so accumulating them here is safe for as long as this session is
+--- open; `open_new`/`M.close()` reset the set.
+---@type table<integer, boolean>
+M._known_view_wins = {}
 
 local AUGROUP = "difit"
 local REFRESH_DEBOUNCE_MS = 200
@@ -35,10 +45,35 @@ local REFRESH_DEBOUNCE_MS = 200
 ---@param mode "sidebyside"|"unified"
 ---@return difit.View
 local function view_factory(mode)
-  if mode == "unified" then
-    return unified.new()
+  local view = mode == "unified" and unified.new() or sidebyside.new()
+
+  -- Record every window this view instance ever uses the moment it opens something --
+  -- not only at the next `session:refresh()`/`toggle_viewed()`/`set_mode()`
+  -- notification (see `M._known_view_wins`), because `session:open_file()` -- how the
+  -- panel's own navigation, and the very first file, get opened -- never notifies
+  -- subscribers at all. Without recording here, a mode switch away from a view whose
+  -- windows were opened purely through `open_file()` would leave `reap_stray_windows()`
+  -- with no way to recognize them as difit's own once they're orphaned.
+  local real_open = view.open
+  view.open = function(self, entry, spec)
+    real_open(self, entry, spec)
+    -- NB: deliberately not `ipairs({ self.win, self.left_win, self.right_win })` --
+    -- the side-by-side view never sets `self.win` (it uses `left_win`/`right_win`
+    -- instead), so that table literal's first element is nil, and `ipairs` stops before
+    -- ever visiting the later, non-nil elements (see `live_view_windows()` below, which
+    -- has the same shape and the same caveat).
+    if self.win then
+      M._known_view_wins[self.win] = true
+    end
+    if self.left_win then
+      M._known_view_wins[self.left_win] = true
+    end
+    if self.right_win then
+      M._known_view_wins[self.right_win] = true
+    end
   end
-  return sidebyside.new()
+
+  return view
 end
 
 --- Mark `path` viewed/unviewed and, per `config.auto_advance`, open the next un-viewed
@@ -53,8 +88,11 @@ local function toggle_viewed_and_advance(path)
   if not M._session then
     return
   end
-  M._session:toggle_viewed(path)
-  if config.get().auto_advance then
+  local became_viewed = M._session:toggle_viewed(path)
+  -- Auto-advance only on MARKING a file viewed, never on un-marking it (design.md:
+  -- "Marking advances to the next un-viewed file") -- mirrors the same rule in
+  -- `lua/difit/ui/panel.lua`'s own `toggle_viewed` keymap.
+  if became_viewed and config.get().auto_advance then
     local nxt = M._session:next_unviewed(path)
     if nxt then
       M._session:open_file(nxt)
@@ -84,19 +122,39 @@ local function live_view_windows()
   if not view then
     return wins
   end
-  for _, w in ipairs({ view.win, view.left_win, view.right_win }) do
-    if w then
-      wins[w] = true
-    end
+  -- NB: deliberately not `ipairs({ view.win, view.left_win, view.right_win })` -- the
+  -- side-by-side view never sets `view.win` (it uses `left_win`/`right_win` instead), so
+  -- that table literal's first element is nil, and `ipairs` stops immediately instead of
+  -- ever visiting the later, non-nil elements. This was silently making `keep` come back
+  -- empty (hence `reap_stray_windows` a no-op) for the whole time the live view was
+  -- side-by-side -- checking each field explicitly avoids the nil-hole entirely.
+  if view.win then
+    wins[view.win] = true
+  end
+  if view.left_win then
+    wins[view.left_win] = true
+  end
+  if view.right_win then
+    wins[view.right_win] = true
   end
   return wins
 end
 
---- Subscribed to the session (see `open_new`): closes any window in the viewer tabpage
---- that belongs to neither the panel nor the live view. A no-op whenever the live view
---- hasn't opened anything yet (an empty `wins` means "nothing to protect", not "close
---- everything") -- notably the placeholder window `open_new` leaves showing before the
---- first file opens.
+--- Subscribed to the session (see `open_new`): closes windows in the viewer tabpage that
+--- used to belong to a difit view but no longer do -- e.g. a `difit://unified/...` or
+--- blob window orphaned by a mode switch, or a sidebyside pane still showing a real
+--- worktree file after the view moved on (see `M._known_view_wins`). A no-op whenever the
+--- live view hasn't opened anything yet (an empty `keep` means "nothing to protect", not
+--- "close everything") -- notably the placeholder window `open_new` leaves showing
+--- before the first file opens.
+---
+--- Never closes a window that isn't (or never was) part of some difit view: this plugin
+--- has no business closing a window the *user* opened in its own tabpage (`:vsplit`,
+--- `:help`, ...) just because it happens not to be the panel or the current live view --
+--- doing so used to nuke arbitrary user splits on every single refresh/toggle
+--- notification. A window is only ever reaped when it is either recognized via
+--- `M._known_view_wins`, or -- as a belt-and-suspenders fallback -- still shows a
+--- `difit://`-named buffer.
 local function reap_stray_windows()
   if not (M._session and M._panel and M._viewer_tab) then
     return
@@ -109,6 +167,9 @@ local function reap_stray_windows()
   if not next(keep) then
     return
   end
+  for win in pairs(keep) do
+    M._known_view_wins[win] = true
+  end
   keep[M._panel.win] = true
 
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(M._viewer_tab)) do
@@ -117,7 +178,11 @@ local function reap_stray_windows()
       and vim.api.nvim_win_is_valid(win)
       and #vim.api.nvim_tabpage_list_wins(M._viewer_tab) > 1
     then
-      pcall(vim.api.nvim_win_close, win, true)
+      local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+      if M._known_view_wins[win] or vim.startswith(bufname, "difit://") then
+        pcall(vim.api.nvim_win_close, win, true)
+        M._known_view_wins[win] = nil
+      end
     end
   end
 end
@@ -233,6 +298,7 @@ local function open_new(base)
   M._session = sess
   M._origin_tab = origin_tab
   M._viewer_tab = viewer_tab
+  M._known_view_wins = {}
   M._panel = panel.open(sess)
   sess:subscribe(reap_stray_windows)
 
@@ -275,6 +341,7 @@ function M.close()
   M._panel = nil
   M._viewer_tab = nil
   M._origin_tab = nil
+  M._known_view_wins = {}
 
   if viewer_tab then
     close_tabpage_safe(viewer_tab)

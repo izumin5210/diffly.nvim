@@ -20,6 +20,8 @@ local eq = MiniTest.expect.equality
 --   _G.__factory_modes   ordered list of modes `view_factory` was called with
 --   _G.__pr_result       {info=difit.PrInfo?, err=string?} returned by the next detect_pr
 --   _G.__github_calls    number of times detect_pr was invoked
+--   _G.__gh_available    boolean returned by the fake's `available()` (default true --
+--                        matches the "gh works, just no PR" case being the silent one)
 --   _G.__view_factory / _G.__fake_github  ready to pass as SessionOpts fields
 local INSTALL_FAKES = [[
   _G.__log = {}
@@ -44,11 +46,15 @@ local INSTALL_FAKES = [[
 
   _G.__pr_result = { info = nil, err = "no fake pr configured" }
   _G.__github_calls = 0
+  _G.__gh_available = true
   _G.__fake_github = {
     detect_pr = function(_repo)
       _G.__github_calls = _G.__github_calls + 1
       local r = _G.__pr_result
       return r.info, r.err
+    end,
+    available = function()
+      return _G.__gh_available
     end,
   }
 ]]
@@ -56,6 +62,32 @@ local INSTALL_FAKES = [[
 ---@param child table
 local function install_fakes(child)
   child.lua(INSTALL_FAKES)
+end
+
+--- Configure what the fake `github.available()` returns on every subsequent call.
+---@param child table
+---@param available boolean
+local function set_gh_available(child, available)
+  child.lua("_G.__gh_available = ...", { available })
+end
+
+--- Replace `vim.notify` inside the child with one that records every call into
+--- `_G.__notifications`, so tests can assert on the gh-missing notice (session.lua) --
+--- without this, `vim.notify`'s real implementation would just print to `:messages`.
+---@param child table
+local function install_notify_capture(child)
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+end
+
+---@param child table
+---@return table[]
+local function notifications(child)
+  return child.lua_get("_G.__notifications")
 end
 
 --- Configure what the fake `github.detect_pr` returns on its next call(s).
@@ -566,6 +598,99 @@ T["close(): closes the view and saves state, even with no prior toggle"] = funct
   vim.fn.delete(tmp_state, "rf")
   child.stop()
   repo:destroy()
+end
+
+-- 8. gh-missing one-time notice (finding 8) -----------------------------------------------
+
+T["M.new(): notifies once per Neovim session when gh is unavailable and the branch-pair fallback is taken"] = function()
+  local repo = helpers.new_repo()
+  repo:write("a.txt", "1\n")
+  repo:commit("chore: base")
+  repo:branch("feature")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  install_notify_capture(child)
+  set_pr_result(child, nil, "no pr")
+  set_gh_available(child, false)
+
+  eq(new_session(child, {}).ok, true)
+  eq(new_session(child, {}).ok, true) -- a second session in the same Neovim process
+
+  local notes = notifications(child)
+  eq(#notes, 1, "the notice must fire exactly once across both M.new() calls")
+  eq(notes[1].msg, "difit: gh not found; viewed state is keyed by branch pair")
+  eq(notes[1].level, vim.log.levels.INFO)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["M.new(): does not notify when gh is available but simply has no PR for this branch"] = function()
+  local repo = helpers.new_repo()
+  repo:write("a.txt", "1\n")
+  repo:commit("chore: base")
+  repo:branch("feature")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  install_notify_capture(child)
+  set_pr_result(child, nil, "no pull requests found")
+  set_gh_available(child, true)
+
+  eq(new_session(child, {}).ok, true)
+
+  eq(#notifications(child), 0, "gh working with no PR is a normal, silent fallback")
+
+  child.stop()
+  repo:destroy()
+end
+
+-- 9. resolve_ref() falls back to a non-origin remote (finding 11) -------------------------
+
+T["M.new(): resolves the base ref via a non-origin remote when only that remote has it"] = function()
+  -- An "upstream"-only clone: the review key's base branch ("trunk") exists on a
+  -- secondary remote but not locally and not under "origin" (there is no "origin"
+  -- remote at all here) -- resolve_ref must still find "upstream/trunk".
+  --
+  -- The clone must share history with the bare source (so `merge_base` finds a real
+  -- fork point), and `git clone --origin upstream` also checks out a *local* "trunk"
+  -- branch tracking it -- which would resolve on its own and defeat the point of this
+  -- test -- so it's deleted once "feature" is checked out instead.
+  local upstream_src = helpers.new_repo()
+  upstream_src:write("a.txt", "1\n")
+  upstream_src:commit("chore: base")
+  upstream_src:git({ "branch", "-m", "trunk" })
+
+  local bare_dir = vim.fn.tempname()
+  eq(vim.system({ "git", "clone", "-q", "--bare", upstream_src.dir, bare_dir }):wait().code, 0)
+
+  local dir = vim.fn.tempname()
+  eq(vim.system({ "git", "clone", "-q", "--origin", "upstream", bare_dir, dir }):wait().code, 0)
+  eq(vim.system({ "git", "-C", dir, "config", "user.name", "difit test" }):wait().code, 0)
+  eq(
+    vim.system({ "git", "-C", dir, "config", "user.email", "difit-test@example.com" }):wait().code,
+    0
+  )
+  eq(vim.system({ "git", "-C", dir, "config", "commit.gpgsign", "false" }):wait().code, 0)
+  vim.fn.writefile({ "2" }, dir .. "/b.txt")
+  eq(vim.system({ "git", "-C", dir, "add", "-A" }):wait().code, 0)
+  eq(vim.system({ "git", "-C", dir, "commit", "-q", "-m", "chore: local work" }):wait().code, 0)
+  eq(vim.system({ "git", "-C", dir, "switch", "-q", "-c", "feature" }):wait().code, 0)
+  eq(vim.system({ "git", "-C", dir, "branch", "-D", "trunk" }):wait().code, 0)
+
+  local child = helpers.new_child(dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+
+  local res = new_session(child, { base = "trunk" })
+  eq(res.ok, true)
+  eq(session_field(child, "spec.base_ref"), "upstream/trunk")
+
+  child.stop()
+  vim.fn.delete(dir, "rf")
+  upstream_src:destroy()
+  vim.fn.delete(bare_dir, "rf")
 end
 
 return T

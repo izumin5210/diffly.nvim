@@ -75,7 +75,12 @@ function M.save(st)
   f:write(vim.json.encode(st))
   f:close()
 
-  local ok, err = os.rename(tmp_path, path)
+  -- `os.rename` maps to plain `rename(2)` on POSIX but to `MoveFileEx` *without*
+  -- `MOVEFILE_REPLACE_EXISTING` on Windows, so it fails with EEXIST there the moment the
+  -- destination already exists (i.e. every save after the first one). `vim.uv.fs_rename`
+  -- (libuv) requests the replace-existing flag on Windows too, so this is atomic
+  -- everywhere.
+  local ok, err = vim.uv.fs_rename(tmp_path, path)
   if not ok then
     error(string.format("difit: failed to save state to %s: %s", path, err or "unknown error"))
   end

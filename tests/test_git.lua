@@ -83,6 +83,28 @@ T["repo_identity(): normalizes an ssh:// remote with a port, stripping .git"] = 
   repo:destroy()
 end
 
+-- 1b. remotes() ----------------------------------------------------------------------
+
+T["remotes(): lists every configured remote name"] = function()
+  local repo = helpers.new_repo()
+  repo:git({ "remote", "add", "origin", "https://example.com/owner/repo.git" })
+  repo:git({ "remote", "add", "upstream", "https://example.com/upstream/repo.git" })
+
+  local id = git.repo_identity(repo.dir)
+  local remotes = git.remotes(id)
+  table.sort(remotes)
+  eq(remotes, { "origin", "upstream" })
+
+  repo:destroy()
+end
+
+T["remotes(): empty list when there is no remote configured"] = function()
+  local repo = helpers.new_repo()
+  local id = git.repo_identity(repo.dir)
+  eq(git.remotes(id), {})
+  repo:destroy()
+end
+
 -- 2. default_branch() ---------------------------------------------------------------
 
 T["default_branch(): resolves origin/HEAD set by cloning a local bare origin"] = function()

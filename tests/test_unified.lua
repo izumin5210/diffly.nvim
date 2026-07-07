@@ -163,40 +163,105 @@ T["open(): reuses the same window across multiple opens"] = function()
   eq(after, before)
 end
 
-T["<CR> on a '+' line jumps to the exact new-file line"] = function()
+-- NOTE: `_G.spec` (built by `setup_child`) has `right = "head"`, so from here down every
+-- jump lands in a read-only HEAD blob buffer (finding 7's fix), never the worktree file
+-- -- see the divergence regression test further below for *why* that matters. Cross-check
+-- expected content against `git show HEAD:<path>` (independent of the worktree) rather
+-- than `vim.fn.readfile` (which reads the worktree file) to make that distinction explicit.
+
+---@param path string
+---@return string[]
+local function head_content(path)
+  return vim.fn.systemlist({ "git", "-C", repo.dir, "show", "HEAD:" .. path })
+end
+
+---@param bufname string
+---@param path string
+local function assert_head_blob_bufname(bufname, path)
+  eq(vim.startswith(bufname, "difit://"), true)
+  eq(vim.endswith(bufname, "/" .. path), true)
+end
+
+T["<CR> on a '+' line jumps to the exact line in a read-only HEAD blob (spec.right == 'head')"] = function()
   local result = open(paths.modified)
+  local target_line = line_index(result.lines, '+  return "hello, world"')
+
+  local jumped = press_cr_at(target_line)
+
+  assert_head_blob_bufname(jumped.bufname, paths.modified)
+  eq(jumped.cursor[1], 4)
+
+  local head_lines = head_content(paths.modified)
+  eq(head_lines[4], '  return "hello, world"')
+
+  local buf_props = child.lua([[
+    return { buftype = vim.bo[0].buftype, modifiable = vim.bo[0].modifiable }
+  ]])
+  eq(buf_props.buftype, "nofile")
+  eq(buf_props.modifiable, false)
+end
+
+T["<CR> on a context line jumps to the corresponding line in the HEAD blob"] = function()
+  local result = open(paths.modified)
+  local target_line = line_index(result.lines, " function M.hello()")
+
+  local jumped = press_cr_at(target_line)
+
+  assert_head_blob_bufname(jumped.bufname, paths.modified)
+  eq(jumped.cursor[1], 3)
+
+  local head_lines = head_content(paths.modified)
+  eq(head_lines[3], "function M.hello()")
+end
+
+T["<CR> on a '-' line jumps to the hunk's new_start in the HEAD blob"] = function()
+  local result = open(paths.modified)
+  local target_line = line_index(result.lines, '-  return "hello"')
+
+  local jumped = press_cr_at(target_line)
+
+  assert_head_blob_bufname(jumped.bufname, paths.modified)
+  eq(jumped.cursor[1], 1)
+end
+
+T["<CR>: right=worktree jump still opens the real worktree file (unchanged behavior)"] = function()
+  child.lua([[_G.spec_worktree = vim.tbl_extend("force", {}, spec, { right = "worktree" })]])
+  local result = child.lua(
+    [[
+      local path = ...
+      view:open(entries[path], _G.spec_worktree)
+      return { lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false) }
+    ]],
+    { paths.modified }
+  )
   local target_line = line_index(result.lines, '+  return "hello, world"')
 
   local jumped = press_cr_at(target_line)
 
   eq(realpath(jumped.bufname), realpath(repo.dir .. "/" .. paths.modified))
   eq(jumped.cursor[1], 4)
-
-  local real_lines = vim.fn.readfile(repo.dir .. "/" .. paths.modified)
-  eq(real_lines[4], '  return "hello, world"')
 end
 
-T["<CR> on a context line jumps to the corresponding new-file line"] = function()
+T["<CR>: right=head jump lands at the correct line even when the worktree has diverged from HEAD"] = function()
   local result = open(paths.modified)
-  local target_line = line_index(result.lines, " function M.hello()")
+  local target_line = line_index(result.lines, '+  return "hello, world"')
+  local expected_head_lines = head_content(paths.modified)
+
+  -- Diverge the worktree from HEAD: prepend extra uncommitted lines above the hunk. If
+  -- the jump wrongly opened the worktree file (the bug fixed here), the very same target
+  -- line would now show completely different content.
+  local diverged = { "-- extra worktree-only line 1", "-- extra worktree-only line 2" }
+  vim.list_extend(diverged, vim.fn.readfile(repo.dir .. "/" .. paths.modified))
+  vim.fn.writefile(diverged, repo.dir .. "/" .. paths.modified)
 
   local jumped = press_cr_at(target_line)
 
-  eq(realpath(jumped.bufname), realpath(repo.dir .. "/" .. paths.modified))
-  eq(jumped.cursor[1], 3)
+  assert_head_blob_bufname(jumped.bufname, paths.modified)
+  eq(jumped.cursor[1], 4)
 
-  local real_lines = vim.fn.readfile(repo.dir .. "/" .. paths.modified)
-  eq(real_lines[3], "function M.hello()")
-end
-
-T["<CR> on a '-' line jumps to the hunk's new_start"] = function()
-  local result = open(paths.modified)
-  local target_line = line_index(result.lines, '-  return "hello"')
-
-  local jumped = press_cr_at(target_line)
-
-  eq(realpath(jumped.bufname), realpath(repo.dir .. "/" .. paths.modified))
-  eq(jumped.cursor[1], 1)
+  local blob_lines = child.lua([[return vim.api.nvim_buf_get_lines(0, 0, -1, false)]])
+  eq(blob_lines, expected_head_lines)
+  eq(blob_lines[4], '  return "hello, world"')
 end
 
 T["<CR> on the diff --git header line is a no-op"] = function()

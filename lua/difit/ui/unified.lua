@@ -17,7 +17,10 @@ function M._on_toggle_viewed(path) end
 ---@class difit.ui.UnifiedBufMeta
 ---@field path string      -- entry.path, relative to toplevel
 ---@field toplevel string  -- absolute worktree root, for resolving the real file
----@field jump_map table<integer, integer>  -- 1-based buffer line -> real-file line
+---@field repo difit.RepoIdentity   -- for fetching HEAD blob content when right == "head"
+---@field right "worktree"|"head"
+---@field head_sha string?  -- entry.head_sha; the blob to jump into when right == "head"
+---@field jump_map table<integer, integer>  -- 1-based buffer line -> new-file line
 
 ---@class difit.ui.UnifiedView : difit.View
 ---@field win integer?                          -- the one window this view owns
@@ -69,8 +72,9 @@ end
 --- Get the owned buffer for `name`, creating (and configuring) it on first use.
 ---@param self difit.ui.UnifiedView
 ---@param name string
+---@param filetype string?  -- defaults to "diff" (the unified patch buffer's own filetype)
 ---@return integer bufnr
-local function get_or_create_buf(self, name)
+local function get_or_create_buf(self, name, filetype)
   local existing = self.bufs[name]
   if existing and vim.api.nvim_buf_is_valid(existing) then
     return existing
@@ -81,7 +85,7 @@ local function get_or_create_buf(self, name)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "diff"
+  vim.bo[buf].filetype = filetype or "diff"
   self.bufs[name] = buf
   return buf
 end
@@ -98,28 +102,78 @@ local function ensure_window(self)
 end
 
 --- Resolve the window that a file jump should land in: Vim's own "previous window"
---- (`CTRL-W p`) when that is a real window distinct from the unified one, else a fresh
---- vertical split next to it. Assumes the unified window is currently focused (true
---- whenever this runs from its own `<CR>` mapping).
+--- (`CTRL-W p`) when that is a real window distinct from the unified one AND not a
+--- difit-owned window (most notably the panel, `difit://panel`) -- else a fresh vertical
+--- split next to it. Assumes the unified window is currently focused (true whenever this
+--- runs from its own `<CR>` mapping).
+---
+--- The difit-owned check matters because `wincmd p`'s "previous window" is Vim's own
+--- last-focused-window tracking, not anything this plugin controls: e.g. switching modes
+--- while the panel is focused builds the new unified window via a `vsplit` run *while
+--- the panel is current*, which makes the panel Vim's "previous window" from that point
+--- on -- so an unguarded `wincmd p` here would jump straight back into the panel and then
+--- `:edit` the real file into it, destroying the tree.
 ---@param self difit.ui.UnifiedView
 ---@return integer winid
 local function target_window(self)
   local unified_win = self.win
   vim.cmd("wincmd p")
   local candidate = vim.api.nvim_get_current_win()
-  if candidate ~= unified_win and vim.api.nvim_win_is_valid(candidate) then
+  local candidate_owned = false
+  if vim.api.nvim_win_is_valid(candidate) then
+    local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(candidate))
+    candidate_owned = vim.startswith(bufname, "difit://")
+  end
+
+  if candidate ~= unified_win and vim.api.nvim_win_is_valid(candidate) and not candidate_owned then
     return candidate
   end
 
   -- `wincmd p` had nowhere else to go (the unified view is the only window in this
-  -- tabpage) -- give the real file its own split instead of hijacking this one.
+  -- tabpage), or landed on a difit-owned window -- give the real file its own split
+  -- instead of hijacking either.
   vim.api.nvim_set_current_win(unified_win)
   vim.cmd("vsplit")
   return vim.api.nvim_get_current_win()
 end
 
---- `<CR>` handler: jump to the real file at the line the current buffer line maps to.
---- No-op on lines with no mapping (the `diff --git` line and hunk headers).
+--- `spec.right == "head"`: `jump_map` lines were computed against `git diff <base>
+--- HEAD` (see `build_content`), i.e. they're HEAD-relative -- but the *worktree* file may
+--- have diverged from HEAD since (more/fewer lines above the hunk), so opening it there
+--- would land on the wrong line, or the wrong content entirely. Open a read-only blob of
+--- `entry.head_sha` instead, so the line numbers always match what the diff showed,
+--- mirroring `ui/sidebyside.lua`'s own head-mode blob buffers (including its buffer
+--- naming scheme, `difit://<short sha>/<path>`).
+---@param self difit.ui.UnifiedView
+---@param win integer
+---@param meta difit.ui.UnifiedBufMeta
+---@return integer bufnr
+local function open_head_blob(self, win, meta)
+  local short_sha = meta.head_sha and meta.head_sha:sub(1, 7) or "unknown"
+  local name = "difit://" .. short_sha .. "/" .. meta.path
+
+  local existing = self.bufs[name]
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    vim.api.nvim_win_set_buf(win, existing)
+    return existing
+  end
+
+  local ft = vim.filetype.match({ filename = meta.path })
+  local buf = get_or_create_buf(self, name, ft)
+
+  local lines = meta.head_sha and (git.file_content(meta.repo, { sha = meta.head_sha }) or {}) or {}
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+
+  vim.api.nvim_win_set_buf(win, buf)
+  return buf
+end
+
+--- `<CR>` handler: jump to the line the current buffer line maps to -- the real worktree
+--- file when `spec.right == "worktree"`, or a read-only HEAD blob buffer when
+--- `spec.right == "head"` (see `open_head_blob`). No-op on lines with no mapping (the
+--- `diff --git` line and hunk headers).
 ---@param self difit.ui.UnifiedView
 ---@param buf integer
 local function jump_to_file(self, buf)
@@ -136,7 +190,12 @@ local function jump_to_file(self, buf)
 
   local win = target_window(self)
   vim.api.nvim_set_current_win(win)
-  vim.cmd("edit " .. vim.fn.fnameescape(meta.toplevel .. "/" .. meta.path))
+
+  if meta.right == "head" then
+    open_head_blob(self, win, meta)
+  else
+    vim.cmd("edit " .. vim.fn.fnameescape(meta.toplevel .. "/" .. meta.path))
+  end
 
   local line_count = vim.api.nvim_buf_line_count(0)
   vim.api.nvim_win_set_cursor(win, { math.min(target_line, line_count), 0 })
@@ -171,7 +230,14 @@ function View:open(entry, spec)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
 
-  self.meta[buf] = { path = entry.path, toplevel = spec.repo.toplevel, jump_map = jump_map }
+  self.meta[buf] = {
+    path = entry.path,
+    toplevel = spec.repo.toplevel,
+    repo = spec.repo,
+    right = spec.right,
+    head_sha = entry.head_sha,
+    jump_map = jump_map,
+  }
 
   ensure_window(self)
   vim.api.nvim_win_set_buf(self.win, buf)

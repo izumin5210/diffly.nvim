@@ -186,6 +186,58 @@ T["viewed file shows [✓], un-viewed files show [ ]"] = function()
   eq(got[10]:find("^%s*%[ %] M", 1), 1)
 end
 
+T["render() preserves the cursor's logical file across a background refresh that reshuffles rows"] = function()
+  set_cursor(7) -- lua/difit/new.lua
+  eq(child.lua_get("_G.panel.row_nodes[7].path"), "lua/difit/new.lua")
+
+  -- Simulate a background refresh/subscriber notification (e.g. BufWritePost) that adds
+  -- a file sorting *above* the cursor's file within the same directory -- every row
+  -- number in "lua/difit" below it shifts down by one.
+  child.lua([[
+    table.insert(_G.session.entries, {
+      path = "lua/difit/00_early.lua",
+      status = "A",
+      untracked = false,
+      binary = false,
+      additions = 1,
+      deletions = 0,
+    })
+    _G.panel:render()
+  ]])
+
+  local new_lnum = child.lua_get([[
+    (function()
+      for lnum, node in pairs(_G.panel.row_nodes) do
+        if node.path == "lua/difit/new.lua" then
+          return lnum
+        end
+      end
+    end)()
+  ]])
+
+  eq(new_lnum ~= 7, true, "sanity check: the row actually moved")
+  eq(cursor(), { new_lnum, 0 }, "the cursor followed new.lua to its new row")
+end
+
+T["render() clamps the cursor to the nearest valid row when its file disappears"] = function()
+  set_cursor(6) -- lua/difit/gone.lua
+  eq(child.lua_get("_G.panel.row_nodes[6].path"), "lua/difit/gone.lua")
+
+  child.lua([[
+    for i, e in ipairs(_G.session.entries) do
+      if e.path == "lua/difit/gone.lua" then
+        table.remove(_G.session.entries, i)
+        break
+      end
+    end
+    _G.panel:render()
+  ]])
+
+  local total_lines = #lines()
+  local got = cursor()
+  eq(got[1] >= 1 and got[1] <= total_lines, true)
+end
+
 T["toggle_viewed key calls session:toggle_viewed and auto-advances to next_unviewed"] = function()
   child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
 
@@ -208,6 +260,23 @@ T["toggle_viewed does not auto-advance when config.auto_advance is false"] = fun
   eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
   eq(child.lua_get("_G.calls.next_unviewed"), {})
   eq(child.lua_get("_G.calls.open_file"), {})
+end
+
+T["toggle_viewed un-marking an already-viewed file does not auto-advance"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+
+  set_cursor(9) -- lua/difit/state.lua (starts viewed = true, per FAKE_SESSION_SETUP)
+  child.type_keys("v")
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/difit/state.lua" })
+  eq(
+    child.lua_get("_G.calls.next_unviewed"),
+    {},
+    "un-marking must never trigger the auto-advance lookup"
+  )
+  eq(child.lua_get("_G.calls.open_file"), {})
+  eq(cursor(), { 9, 0 }, "cursor stays on the row that was just un-marked")
+  eq(lines()[9], "    [ ] M state.lua  +42 −3", "row re-renders as un-viewed")
 end
 
 T["<CR> on a file row calls session:open_file"] = function()

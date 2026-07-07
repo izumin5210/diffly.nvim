@@ -473,4 +473,150 @@ T["bonus: <Plug>(difit-toggle-viewed) toggles viewed for a real file buffer"] = 
   eq(is_viewed(child, paths.modified), true)
 end
 
+-- Regression (finding 1): reap_stray_windows must not kill user-created splits -----------
+
+T["reap_stray_windows: a user's real-file split survives a refresh; an orphaned view window is still reaped after a mode switch"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- opens the sidebyside view (2 windows)
+
+  -- Simulate the user opening their own split on a real, unrelated file inside the
+  -- viewer tabpage (e.g. :vsplit or :help) -- this must never be treated as "stray".
+  child.cmd("vsplit " .. vim.fn.fnameescape(repo.dir .. "/README.md"))
+  local user_win = child.lua_get("vim.api.nvim_get_current_win()")
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), "/README.md"), true)
+
+  focus_panel(child)
+  child.type_keys("R") -- refresh -> session:refresh() -> notify -> reap_stray_windows
+
+  eq(
+    child.lua_get("vim.api.nvim_win_is_valid(...)", { user_win }),
+    true,
+    "the user's split survives a refresh"
+  )
+  eq(
+    vim.endswith(
+      child.lua("return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(...))", { user_win }),
+      "/README.md"
+    ),
+    true,
+    "the user's split still shows the real file, not hijacked"
+  )
+
+  -- Mode switch: the previous sidebyside view's own windows are now orphaned (nothing in
+  -- `keep`, since a fresh view was built) -- these must still be reaped, same as before
+  -- this fix (this is what init.lua's `M._known_view_wins` is for).
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+
+  eq(
+    child.lua_get("vim.api.nvim_win_is_valid(...)", { user_win }),
+    true,
+    "the user's split survives the mode switch too"
+  )
+
+  local remaining = child.lua_get("vim.api.nvim_tabpage_list_wins(0)")
+  eq(#remaining, 3, "exactly panel + user split + the fresh unified window remain")
+end
+
+-- Regression (finding 2): target_window must never hijack a difit-owned window (e.g. the
+-- panel) that happens to be Vim's "previous window" ------------------------------------
+
+T["target_window regression: panel-focused mode switch then <CR> in unified never lands the real file in the panel"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  focus_panel(child) -- panel current; Vim's "previous window" is the sidebyside right window
+
+  -- Mode switch while the panel is focused: unified.lua's `ensure_window()` runs
+  -- `vsplit` while the panel is the current window, which makes the panel Vim's
+  -- "previous window" (`CTRL-W p`) from this point on -- exactly the trap
+  -- `target_window()` must not fall into.
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+
+  local target_lnum = child.lua_get([[
+    (function()
+      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+      for i, l in ipairs(lines) do
+        if l == '+  return "hello, world"' then
+          return i
+        end
+      end
+    end)()
+  ]])
+  eq(type(target_lnum), "number")
+
+  child.api.nvim_win_set_cursor(0, { target_lnum, 0 })
+  child.type_keys("<CR>")
+
+  eq(
+    child.lua_get(
+      [[vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(require("difit")._panel.win))]]
+    ),
+    "difit://panel",
+    "the panel window must still show the panel buffer, not the real file"
+  )
+
+  local jumped = child.lua_get([[
+    {
+      bufname = vim.api.nvim_buf_get_name(0),
+      win = vim.api.nvim_get_current_win(),
+      cursor = vim.api.nvim_win_get_cursor(0),
+    }
+  ]])
+  eq(vim.endswith(jumped.bufname, "/" .. paths.modified), true)
+  eq(jumped.cursor[1], 4)
+  eq(jumped.win ~= child.lua_get([[require("difit")._panel.win]]), true)
+end
+
+-- Regression (finding 5): auto-advance fires only on MARKING, never on un-marking --------
+
+T["auto-advance fires only when marking a file viewed, not when un-marking it"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("v") -- mark: auto-advances to src/new.lua and opens it
+  eq(is_viewed(child, paths.modified), true)
+  eq(session_field(child, "current_path"), paths.new)
+
+  focus_panel(child)
+  set_cursor(child, 5) -- back on src/mod.lua's row (now viewed)
+  child.type_keys("v") -- un-mark: must NOT auto-advance
+  eq(is_viewed(child, paths.modified), false)
+  eq(
+    session_field(child, "current_path"),
+    paths.new,
+    "un-marking must not change which file is open"
+  )
+end
+
+T["bonus regression: <Plug>(difit-toggle-viewed) un-marking a real file buffer does not auto-advance"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("v") -- mark via the panel; auto-advances to src/new.lua
+  eq(session_field(child, "current_path"), paths.new)
+
+  focus_panel(child)
+  set_cursor(child, 5) -- src/mod.lua, now viewed
+  child.type_keys("<CR>") -- open it directly (not through toggle) so current_path tracks it
+  eq(session_field(child, "current_path"), paths.modified)
+
+  child.lua([[vim.keymap.set("n", "<F2>", "<Plug>(difit-toggle-viewed)")]])
+  child.type_keys("<F2>") -- un-mark src/mod.lua from its own real-file buffer
+
+  eq(is_viewed(child, paths.modified), false)
+  eq(
+    session_field(child, "current_path"),
+    paths.modified,
+    "un-marking from a real file buffer must not auto-advance away from it"
+  )
+end
+
 return T
