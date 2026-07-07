@@ -241,8 +241,10 @@ function M.current_branch(repo)  -- `git branch --show-current`
 ---@param opts {include_untracked: boolean}
 ---@return difit.FileEntry[]|nil, string|nil err
 function M.diff_files(repo, base_sha, right, opts)
--- right == "head":     `git diff --raw --numstat -z -M <base_sha> HEAD`
--- right == "worktree": `git diff --raw --numstat -z -M <base_sha>`
+-- right == "head":     `git diff --raw --numstat -z -M --no-abbrev <base_sha> HEAD`
+-- right == "worktree": `git diff --raw --numstat -z -M --no-abbrev <base_sha>`
+--   (--no-abbrev: --raw abbreviates blob SHAs by default; state.is_viewed compares
+--   full SHAs from rev-parse/hash-object, so abbreviated SHAs would never match)
 --   plus untracked via `git ls-files --others --exclude-standard -z` (status "A",
 --   untracked=true) when opts.include_untracked.
 -- Parse the -z stream: all --raw records come first, then all --numstat records.
