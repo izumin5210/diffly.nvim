@@ -434,7 +434,10 @@ function M.open(session)
   local cfg = config.get()
 
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, "difit://panel")
+  -- Suffixed with the buffer's own (unique) number: since docs/refactor-v1.md R1, more
+  -- than one review -- hence more than one panel -- can be open at once, and a bare
+  -- "difit://panel" would collide (E95) on the second `panel.open()` call.
+  vim.api.nvim_buf_set_name(buf, string.format("difit://panel/%d", buf))
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
@@ -452,6 +455,11 @@ function M.open(session)
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
+  -- Sentinel for init.lua's `WinClosed` teardown funnel (docs/refactor-v1.md R1): the
+  -- panel window is the sole navigational anchor of a review, so its own closure is what
+  -- that autocmd watches for. Harmless when this module is driven standalone (see
+  -- tests/test_panel.lua) -- nothing reads `vim.w[win].difit` outside init.lua.
+  vim.w[win].difit = true
   -- Defense in depth (Neovim 0.12+): `ui/unified.lua`'s jump-to-file target-window
   -- resolution already checks bufname prefixes to avoid landing a real file in this
   -- window, but 'winfixbuf' makes Neovim itself refuse any `:edit`/`:buffer` that would

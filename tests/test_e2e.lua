@@ -5,7 +5,8 @@
 -- pattern tests/test_github.lua uses. Screenshot goldens live in tests/screenshots/.
 --
 -- Covers the 10 scenarios from docs/plan.md's WP-I section, in order, plus one bonus case
--- for `<Plug>(difit-toggle-viewed)` (part of the WP-I contract but not one of the 10).
+-- for `<Plug>(difit-toggle-viewed)` (part of the WP-I contract but not one of the 10), plus
+-- (further down) the R1 session-registry cases from docs/refactor-v1.md.
 
 local helpers = dofile("tests/helpers.lua")
 
@@ -22,6 +23,15 @@ local eq = MiniTest.expect.equality
 ---@param child table
 local function source_plugin(child)
   child.cmd("runtime! plugin/difit.lua")
+  -- R1 (docs/refactor-v1.md) replaced `require("difit")._session`/`._panel` with a
+  -- registry keyed by tabpage handle (`require("difit")._entries`); every test helper
+  -- below that used to read the old singleton fields now goes through this one place
+  -- instead, mirroring how `init.lua`'s own `current_entry()` resolves "the" session.
+  child.lua([[
+    _G.__difit_entry = function()
+      return require("difit")._entries[vim.api.nvim_get_current_tabpage()]
+    end
+  ]])
 end
 
 --- Point the child's `difit.state` at an isolated temp dir (the documented `_dir` test
@@ -85,20 +95,21 @@ end
 ---@param child table
 ---@return boolean
 local function is_open(child)
-  return child.lua_get([[require("difit")._session ~= nil]])
+  return child.lua_get([[__difit_entry() ~= nil]])
 end
 
---- Current text of the panel buffer, or `nil` when no session (hence no panel) is open.
+--- Current text of the panel buffer, or `nil` when no session (hence no panel) is open
+--- on the current tabpage.
 ---@param child table
 ---@return string[]|nil
 local function panel_lines(child)
   return denil(child.lua_get([[
     (function()
-      local difit = require("difit")
-      if not difit._panel then
+      local entry = __difit_entry()
+      if not entry then
         return vim.NIL
       end
-      return vim.api.nvim_buf_get_lines(difit._panel.buf, 0, -1, false)
+      return vim.api.nvim_buf_get_lines(entry.panel.buf, 0, -1, false)
     end)()
   ]]))
 end
@@ -123,14 +134,14 @@ end
 ---@param lnum integer
 local function set_cursor(child, lnum)
   child.lua(
-    "local lnum = ...; vim.api.nvim_win_set_cursor(require('difit')._panel.win, { lnum, 0 })",
+    "local lnum = ...; vim.api.nvim_win_set_cursor(__difit_entry().panel.win, { lnum, 0 })",
     { lnum }
   )
 end
 
 ---@param child table
 local function focus_panel(child)
-  child.lua([[require("difit")._panel:focus()]])
+  child.lua([[__difit_entry().panel:focus()]])
 end
 
 ---@param child table
@@ -141,7 +152,7 @@ local function panel_cursor_row(child)
   -- `[[...)[1]]]` trap -- Lua's `[[ ]]` long-bracket string terminates at the first
   -- literal `]]`, which a trailing `[1]]]` would supply one character early.
   return child.lua([[
-    local pos = vim.api.nvim_win_get_cursor(require("difit")._panel.win)
+    local pos = vim.api.nvim_win_get_cursor(__difit_entry().panel.win)
     return pos[1]
   ]])
 end
@@ -149,20 +160,20 @@ end
 ---@param child table
 ---@return boolean
 local function panel_is_current_win(child)
-  return child.lua_get([[vim.api.nvim_get_current_win() == require("difit")._panel.win]])
+  return child.lua_get([[vim.api.nvim_get_current_win() == __difit_entry().panel.win]])
 end
 
 ---@param child table
----@param expr string @Lua expression relative to `require("difit")._session`
+---@param expr string @Lua expression relative to the current tabpage's `entry.session`
 local function session_field(child, expr)
-  return denil(child.lua_get([[require("difit")._session.]] .. expr))
+  return denil(child.lua_get([[__difit_entry().session.]] .. expr))
 end
 
 ---@param child table
 ---@param path string
 ---@return boolean
 local function is_viewed(child, path)
-  return child.lua("return require('difit')._session:is_viewed(...)", { path })
+  return child.lua("return __difit_entry().session:is_viewed(...)", { path })
 end
 
 --- Additions count (`+N`) of the first panel row whose text contains `filename_substr`,
@@ -200,11 +211,11 @@ end
 --- }
 local function layout_snapshot(child)
   return child.lua([[
-    local difit = require("difit")
-    local view = difit._session._view
+    local entry = __difit_entry()
+    local view = entry.session._view
     local snap = {
-      mode = difit._session.mode,
-      panel_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(difit._panel.win)),
+      mode = entry.session.mode,
+      panel_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(entry.panel.win)),
       win_count = #vim.api.nvim_tabpage_list_wins(0),
     }
     if view.left_win then
@@ -221,15 +232,17 @@ local function layout_snapshot(child)
 end
 
 --- Assert the viewer tabpage looks like a healthy side-by-side layout: the panel window
---- still shows `difit://panel` (the regression this guards against -- see
---- ui/sidebyside.lua's `ensure_windows`), plus exactly the two `&diff` windows (one
---- difit-owned blob, one the real file at `path`) and nothing else.
+--- still shows a `difit://panel/...` buffer (the regression this guards against -- see
+--- ui/sidebyside.lua's `ensure_windows`; the numeric suffix is R1's fix for the panel
+--- buffer name colliding across concurrent reviews, see ui/panel.lua's `M.open`), plus
+--- exactly the two `&diff` windows (one difit-owned blob, one the real file at `path`)
+--- and nothing else.
 ---@param child table
 ---@param path string
 local function assert_sidebyside_layout(child, path)
   local snap = layout_snapshot(child)
   eq(snap.mode, "sidebyside")
-  eq(snap.panel_bufname, "difit://panel")
+  eq(vim.startswith(snap.panel_bufname, "difit://panel/"), true)
   eq(snap.win_count, 3, "panel + left + right, nothing orphaned")
   eq(snap.left_diff, true)
   eq(snap.right_diff, true)
@@ -239,12 +252,13 @@ local function assert_sidebyside_layout(child, path)
 end
 
 --- Assert the viewer tabpage looks like a healthy unified layout: the panel window still
---- shows `difit://panel`, plus exactly one `difit://unified/...` window and nothing else.
+--- shows a `difit://panel/...` buffer, plus exactly one `difit://unified/...` window and
+--- nothing else.
 ---@param child table
 local function assert_unified_layout(child)
   local snap = layout_snapshot(child)
   eq(snap.mode, "unified")
-  eq(snap.panel_bufname, "difit://panel")
+  eq(vim.startswith(snap.panel_bufname, "difit://panel/"), true)
   eq(snap.win_count, 2, "panel + the unified window, nothing orphaned")
   eq(vim.startswith(snap.unified_bufname or "", "difit://unified/"), true)
 end
@@ -399,7 +413,7 @@ end
 T["6. a detected PR shows `(PR #N)` in the header and keys viewed state separately"] = function()
   child.cmd("Difit")
   local branch_key_path =
-    child.lua_get([[require('difit.state').file_path(require('difit')._session.spec.review_key)]])
+    child.lua_get([[require('difit.state').file_path(__difit_entry().session.spec.review_key)]])
   child.cmd("Difit close")
 
   local restore_gh = child_path_shim(
@@ -415,7 +429,7 @@ T["6. a detected PR shows `(PR #N)` in the header and keys viewed state separate
   eq(panel_lines(child)[1]:find("(PR #7)", 1, true) ~= nil, true)
 
   local pr_key_path =
-    child.lua_get([[require('difit.state').file_path(require('difit')._session.spec.review_key)]])
+    child.lua_get([[require('difit.state').file_path(__difit_entry().session.spec.review_key)]])
   eq(pr_key_path ~= branch_key_path, true)
 
   -- Mark something under the PR key too and close, so its state file actually gets
@@ -590,7 +604,7 @@ T["reap_stray_windows: a user's real-file split survives a refresh; an orphaned 
 
   -- Mode switch: the previous sidebyside view's own windows are now orphaned (nothing in
   -- `keep`, since a fresh view was built) -- these must still be reaped, same as before
-  -- this fix (this is what init.lua's `M._known_view_wins` is for).
+  -- this fix (this is what init.lua's per-entry `known_view_wins` is for).
   focus_panel(child)
   child.type_keys("s")
   eq(session_field(child, "mode"), "unified")
@@ -639,10 +653,13 @@ T["target_window regression: panel-focused mode switch then <CR> in unified neve
   child.type_keys("<CR>")
 
   eq(
-    child.lua_get(
-      [[vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(require("difit")._panel.win))]]
+    vim.startswith(
+      child.lua_get(
+        [[vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(__difit_entry().panel.win))]]
+      ),
+      "difit://panel/"
     ),
-    "difit://panel",
+    true,
     "the panel window must still show the panel buffer, not the real file"
   )
 
@@ -655,7 +672,7 @@ T["target_window regression: panel-focused mode switch then <CR> in unified neve
   ]])
   eq(vim.endswith(jumped.bufname, "/" .. paths.modified), true)
   eq(jumped.cursor[1], 4)
-  eq(jumped.win ~= child.lua_get([[require("difit")._panel.win]]), true)
+  eq(jumped.win ~= child.lua_get([[__difit_entry().panel.win]]), true)
 end
 
 -- Regression (finding 5): auto-advance fires only on MARKING, never on un-marking --------
@@ -841,6 +858,125 @@ T["bonus: <Plug>(difit-toggle-mode) and <Plug>(difit-focus-panel) work as user-m
 
   child.type_keys("<F4>")
   eq(panel_is_current_win(child), true)
+end
+
+---------------------------------------------------------------------------------------
+-- R1 (docs/refactor-v1.md): the session registry replacing the old M._session/M._panel/
+-- M._viewer_tab singletons. Covers the four scenarios called out for this phase: focusing
+-- an existing review instead of duplicating it, `:Difit close` from inside the viewer
+-- (twice), a manual `:tabclose` reconciling the registry, and the `WinClosed` teardown
+-- path when only the panel window closes. A fifth (two concurrent reviews) is included
+-- too -- cheap enough to arrange with a second temp repo + `:tcd`.
+---------------------------------------------------------------------------------------
+
+--- Resolve symlinks on both sides before comparing paths (mirrors tests/test_git.lua):
+--- on macOS `$TMPDIR` resolves through a `/private` symlink, so git's (already-resolved)
+--- toplevel can otherwise differ textually from a freshly `tempname()`d dir while still
+--- pointing at the same directory.
+---@param path string
+---@return string
+local function realpath(path)
+  return vim.uv.fs_realpath(path)
+end
+
+T["registry: `:Difit` twice for the same repo/branch focuses the existing viewer instead of duplicating it"] = function()
+  local origin_tab = current_tab(child)
+  eq(tab_count(child), 1)
+
+  child.cmd("Difit")
+  local viewer_tab = current_tab(child)
+  eq(tab_count(child), 2)
+  eq(viewer_tab ~= origin_tab, true)
+
+  -- Navigate back to the origin tabpage before asking again, so this actually exercises
+  -- "an existing entry with the same review key elsewhere" rather than the separate
+  -- "already inside a viewer" shortcut in `M.open`.
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { origin_tab })
+  eq(current_tab(child), origin_tab)
+
+  child.cmd("Difit")
+
+  eq(tab_count(child), 2, "no duplicate viewer tabpage for the same review key")
+  eq(current_tab(child), viewer_tab, "the existing viewer's tabpage is focused instead")
+end
+
+T["registry: `:Difit close` from inside the viewer returns to the origin tab; a second `:Difit close` is a harmless no-op"] = function()
+  local origin_tab = current_tab(child)
+
+  child.cmd("Difit")
+  eq(tab_count(child), 2)
+
+  child.cmd("Difit close")
+  eq(is_open(child), false)
+  eq(tab_count(child), 1)
+  eq(current_tab(child), origin_tab)
+
+  eq(pcall(child.cmd, "Difit close"), true, "closing again from the origin tab must not error")
+  eq(tab_count(child), 1)
+  eq(current_tab(child), origin_tab)
+end
+
+T["registry: manually `:tabclose`-ing the viewer tab cleans the registry; a following `:Difit` opens fresh"] = function()
+  child.cmd("Difit")
+  eq(tab_count(child), 2)
+
+  child.cmd("tabclose")
+  eq(tab_count(child), 1)
+  eq(is_open(child), false, "TabClosed reconciled the registry entry away")
+
+  eq(pcall(child.cmd, "Difit"), true, "re-opening after a manual :tabclose must not error")
+  eq(is_open(child), true)
+  eq(tab_count(child), 2)
+end
+
+T["registry: closing the panel window with `:q` tears the whole review down (WinClosed path)"] = function()
+  local origin_tab = current_tab(child)
+
+  child.cmd("Difit")
+  eq(tab_count(child), 2)
+  -- Sanity: a diff view is open alongside the panel (3 windows), so this exercises the
+  -- WinClosed path with OTHER difit windows still present in the tab -- distinct from
+  -- `:tabclose` above, which never leaves the panel window closing on its own.
+  eq(#child.lua_get("vim.api.nvim_tabpage_list_wins(0)") >= 2, true)
+
+  focus_panel(child)
+  eq(pcall(child.type_keys, "q"), true, "no error from closing just the panel window")
+
+  eq(is_open(child), false)
+  eq(tab_count(child), 1)
+  eq(current_tab(child), origin_tab)
+end
+
+T["registry: two concurrent reviews (different repos) get independent tabpages and close independently"] = function()
+  local repo2 = helpers.fixture_branch_repo()
+
+  local origin_tab = current_tab(child)
+  child.cmd("Difit")
+  local viewer1_tab = current_tab(child)
+  eq(tab_count(child), 2)
+
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { origin_tab })
+  child.cmd("tcd " .. vim.fn.fnameescape(repo2.dir))
+
+  child.cmd("Difit")
+  local viewer2_tab = current_tab(child)
+  eq(tab_count(child), 3, "a second, distinct review key gets its own tabpage")
+  eq(viewer2_tab ~= viewer1_tab, true)
+  eq(realpath(session_field(child, "spec.repo.toplevel")), realpath(repo2.dir))
+
+  -- Closing the second review must not disturb the first.
+  child.cmd("Difit close")
+  eq(tab_count(child), 2)
+  eq(current_tab(child), origin_tab)
+
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { viewer1_tab })
+  eq(is_open(child), true, "the other review is untouched by closing this one")
+  eq(is_viewed(child, paths.modified), false)
+
+  child.cmd("Difit close")
+  eq(tab_count(child), 1)
+
+  repo2:destroy()
 end
 
 return T
