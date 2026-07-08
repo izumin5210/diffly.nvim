@@ -185,6 +185,70 @@ local function expect_screenshot(child)
   MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
+--- Layout/mode snapshot for the round-trip regression below: reads everything needed to
+--- assert both "the panel is intact" (the actual bug -- see ui/sidebyside.lua's
+--- `ensure_windows`) and "the diff area looks like the current mode says it should" in one
+--- child round-trip.
+---@param child table
+---@return {
+---  mode: "sidebyside"|"unified",
+---  panel_bufname: string,
+---  win_count: integer,
+---  left_diff: boolean?, right_diff: boolean?,
+---  left_bufname: string?, right_bufname: string?,
+---  unified_bufname: string?,
+--- }
+local function layout_snapshot(child)
+  return child.lua([[
+    local difit = require("difit")
+    local view = difit._session._view
+    local snap = {
+      mode = difit._session.mode,
+      panel_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(difit._panel.win)),
+      win_count = #vim.api.nvim_tabpage_list_wins(0),
+    }
+    if view.left_win then
+      snap.left_diff = vim.wo[view.left_win].diff
+      snap.right_diff = vim.wo[view.right_win].diff
+      snap.left_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(view.left_win))
+      snap.right_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(view.right_win))
+    end
+    if view.win then
+      snap.unified_bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(view.win))
+    end
+    return snap
+  ]])
+end
+
+--- Assert the viewer tabpage looks like a healthy side-by-side layout: the panel window
+--- still shows `difit://panel` (the regression this guards against -- see
+--- ui/sidebyside.lua's `ensure_windows`), plus exactly the two `&diff` windows (one
+--- difit-owned blob, one the real file at `path`) and nothing else.
+---@param child table
+---@param path string
+local function assert_sidebyside_layout(child, path)
+  local snap = layout_snapshot(child)
+  eq(snap.mode, "sidebyside")
+  eq(snap.panel_bufname, "difit://panel")
+  eq(snap.win_count, 3, "panel + left + right, nothing orphaned")
+  eq(snap.left_diff, true)
+  eq(snap.right_diff, true)
+  eq(vim.startswith(snap.left_bufname, "difit://"), true)
+  eq(vim.startswith(snap.right_bufname, "difit://"), false)
+  eq(vim.endswith(snap.right_bufname, "/" .. path), true)
+end
+
+--- Assert the viewer tabpage looks like a healthy unified layout: the panel window still
+--- shows `difit://panel`, plus exactly one `difit://unified/...` window and nothing else.
+---@param child table
+local function assert_unified_layout(child)
+  local snap = layout_snapshot(child)
+  eq(snap.mode, "unified")
+  eq(snap.panel_bufname, "difit://panel")
+  eq(snap.win_count, 2, "panel + the unified window, nothing orphaned")
+  eq(vim.startswith(snap.unified_bufname or "", "difit://unified/"), true)
+end
+
 ---------------------------------------------------------------------------------------
 -- shared fixture: a fresh `helpers.fixture_branch_repo()` + child + sourced plugin +
 -- isolated state dir per case, matching the panel/session/sidebyside test files' style.
@@ -715,6 +779,51 @@ end
 T["`:Difit focus` does not error when no review is open"] = function()
   eq(is_open(child), false)
   eq(pcall(child.cmd, "Difit focus"), true)
+end
+
+-- Regression: side-by-side -> unified -> side-by-side must be reachable from every entry
+-- point (bug report: after switching side-by-side -> unified, switching back was
+-- impossible from ANY entry point -- see ui/sidebyside.lua's `ensure_windows`). Root
+-- cause: the outgoing unified view's close() closes its own window, focus falls back to
+-- the panel, and the old `ensure_windows` claimed whatever window was current as its left
+-- window -- fatal once the panel got 'winfixbuf' (E1513), because `session.mode` was
+-- already flipped to "sidebyside" before the view failed to open, so the very next `s`
+-- press only flipped back to "unified" without ever producing a working split again.
+T["round-trip regression: side-by-side <-> unified is reachable from every entry point"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- panel `open` -> sidebyside, focuses the real right buffer
+  eq(session_field(child, "current_path"), paths.modified)
+  assert_sidebyside_layout(child, paths.modified)
+
+  -- (a) panel `s` -> unified -> panel `s` -> back to side-by-side.
+  focus_panel(child)
+  child.type_keys("s")
+  assert_unified_layout(child)
+
+  focus_panel(child)
+  child.type_keys("s")
+  assert_sidebyside_layout(child, paths.modified)
+
+  -- (b) from the unified buffer itself, `s` -> side-by-side (first get back into unified
+  -- via the panel, then press `s` from inside the unified buffer -- unified's own
+  -- `open()` already focuses itself, so no `focus_panel` before this second `s`).
+  focus_panel(child)
+  child.type_keys("s")
+  assert_unified_layout(child)
+
+  child.type_keys("s") -- keymaps.diff.toggle_mode, pressed from inside the unified buffer
+  assert_sidebyside_layout(child, paths.modified)
+
+  -- (c) from the side-by-side real right buffer, `<leader>s` -> unified -> (in the
+  -- unified buffer) `s` -> side-by-side. `open()`/`set_mode` already leave focus on the
+  -- real right buffer in worktree mode, so no extra navigation is needed here.
+  child.type_keys([[\s]]) -- keymaps.file.toggle_mode
+  assert_unified_layout(child)
+
+  child.type_keys("s") -- keymaps.diff.toggle_mode, from inside the unified buffer
+  assert_sidebyside_layout(child, paths.modified)
 end
 
 T["bonus: <Plug>(difit-toggle-mode) and <Plug>(difit-focus-panel) work as user-mappable Plug targets"] = function()

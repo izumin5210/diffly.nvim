@@ -94,6 +94,24 @@ local function get_or_create_buf(self, name, filetype)
   return buf
 end
 
+--- True when `win` must NOT be used as the base for a bare `vsplit`: it shows a
+--- difit-owned buffer (any `difit://`-named scratch -- most notably the panel) or has
+--- 'winfixbuf' set. Mirrors `ui/sidebyside.lua`'s own guard of the same name and for the
+--- same reason: a mode switch away from side-by-side or unified closes the outgoing
+--- view's window(s) first (`session.lua:set_mode`), which can drop focus back onto the
+--- panel before this view is ever asked to open. A bare `vsplit` from the panel wouldn't
+--- error (unlike sidebyside's window reuse), but with 'splitright' unset it would
+--- silently land the new unified window to the panel's LEFT instead of its right.
+---@param win integer
+---@return boolean
+local function is_unclaimable(win)
+  if vim.wo[win].winfixbuf then
+    return true
+  end
+  local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+  return vim.startswith(bufname, "difit://")
+end
+
 --- Ensure `self.win` points at a live window, splitting off the current one on first
 --- use. Subsequent opens reuse it.
 ---@param self difit.ui.UnifiedView
@@ -101,6 +119,14 @@ local function ensure_window(self)
   if self.win and vim.api.nvim_win_is_valid(self.win) then
     return
   end
+
+  local current = vim.api.nvim_get_current_win()
+  if is_unclaimable(current) then
+    local placeholder = vim.api.nvim_create_buf(false, true)
+    self.win = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
+    return
+  end
+
   vim.cmd("vsplit")
   self.win = vim.api.nvim_get_current_win()
 end

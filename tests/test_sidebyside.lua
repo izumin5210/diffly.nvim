@@ -283,6 +283,65 @@ T["reopening a second file reuses the same two windows"] = function()
   eq(right1, right2)
 end
 
+---------------------------------------------------------------------------------------
+-- ensure_windows() must never claim an unclaimable current window (regression: switching
+-- unified -> sidebyside lands focus on the panel, which the bare "claim current window"
+-- logic used to grab as left_win -- fatal once the panel got 'winfixbuf', silent
+-- window-stealing before that).
+---------------------------------------------------------------------------------------
+
+T["ensure_windows: a winfixbuf-protected current window is left untouched; two fresh windows are created instead"] = function()
+  child.lua([[
+    _G.__protected_win = vim.api.nvim_get_current_win()
+    _G.__protected_buf = vim.api.nvim_win_get_buf(_G.__protected_win)
+    vim.wo[_G.__protected_win].winfixbuf = true
+  ]])
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_count(child), 3, "the protected window survives alongside two fresh diff windows")
+  eq(
+    child.lua_get("vim.api.nvim_win_get_buf(_G.__protected_win) == _G.__protected_buf"),
+    true,
+    "the protected window keeps its original buffer"
+  )
+  eq(win_id(child, "left_win") ~= child.lua_get("_G.__protected_win"), true)
+  eq(win_id(child, "right_win") ~= child.lua_get("_G.__protected_win"), true)
+  eq(win_diff(child, "left_win"), true)
+  eq(win_diff(child, "right_win"), true)
+end
+
+T["ensure_windows: a current window showing a difit://-named buffer is left untouched even without winfixbuf"] = function()
+  child.lua([[
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, "difit://some-owned-scratch")
+    _G.__protected_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(_G.__protected_win, buf)
+    _G.__protected_buf = buf
+  ]])
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_count(child), 3, "the protected window survives alongside two fresh diff windows")
+  eq(
+    child.lua_get("vim.api.nvim_win_get_buf(_G.__protected_win) == _G.__protected_buf"),
+    true,
+    "the protected window keeps its original buffer"
+  )
+  eq(win_id(child, "left_win") ~= child.lua_get("_G.__protected_win"), true)
+  eq(win_id(child, "right_win") ~= child.lua_get("_G.__protected_win"), true)
+  eq(win_diff(child, "left_win"), true)
+  eq(win_diff(child, "right_win"), true)
+end
+
 T["close(): no difit:// buffers remain and &diff is unset"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)

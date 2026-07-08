@@ -208,6 +208,27 @@ function View:clear_file_keymaps()
   self.file_keys = nil
 end
 
+--- True when `win` must NOT be claimed as this view's left window: either it shows a
+--- difit-owned buffer (any `difit://`-named scratch -- most notably the panel, but also a
+--- leftover window from some other view) or it has 'winfixbuf' set (the panel's own
+--- defense-in-depth, see ui/panel.lua). Claiming such a window would either silently
+--- steal it out from under whatever owns it, or error outright (E1513 on 'winfixbuf').
+---
+--- This matters because `ensure_windows` doesn't only run on the very first open, when
+--- `init.lua` is guaranteed to have focus parked in a plain placeholder window: switching
+--- modes closes the outgoing view first (`session.lua:set_mode`), and a view that closes
+--- its own window (ui/unified.lua's `close()`) drops focus back onto whatever other
+--- window remains -- typically the panel -- before this one ever gets asked to open.
+---@param win integer
+---@return boolean
+local function is_unclaimable(win)
+  if vim.wo[win].winfixbuf then
+    return true
+  end
+  local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+  return vim.startswith(bufname, NS_PREFIX)
+end
+
 --- Create the two-window vertical pair on first use, to the right of wherever the
 --- current window is (that's "wherever the panel would be" per plan.md -- this WP only
 --- ever sees the current window, WP-I positions the panel before calling into this
@@ -222,10 +243,24 @@ function View:ensure_windows()
     return
   end
 
-  local left = vim.api.nvim_get_current_win()
+  local current = vim.api.nvim_get_current_win()
   local placeholder = vim.api.nvim_create_buf(false, true)
-  local right = vim.api.nvim_open_win(placeholder, true, { split = "right", win = left })
-  self.left_win, self.right_win = left, right
+
+  if is_unclaimable(current) then
+    -- Never claim the current window here -- build both windows fresh to its right
+    -- instead, leaving it (and whatever it shows) completely untouched.
+    local left = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
+    local right = vim.api.nvim_open_win(
+      vim.api.nvim_create_buf(false, true),
+      true,
+      { split = "right", win = left }
+    )
+    self.left_win, self.right_win = left, right
+    return
+  end
+
+  local right = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
+  self.left_win, self.right_win = current, right
 end
 
 --- Turn off 'diff' in both windows if it happens to be set. Reused windows may still be
