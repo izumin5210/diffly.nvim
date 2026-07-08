@@ -158,6 +158,31 @@ local function set_cursor(lnum)
   child.lua("local lnum = ...; vim.api.nvim_win_set_cursor(_G.panel.win, { lnum, 0 })", { lnum })
 end
 
+--- `vim.fn.maparg(key, "n", false, true)` for `_G.panel.buf`, stripped of its
+--- (unserializable) `callback` field before crossing the RPC boundary -- mirrors
+--- tests/test_sidebyside.lua's helper of the same purpose.
+---@param key string
+---@return table
+local function buf_maparg(key)
+  return child.lua(
+    [[
+      local key = ...
+      local m = vim.api.nvim_buf_call(_G.panel.buf, function()
+        return vim.fn.maparg(key, "n", false, true)
+      end)
+      return { buffer = m.buffer, nowait = m.nowait, lhs = m.lhs }
+    ]],
+    { key }
+  )
+end
+
+--- True iff `m` (from `buf_maparg`) describes an actual BUFFER-LOCAL mapping.
+---@param m table
+---@return boolean
+local function mapped(m)
+  return m ~= nil and next(m) ~= nil and m.buffer == 1
+end
+
 local T = MiniTest.new_set({
   hooks = {
     pre_case = function()
@@ -337,6 +362,62 @@ T["q key calls session:close and closes the panel"] = function()
 
   eq(child.lua_get("_G.calls.close"), 1)
   eq(child.lua_get("vim.api.nvim_buf_is_valid(...)", { buf }), false)
+end
+
+---------------------------------------------------------------------------------------
+-- keymaps.universal on the panel (docs/design.md "Interface", the two-layer model): the
+-- same leader-prefixed keys that work everywhere else in difit (owned diff buffers, real
+-- file buffers -- see tests/test_sidebyside.lua/tests/test_unified.lua) must also work on
+-- the panel itself, reusing the exact same handlers as the single-key `v`/`s` above.
+---------------------------------------------------------------------------------------
+
+T["keymaps.universal (<leader>v/<leader>s/<leader>e) are buffer-local nowait maps on the panel"] = function()
+  for _, key in ipairs({ "<leader>v", "<leader>s", "<leader>e" }) do
+    local m = buf_maparg(key)
+    eq(mapped(m), true, key .. " missing on the panel buffer")
+    eq(m.nowait, 1, key .. " is not nowait")
+  end
+end
+
+T["<leader>v (keymaps.universal.toggle_viewed) on a file row calls session:toggle_viewed and auto-advances, same as v"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+
+  set_cursor(4) -- docs/guide.md
+  child.type_keys([[\v]]) -- the literal keys `<leader>v` sends with the default mapleader
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
+  eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
+  eq(cursor(), { 7, 0 }) -- row for lua/difit/new.lua
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+end
+
+T["<leader>s (keymaps.universal.toggle_mode) calls session:set_mode with the flipped mode, same as s"] = function()
+  child.type_keys([[\s]]) -- the literal keys `<leader>s` sends with the default mapleader
+
+  eq(child.lua_get("_G.calls.set_mode"), { "unified" })
+  eq(child.lua_get("_G.session.mode"), "unified")
+end
+
+T["<leader>e (keymaps.universal.focus_panel) is a harmless no-op when the panel is already focused"] = function()
+  child.cmd("vsplit")
+  local moved_away = child.lua_get("vim.api.nvim_get_current_win() ~= _G.panel.win")
+  eq(moved_away, true)
+
+  child.lua("vim.api.nvim_set_current_win(_G.panel.win)")
+  child.type_keys([[\e]])
+
+  eq(child.lua_get("vim.api.nvim_get_current_win() == _G.panel.win"), true)
+end
+
+T["keymaps.universal.toggle_mode = false disables only that key on the panel, leaving keymaps.panel's own s intact"] = function()
+  child.lua([[
+    require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })
+    _G.panel = require("difit.ui.panel").open(_G.session)
+  ]])
+
+  eq(mapped(buf_maparg("<leader>s")), false, "keymaps.universal.toggle_mode")
+  eq(mapped(buf_maparg("s")), true, "keymaps.panel.toggle_mode is unaffected")
+  eq(mapped(buf_maparg("<leader>v")), true, "other universal keys are unaffected")
 end
 
 T["buffer is not modifiable outside render"] = function()

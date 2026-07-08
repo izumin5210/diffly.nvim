@@ -410,6 +410,10 @@ end
 ---------------------------------------------------------------------------------------
 -- keymaps.diff on the unified buffer: before this fix it only ever carried `v`
 -- (toggle_viewed); `s`/`q`/`<leader>e` (toggle_mode/close/focus_panel) are new.
+--
+-- keymaps.universal (docs/design.md "Interface", the two-layer model): the unified buffer
+-- is always difit-owned, so -- like the side-by-side blob buffers -- it gets keymaps.diff
+-- AND keymaps.universal, not just the former.
 ---------------------------------------------------------------------------------------
 
 T["open(): the unified buffer gets keymaps.diff's toggle_mode/close/focus_panel in addition to v"] = function()
@@ -420,6 +424,34 @@ T["open(): the unified buffer gets keymaps.diff's toggle_mode/close/focus_panel 
   end
 end
 
+T["open(): the unified buffer also gets keymaps.universal's leader-prefixed keys"] = function()
+  local result = open(paths.modified)
+
+  for _, key in ipairs({ "<leader>v", "<leader>s", "<leader>e" }) do
+    eq(
+      mapped(buf_maparg(child, result.buf, key)),
+      true,
+      key .. " missing on the unified buffer (keymaps.universal)"
+    )
+  end
+end
+
+T["keymaps.universal.toggle_mode = false disables only that key, leaving keymaps.diff's own toggle_mode intact"] = function()
+  child.lua(
+    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+  )
+
+  local result = open(paths.modified)
+
+  eq(mapped(buf_maparg(child, result.buf, "<leader>s")), false, "keymaps.universal.toggle_mode")
+  eq(mapped(buf_maparg(child, result.buf, "s")), true, "keymaps.diff.toggle_mode is unaffected")
+  eq(
+    mapped(buf_maparg(child, result.buf, "<leader>v")),
+    true,
+    "other universal keys are unaffected"
+  )
+end
+
 T["open(): keymaps.diff maps on the unified buffer are set with nowait"] = function()
   local result = open(paths.modified)
 
@@ -427,6 +459,7 @@ T["open(): keymaps.diff maps on the unified buffer are set with nowait"] = funct
   eq(buf_maparg(child, result.buf, "s").nowait, 1)
   eq(buf_maparg(child, result.buf, "<leader>e").nowait, 1)
   eq(buf_maparg(child, result.buf, "q").nowait, 1)
+  eq(buf_maparg(child, result.buf, "<leader>v").nowait, 1)
 end
 
 T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = function()

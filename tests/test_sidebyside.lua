@@ -467,11 +467,12 @@ T["binary entries: both windows share a placeholder buffer without diffthis"] = 
 end
 
 ---------------------------------------------------------------------------------------
--- keymaps.diff / keymaps.file (the fix for "no discoverable way back to the panel, and
--- real file buffers have no difit keymaps at all")
+-- keymaps.diff / keymaps.universal (the two-layer model, docs/design.md "Interface"):
+-- difit-owned buffers (the left blob, and the right blob in head mode) get BOTH groups;
+-- the real worktree right buffer gets ONLY keymaps.universal, never keymaps.diff.
 ---------------------------------------------------------------------------------------
 
-T["worktree mode: left blob buffer gets the full keymaps.diff set"] = function()
+T["worktree mode: left blob buffer gets keymaps.diff AND keymaps.universal"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -480,11 +481,16 @@ T["worktree mode: left blob buffer gets the full keymaps.diff set"] = function()
 
   local left_buf = buf_of(child, "left_win")
   for _, key in ipairs({ "v", "s", "<leader>e", "q" }) do
-    eq(mapped(buf_maparg(child, left_buf, key)), true, key .. " missing on the left blob buffer")
+    eq(mapped(buf_maparg(child, left_buf, key)), true, key .. " missing (keymaps.diff)")
+  end
+  -- keymaps.universal's own keys (toggle_viewed/toggle_mode) are distinct lhs from
+  -- keymaps.diff's by default -- both must be present on the same owned buffer.
+  for _, key in ipairs({ "<leader>v", "<leader>s" }) do
+    eq(mapped(buf_maparg(child, left_buf, key)), true, key .. " missing (keymaps.universal)")
   end
 end
 
-T["worktree mode: real right buffer gets keymaps.file (leader-v/s/e), never keymaps.diff"] = function()
+T["worktree mode: real right buffer gets keymaps.universal (leader-v/s/e), never keymaps.diff"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -500,7 +506,7 @@ T["worktree mode: real right buffer gets keymaps.file (leader-v/s/e), never keym
   eq(mapped(buf_maparg(child, real_buf, "q")), false)
 end
 
-T["worktree mode: opening a second file removes keymaps.file from the first file's real buffer"] = function()
+T["worktree mode: opening a second file removes keymaps.universal from the first file's real buffer"] = function()
   local built = build(child, "worktree")
   local first = entry_by_path(built.entries, paths.modified)
   local second = entry_by_path(built.entries, paths.new)
@@ -527,7 +533,7 @@ T["worktree mode: opening a second file removes keymaps.file from the first file
   end
 end
 
-T["close(): keymaps.file maps are removed from the real buffer"] = function()
+T["close(): keymaps.universal maps are removed from the real buffer"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -542,7 +548,7 @@ T["close(): keymaps.file maps are removed from the real buffer"] = function()
   end
 end
 
-T["head mode: right blob buffer gets keymaps.diff (v/s/<leader>e/q), not keymaps.file"] = function()
+T["head mode: right blob buffer gets keymaps.diff (v/s/<leader>e/q) AND keymaps.universal (<leader>v/<leader>s)"] = function()
   local built = build(child, "head")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -554,18 +560,24 @@ T["head mode: right blob buffer gets keymaps.diff (v/s/<leader>e/q), not keymaps
     eq(
       mapped(buf_maparg(child, right_buf, key)),
       true,
-      key .. " missing on the head-mode right buffer"
+      key .. " missing on the head-mode right buffer (keymaps.diff)"
     )
   end
-  eq(
-    mapped(buf_maparg(child, right_buf, "<leader>v")),
-    false,
-    "keymaps.file must not leak into a difit-owned buffer"
-  )
+  -- Unlike the pre-universal-layer design, an owned buffer legitimately carries
+  -- keymaps.universal's keys too now -- it isn't "leaking", it's the two-layer model.
+  for _, key in ipairs({ "<leader>v", "<leader>s" }) do
+    eq(
+      mapped(buf_maparg(child, right_buf, key)),
+      true,
+      key .. " missing on the head-mode right buffer (keymaps.universal)"
+    )
+  end
 end
 
-T["keymaps.file.toggle_mode = false disables only that key"] = function()
-  child.lua([[require("difit.config").setup({ keymaps = { file = { toggle_mode = false } } })]])
+T["keymaps.universal.toggle_mode = false disables only that key on the real buffer"] = function()
+  child.lua(
+    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+  )
 
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
@@ -579,7 +591,24 @@ T["keymaps.file.toggle_mode = false disables only that key"] = function()
   eq(mapped(buf_maparg(child, real_buf, "<leader>e")), true)
 end
 
-T["diff and file keymaps are all set with nowait"] = function()
+T["keymaps.universal.toggle_mode = false disables only that key on an owned buffer too, leaving keymaps.diff's own toggle_mode intact"] = function()
+  child.lua(
+    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+  )
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  local left_buf = buf_of(child, "left_win")
+  eq(mapped(buf_maparg(child, left_buf, "<leader>s")), false, "keymaps.universal.toggle_mode")
+  eq(mapped(buf_maparg(child, left_buf, "s")), true, "keymaps.diff.toggle_mode is unaffected")
+  eq(mapped(buf_maparg(child, left_buf, "<leader>v")), true, "other universal keys are unaffected")
+end
+
+T["diff and universal keymaps are all set with nowait"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -588,12 +617,13 @@ T["diff and file keymaps are all set with nowait"] = function()
 
   local left_buf = buf_of(child, "left_win")
   eq(buf_maparg(child, left_buf, "v").nowait, 1)
+  eq(buf_maparg(child, left_buf, "<leader>v").nowait, 1)
 
   local real_buf = buf_of(child, "right_win")
   eq(buf_maparg(child, real_buf, "<leader>v").nowait, 1)
 end
 
-T["regression: buffer-local keymaps.file.toggle_viewed fires immediately despite a longer global mapping sharing its prefix"] = function()
+T["regression: buffer-local keymaps.universal.toggle_viewed fires immediately despite a longer global mapping sharing its prefix"] = function()
   -- The reported bug: without `nowait`, a user's own global mapping that happens to share
   -- our key as a prefix (e.g. a global `<leader>vs`) wins the ambiguity, because Neovim
   -- waits out 'timeoutlen' for a possible continuation instead of firing our shorter

@@ -1,8 +1,8 @@
 -- Shared buffer-local keymap plumbing for the diff views. Both `ui/sidebyside.lua` and
--- `ui/unified.lua` need to apply the same shaped config (`keymaps.diff`/`keymaps.file`) to
--- a buffer and later peel it off again (sidebyside's real right-hand buffer moves between
--- files across the same view instance's lifetime) -- this module is the one place that
--- logic lives, instead of each view re-deriving it.
+-- `ui/unified.lua` need to apply the same shaped config (`keymaps.diff`/`keymaps.universal`)
+-- to a buffer and later peel it off again (sidebyside's real right-hand buffer moves
+-- between files across the same view instance's lifetime) -- this module is the one place
+-- that logic lives, instead of each view re-deriving it.
 
 local M = {}
 
@@ -11,7 +11,7 @@ local M = {}
 ---@field callback fun()
 
 --- docs/refactor-v1.md R3: the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
---- call into for `config.keymaps.diff`/`keymaps.file`, replacing the old module-level
+--- call into for `config.keymaps.diff`/`keymaps.universal`, replacing the old module-level
 --- `_on_toggle_viewed`/`_on_toggle_mode`/`_on_focus_panel`/`_on_close` slots. Built once per
 --- session entry in `init.lua` (see `build_actions` there): every field resolves the LIVE
 --- entry through the R1 tabpage registry at call time (never by holding a reference to a

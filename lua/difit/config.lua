@@ -16,13 +16,28 @@ M.defaults = {
       close = "q",
       fold = "za",
     },
-    -- applied ONLY in difit-owned buffers (blob/unified), never in real file buffers
+    -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to `keymaps.universal`
+    -- below -- never in real file buffers. See ui/sidebyside.lua's `View:owned_buffer` /
+    -- ui/unified.lua's `setup_keymaps` for the deterministic apply order (diff first,
+    -- universal second) that decides which one wins if a user configures the same lhs in
+    -- both groups.
     diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
-    -- applied to REAL file buffers while shown in the viewer (the side-by-side worktree
-    -- right buffer): leader-prefixed so they don't collide with the buffer's own,
-    -- non-difit keymaps. No `close` here -- closing a real file buffer isn't "closing the
-    -- review", unlike in an owned diff buffer.
-    file = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
+    -- The two-layer model's universal layer (docs/design.md "Interface"): leader-prefixed,
+    -- real-buffer-safe keys that work in EVERY difit context -- difit-owned buffers (panel,
+    -- blob/unified; applied alongside `keymaps.panel`/`keymaps.diff` above) AND real file
+    -- buffers currently shown in the viewer (the side-by-side worktree right buffer, which
+    -- gets ONLY this group, never `keymaps.diff`). Leader-prefixed so they never collide
+    -- with a real buffer's own, non-difit keymaps. No `close` here -- closing a real file
+    -- buffer isn't "closing the review", unlike in an owned diff buffer.
+    --
+    -- Renamed from `keymaps.file` (pre-v1): the old name only made sense for the
+    -- real-file-buffer case; this group is now applied everywhere, so `universal` describes
+    -- it accurately in every context, not just that one.
+    universal = {
+      toggle_viewed = "<leader>v",
+      toggle_mode = "<leader>s",
+      focus_panel = "<leader>e",
+    },
   },
 }
 

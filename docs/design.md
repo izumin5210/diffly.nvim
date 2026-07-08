@@ -88,14 +88,21 @@ flat list toggle in the panel, fs-watch based refresh.
 - Single `:Difit` command with subcommands: `:Difit [base]` (open/focus), `:Difit close`,
   `:Difit toggle`, `:Difit clean`, with completion.
 - `setup()` is optional — the plugin works with defaults; `setup()` only overrides them.
-- No global keymaps. Buffer-local keymaps are provided by default and configurable: the
-  panel and difit-owned diff buffers (blob/unified) get the full `keymaps.diff` set
-  (toggle viewed, toggle side-by-side/unified, focus the panel, close the review). Real
-  file buffers shown in the viewer (the side-by-side worktree right buffer) get a
-  separate, leader-prefixed `keymaps.file` set (toggle viewed/mode, focus the panel; no
-  `close`) — mapped only while that buffer is the one currently open in the view, and
-  removed again once the view moves on to a different file or closes, so a real file
-  buffer never keeps difit's keymaps after the viewer stops showing it.
+- No global keymaps. Buffer-local keymaps follow a two-layer model, modeled on
+  diffview.nvim: a **universal** layer (`keymaps.universal`, leader-prefixed) of
+  real-buffer-safe keys — toggle viewed, toggle side-by-side/unified, focus the panel; no
+  `close` — that works identically in every difit context: the panel, difit-owned diff
+  buffers (blob/unified), and real file buffers shown in the viewer (the side-by-side
+  worktree right buffer) alike. On top of that, **local single-key shortcuts** apply only
+  where the buffer is difit-owned: the panel gets its own set (`keymaps.panel`: open,
+  toggle viewed, refresh, toggle mode, close, fold) and difit-owned diff buffers get the
+  full `keymaps.diff` set (toggle viewed, toggle side-by-side/unified, focus the panel,
+  close the review) in addition to `keymaps.universal` — real file buffers never get
+  single-key shortcuts, since those could collide with the buffer's own, unrelated
+  keymaps. On a real file buffer, `keymaps.universal` is mapped only while that buffer is
+  the one currently open in the view, and removed again once the view moves on to a
+  different file or closes, so a real file buffer never keeps difit's keymaps after the
+  viewer stops showing it.
 
 ### Tech
 

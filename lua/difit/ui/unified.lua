@@ -225,25 +225,19 @@ local function jump_to_file(self, buf)
   vim.api.nvim_win_set_cursor(win, { math.min(target_line, line_count), 0 })
 end
 
---- Apply the hardcoded jump key plus the full configurable `config.keymaps.diff` action
---- set (toggle_viewed/toggle_mode/focus_panel/close) to `buf`. This buffer is always
---- difit-owned (`difit://unified/...`), so it only ever gets `keymaps.diff`, never
---- `keymaps.file` -- see `ui/sidebyside.lua` for the real-buffer case.
----@param self difit.ui.UnifiedView
----@param buf integer
----@param entry difit.FileEntry
-local function setup_keymaps(self, buf, entry)
-  vim.keymap.set("n", "<CR>", function()
-    jump_to_file(self, buf)
-  end, { buffer = buf, silent = true, nowait = true, desc = "difit: jump to file" })
-
+--- Full `config.keymaps.diff` action set for the unified buffer (always difit-owned, so
+--- it gets `close` too -- see `ui/sidebyside.lua`'s identically-shaped helper of the same
+--- name for the diff-window case).
+---@param actions difit.ui.Actions
+---@param path string
+---@return table<string, difit.ui.KeymapAction>
+local function diff_keymap_spec(actions, path)
   local cfg = config.get().keymaps.diff
-  local actions = self.ctx.actions
-  ui_keymaps.apply(buf, {
+  return {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
-        actions.toggle_viewed(entry.path)
+        actions.toggle_viewed(path)
       end,
     },
     toggle_mode = {
@@ -264,7 +258,58 @@ local function setup_keymaps(self, buf, entry)
         actions.close()
       end,
     },
-  })
+  }
+end
+
+--- `config.keymaps.universal` action set, applied IN ADDITION to `diff_keymap_spec` above
+--- (see `setup_keymaps`) -- the universal layer must work in every difit context, including
+--- this always-difit-owned buffer, not just real file buffers (mirrors
+--- `ui/sidebyside.lua`'s `universal_keymap_spec`). No `close` entry: `keymaps.universal`
+--- never includes one (see config.lua).
+---@param actions difit.ui.Actions
+---@param path string
+---@return table<string, difit.ui.KeymapAction>
+local function universal_keymap_spec(actions, path)
+  local cfg = config.get().keymaps.universal
+  return {
+    toggle_viewed = {
+      key = cfg.toggle_viewed,
+      callback = function()
+        actions.toggle_viewed(path)
+      end,
+    },
+    toggle_mode = {
+      key = cfg.toggle_mode,
+      callback = function()
+        actions.toggle_mode()
+      end,
+    },
+    focus_panel = {
+      key = cfg.focus_panel,
+      callback = function()
+        actions.focus_panel()
+      end,
+    },
+  }
+end
+
+--- Apply the hardcoded jump key plus the full configurable `config.keymaps.diff` action
+--- set (toggle_viewed/toggle_mode/focus_panel/close), then `config.keymaps.universal` on
+--- top of it, to `buf`. Deterministic apply order (see config.lua): `keymaps.diff` first,
+--- `keymaps.universal` second -- `vim.keymap.set` overwrites on a shared lhs, so a user who
+--- configures the same key in both groups gets the universal binding (mirrors
+--- `ui/sidebyside.lua`'s `View:owned_buffer`).
+---@param self difit.ui.UnifiedView
+---@param buf integer
+---@param entry difit.FileEntry
+local function setup_keymaps(self, buf, entry)
+  vim.keymap.set("n", "<CR>", function()
+    jump_to_file(self, buf)
+  end, { buffer = buf, silent = true, nowait = true, desc = "difit: jump to file" })
+
+  local actions = self.ctx.actions
+  ui_keymaps.apply(buf, diff_keymap_spec(actions, entry.path))
+  ui_keymaps.apply(buf, universal_keymap_spec(actions, entry.path))
 end
 
 ---@param entry difit.FileEntry

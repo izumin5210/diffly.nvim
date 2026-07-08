@@ -704,14 +704,14 @@ T["bonus regression: <Plug>(difit-toggle-viewed) un-marking a real file buffer d
 end
 
 ---------------------------------------------------------------------------------------
--- keymaps.file / keymaps.diff's new toggle_mode/focus_panel/close actions, and
+-- keymaps.universal / keymaps.diff's new toggle_mode/focus_panel/close actions, and
 -- `:Difit focus` -- the fix for "no discoverable way back to the panel, and no way to
 -- toggle mode or mark viewed from the real file buffer". Default mapleader is backslash
 -- (never overridden here), so `<leader>x` is sent as the literal two keys `\x` below
 -- (mirrors tests/test_sidebyside.lua and tests/test_unified.lua).
 ---------------------------------------------------------------------------------------
 
-T["from the side-by-side right buffer, <leader>s (keymaps.file.toggle_mode) switches to unified"] = function()
+T["from the side-by-side right buffer, <leader>s (keymaps.universal.toggle_mode) switches to unified"] = function()
   child.cmd("Difit")
 
   set_cursor(child, 5) -- src/mod.lua
@@ -723,7 +723,7 @@ T["from the side-by-side right buffer, <leader>s (keymaps.file.toggle_mode) swit
   eq(session_field(child, "mode"), "unified")
 end
 
-T["<leader>v (keymaps.file.toggle_viewed) from the real file buffer marks viewed, auto-advances, and syncs the panel's cursor"] = function()
+T["<leader>v (keymaps.universal.toggle_viewed) from the real file buffer marks viewed, auto-advances, and syncs the panel's cursor"] = function()
   child.cmd("Difit")
 
   set_cursor(child, 5) -- src/mod.lua
@@ -742,7 +742,7 @@ T["<leader>v (keymaps.file.toggle_viewed) from the real file buffer marks viewed
   )
 end
 
-T["<leader>e (keymaps.file.focus_panel) from the real file buffer focuses the panel"] = function()
+T["<leader>e (keymaps.universal.focus_panel) from the real file buffer focuses the panel"] = function()
   child.cmd("Difit")
 
   set_cursor(child, 5)
@@ -752,6 +752,21 @@ T["<leader>e (keymaps.file.focus_panel) from the real file buffer focuses the pa
   child.type_keys([[\e]])
 
   eq(panel_is_current_win(child), true)
+end
+
+T["<leader>v (keymaps.universal.toggle_viewed) pressed IN THE PANEL marks the row and auto-advances exactly like v"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys([[\v]]) -- the literal keys `<leader>v` sends with the default mapleader
+
+  eq(is_viewed(child, paths.modified), true)
+  eq(panel_lines(child)[2], "1/4 viewed")
+  -- Same auto-advance target as the `v` key (scenario 2 above): next_unviewed wraps to
+  -- src/new.lua, and the panel's own cursor follows it (on_toggle_viewed manages this
+  -- directly, since the toggle originated in the panel itself).
+  eq(session_field(child, "current_path"), paths.new)
+  eq(panel_cursor_row(child), 6)
 end
 
 T["q in the unified buffer (keymaps.diff.close) closes the entire viewer"] = function()
@@ -820,7 +835,7 @@ T["round-trip regression: side-by-side <-> unified is reachable from every entry
   -- (c) from the side-by-side real right buffer, `<leader>s` -> unified -> (in the
   -- unified buffer) `s` -> side-by-side. `open()`/`set_mode` already leave focus on the
   -- real right buffer in worktree mode, so no extra navigation is needed here.
-  child.type_keys([[\s]]) -- keymaps.file.toggle_mode
+  child.type_keys([[\s]]) -- keymaps.universal.toggle_mode
   assert_unified_layout(child)
 
   child.type_keys("s") -- keymaps.diff.toggle_mode, from inside the unified buffer

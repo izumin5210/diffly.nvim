@@ -517,7 +517,7 @@ function M.focus()
 end
 
 --- Flip between side-by-side and unified: the backing function for both views'
---- `toggle_mode` seam (`keymaps.diff`/`keymaps.file`), mirroring
+--- `toggle_mode` seam (`keymaps.diff`/`keymaps.universal`), mirroring
 --- `lua/difit/ui/panel.lua`'s own `s` keymap.
 function M.toggle_mode()
   local entry = current_entry()

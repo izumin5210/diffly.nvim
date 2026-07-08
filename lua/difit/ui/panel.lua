@@ -425,6 +425,37 @@ local function set_keymaps(panel)
       end, { buffer = panel.buf, nowait = true, silent = true, desc = "difit: " .. name })
     end
   end
+
+  -- `keymaps.universal`: the same leader-prefixed keys that work in every other difit
+  -- context (owned diff buffers, real file buffers -- see ui/sidebyside.lua/ui/unified.lua)
+  -- must also work on the panel, so a user doesn't have to remember a different key just
+  -- because the cursor happens to be here. toggle_viewed/toggle_mode reuse the EXACT same
+  -- handlers as the panel's own `v`/`s` above (identical row-under-cursor/auto-advance
+  -- semantics, not a re-implementation); focus_panel is `panel:focus()`, a harmless no-op
+  -- since this fires from the panel buffer itself. Applied AFTER `keymaps.panel` above, so
+  -- a user-configured lhs collision between the two groups resolves to the universal
+  -- binding, same deterministic order as the owned diff buffers.
+  local universal_actions = {
+    toggle_viewed = on_toggle_viewed,
+    toggle_mode = on_toggle_mode,
+    focus_panel = function(p)
+      p:focus()
+    end,
+  }
+  local universal = config.get().keymaps.universal
+  for name, fn in pairs(universal_actions) do
+    local lhs = universal[name]
+    if lhs then -- `false` (or unset) disables the mapping
+      vim.keymap.set("n", lhs, function()
+        fn(panel)
+      end, {
+        buffer = panel.buf,
+        nowait = true,
+        silent = true,
+        desc = "difit: universal " .. name,
+      })
+    end
+  end
 end
 
 ---@param session difit.Session

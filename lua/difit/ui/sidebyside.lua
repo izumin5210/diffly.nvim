@@ -67,8 +67,8 @@ end
 ---@field right_win integer?  -- ditto
 ---@field owned_wins integer[]  -- every window this view currently owns; destroyed by close()
 ---@field owned_bufs table<integer, boolean>
----@field file_buf integer?    -- real bufnr currently carrying `keymaps.file`, if any
----@field file_keys string[]?  -- keys applied to `file_buf`
+---@field universal_buf integer?    -- real bufnr currently carrying `keymaps.universal`, if any
+---@field universal_keys string[]?  -- keys applied to `universal_buf`
 local View = {}
 View.__index = View
 
@@ -106,14 +106,17 @@ local function diff_keymap_spec(actions, path)
   }
 end
 
---- `config.keymaps.file` action set for the real right-hand worktree buffer showing
---- `path`. No `close` entry: closing a real file buffer doesn't mean "close the review"
---- (see config.lua).
+--- `config.keymaps.universal` action set: applied to the real right-hand worktree buffer
+--- showing `path` (its ONLY keymap group -- see `apply_universal_keymaps`), and a second
+--- time, IN ADDITION to `diff_keymap_spec`, to every difit-owned buffer this view creates
+--- (see `View:owned_buffer`) -- the universal layer must work everywhere. No `close` entry:
+--- closing a real file buffer doesn't mean "close the review" (see config.lua); an owned
+--- buffer still gets `close` from `diff_keymap_spec`.
 ---@param actions difit.ui.Actions
 ---@param path string
 ---@return table<string, difit.ui.KeymapAction>
-local function file_keymap_spec(actions, path)
-  local cfg = config.get().keymaps.file
+local function universal_keymap_spec(actions, path)
+  local cfg = config.get().keymaps.universal
   return {
     toggle_viewed = {
       key = cfg.toggle_viewed,
@@ -148,35 +151,40 @@ end
 function View:owned_buffer(name, lines, opts)
   local bufnr = scratch.find_or_create(name, { lines = lines, filename = opts.filename })
   self.owned_bufs[bufnr] = true
+  -- Deterministic apply order (see config.lua): `keymaps.diff` first, `keymaps.universal`
+  -- second -- `vim.keymap.set` overwrites on a shared lhs, so a user who configures the
+  -- same key in both groups gets the universal binding, consistently across every owned
+  -- buffer (mirrors `ui/unified.lua`'s `setup_keymaps`).
   ui_keymaps.apply(bufnr, diff_keymap_spec(self.ctx.actions, opts.entry_path))
+  ui_keymaps.apply(bufnr, universal_keymap_spec(self.ctx.actions, opts.entry_path))
   return bufnr
 end
 
---- Apply `keymaps.file` to the real worktree buffer `bufnr` (showing `path`), first
+--- Apply `keymaps.universal` to the real worktree buffer `bufnr` (showing `path`), first
 --- peeling the same keys off whatever buffer held them before -- otherwise a real file
 --- buffer that stops being "the current file" (the view moved on to a different one)
 --- would keep responding to difit's keymaps forever, since nothing else ever touches a
 --- real file buffer's own keymaps.
 ---@param bufnr integer
 ---@param path string
-function View:apply_file_keymaps(bufnr, path)
-  if self.file_buf and self.file_buf ~= bufnr then
-    ui_keymaps.remove(self.file_buf, self.file_keys or {})
+function View:apply_universal_keymaps(bufnr, path)
+  if self.universal_buf and self.universal_buf ~= bufnr then
+    ui_keymaps.remove(self.universal_buf, self.universal_keys or {})
   end
-  self.file_keys = ui_keymaps.apply(bufnr, file_keymap_spec(self.ctx.actions, path))
-  self.file_buf = bufnr
+  self.universal_keys = ui_keymaps.apply(bufnr, universal_keymap_spec(self.ctx.actions, path))
+  self.universal_buf = bufnr
 end
 
---- Peel `keymaps.file` off whatever real buffer currently holds them, if any. Called
+--- Peel `keymaps.universal` off whatever real buffer currently holds them, if any. Called
 --- whenever the right window stops showing a real file (deleted-file scratch, binary
 --- placeholder, `close()`) -- the previous real buffer is left alone otherwise (design.md:
 --- editing/`:w` on it must keep working normally), it just must not keep difit's keymaps.
-function View:clear_file_keymaps()
-  if self.file_buf then
-    ui_keymaps.remove(self.file_buf, self.file_keys or {})
+function View:clear_universal_keymaps()
+  if self.universal_buf then
+    ui_keymaps.remove(self.universal_buf, self.universal_keys or {})
   end
-  self.file_buf = nil
-  self.file_keys = nil
+  self.universal_buf = nil
+  self.universal_keys = nil
 end
 
 --- Build the two-window vertical pair on first use, splitting rightward from
@@ -287,10 +295,10 @@ function View:set_right_worktree(entry, spec)
       { entry_path = entry.path }
     )
     vim.api.nvim_win_set_buf(self.right_win, bufnr)
-    -- The right window no longer shows a real file -- drop whatever `keymaps.file` maps
-    -- the previous one carried instead of leaving them dangling on a buffer this view no
-    -- longer has any window pointed at.
-    self:clear_file_keymaps()
+    -- The right window no longer shows a real file -- drop whatever `keymaps.universal`
+    -- maps the previous one carried instead of leaving them dangling on a buffer this view
+    -- no longer has any window pointed at.
+    self:clear_universal_keymaps()
     return
   end
 
@@ -298,7 +306,7 @@ function View:set_right_worktree(entry, spec)
   vim.api.nvim_win_call(self.right_win, function()
     vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
   end)
-  self:apply_file_keymaps(vim.api.nvim_win_get_buf(self.right_win), entry.path)
+  self:apply_universal_keymaps(vim.api.nvim_win_get_buf(self.right_win), entry.path)
 end
 
 --- Populate the right window for `spec.right == "head"`: a read-only blob buffer of
@@ -334,7 +342,7 @@ function View:set_right_head(entry, spec)
   -- `session.lua`: a mode/right change always goes through a fresh view), but clearing
   -- here too is a cheap belt-and-suspenders against a real file's keymaps surviving a
   -- switch away from worktree mode.
-  self:clear_file_keymaps()
+  self:clear_universal_keymaps()
 end
 
 --- Binary entries never get `diffthis`; both windows just show the same one-line
@@ -342,8 +350,9 @@ end
 ---@param entry difit.FileEntry
 function View:show_binary(entry)
   -- Binary entries pre-empt `set_right_worktree` entirely (see `open()`), so the right
-  -- window stops showing a real file even in worktree mode -- drop its `keymaps.file` too.
-  self:clear_file_keymaps()
+  -- window stops showing a real file even in worktree mode -- drop its `keymaps.universal`
+  -- too.
+  self:clear_universal_keymaps()
   local bufnr = self:owned_buffer(
     scratch.name("binary", self.ctx.anchor, entry.path),
     { "binary file" },
@@ -397,7 +406,7 @@ end
 --- like any other window onto it closing would -- the buffer itself survives, hidden.
 function View:close()
   self:diffoff()
-  self:clear_file_keymaps()
+  self:clear_universal_keymaps()
 
   for _, win in ipairs(self.owned_wins) do
     if vim.api.nvim_win_is_valid(win) then
@@ -431,8 +440,8 @@ function M.new(ctx)
     right_win = nil,
     owned_wins = {},
     owned_bufs = {},
-    file_buf = nil, -- real bufnr currently carrying `keymaps.file`, if any
-    file_keys = nil, -- keys applied to `file_buf`, for `ui_keymaps.remove`
+    universal_buf = nil, -- real bufnr currently carrying `keymaps.universal`, if any
+    universal_keys = nil, -- keys applied to `universal_buf`, for `ui_keymaps.remove`
   }, View)
 end
 

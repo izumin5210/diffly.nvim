@@ -91,11 +91,13 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
         close = "q",
         fold = "za",
       },
-      -- applied ONLY in difit-owned buffers (blob/unified), never real files
+      -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to
+      -- keymaps.universal
       diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
-      -- applied to REAL file buffers while shown in the viewer (the side-by-side
-      -- worktree right buffer); removed again once the view moves on or closes
-      file = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
+      -- the universal layer: works everywhere (panel, owned diff buffers, AND
+      -- real file buffers shown in the viewer); real file buffers get ONLY
+      -- this group
+      universal = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
     },
   }
 <
@@ -115,10 +117,33 @@ Notes:
 4. Keymaps                                                     *difit-keymaps*
 
 No global keymaps are defined. All of the following are buffer-local and
-configurable via `keymaps.panel`/`keymaps.diff`/`keymaps.file` (see
+configurable via `keymaps.universal`/`keymaps.panel`/`keymaps.diff` (see
 |difit-config|).
 
-Panel (the left-hand file tree) ~
+difit.nvim uses a two-layer keymap model, modeled on diffview.nvim: a
+UNIVERSAL layer of leader-prefixed keys that work identically in every difit
+context -- the panel, difit-owned diff buffers, and real file buffers shown
+in the viewer alike -- plus LOCAL single-key shortcuts that only apply where
+the buffer is difit-owned (so they can never collide with a real file's own,
+unrelated keymaps).
+
+Universal (all difit windows) ~
+  <leader>v    Toggle the current file as viewed/un-viewed (auto-advances to
+               the next un-viewed file when `auto_advance` is enabled).
+  <leader>s    Toggle between side-by-side and unified diff modes.
+  <leader>e    Focus the panel (same as `:Difit focus`).
+
+  Works everywhere: the panel, the side-by-side blob windows, the unified
+  view, and real file buffers currently shown in the viewer (the side-by-side
+  view's worktree right-hand window) -- the one place these keys matter most,
+  since real buffers get no local shortcuts at all. There is no universal
+  `close`: closing a real file buffer isn't "closing the review". On a real
+  file buffer these maps are applied only while it is the one currently open
+  in the view, and are removed again the moment the view opens a different
+  file or the review closes -- a real file buffer never keeps difit's
+  keymaps once the viewer stops showing it.
+
+File panel ~
   <CR>    Open the file under the cursor (or toggle a directory's fold).
   v       Toggle the file under the cursor as viewed/un-viewed. When
           `auto_advance` is enabled (the default), the cursor and diff jump
@@ -129,31 +154,16 @@ Panel (the left-hand file tree) ~
   za      Toggle the fold of the directory under the cursor (or its parent,
           when the cursor is on a file row) -- mirrors native `za`.
 
-Diff buffers (difit-owned side-by-side/unified buffers only) ~
+difit diff buffers ~
+Difit-owned buffers only (the side-by-side blob windows and the unified
+view) -- never real file buffers, which get only the universal layer above.
   v            Toggle the current file as viewed/un-viewed (same key and
                semantics as the panel's `v`).
   s            Toggle between side-by-side and unified diff modes.
-  <leader>e    Focus the panel (same as `:Difit focus`).
   q            Close the review UI (same as `:Difit close`/the panel's `q`).
 
   In the unified view specifically, `<CR>` (hardcoded, not configurable)
   jumps from a diff line to the corresponding line of the real file.
-
-Real file buffers ~
-`keymaps.file` is applied to REAL (non-difit-owned) file buffers currently
-shown in the viewer -- in practice, the side-by-side view's worktree
-right-hand window (`right = "worktree"`, the default). Its keys are
-leader-prefixed by default so they don't collide with the buffer's own,
-unrelated keymaps:
-  <leader>v    Toggle the current file as viewed/un-viewed.
-  <leader>s    Toggle between side-by-side and unified diff modes.
-  <leader>e    Focus the panel (same as `:Difit focus`).
-
-There is no `close` in `keymaps.file`: closing a real file buffer isn't
-"closing the review". These maps are applied only while the buffer is the
-one currently open in the view, and are removed again the moment the view
-opens a different file or the review closes -- a real file buffer never
-keeps difit's keymaps once the viewer stops showing it.
 
                                                  *<Plug>(difit-toggle-viewed)*
                                                     *<Plug>(difit-toggle-mode)*
@@ -177,7 +187,8 @@ None has a default binding; map them yourself if wanted: >lua
 
 Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
 and is shared between the panel, the diff buffers, and real file buffers: `v`
-(panel/diff buffers), `<leader>v` (real file buffers, `keymaps.file`), and
+(panel/diff buffers), `<leader>v` (the universal layer, `keymaps.universal`,
+which also works on the panel and diff buffers), and
 `<Plug>(difit-toggle-viewed)` all record the same mark.
 
 Key ~
