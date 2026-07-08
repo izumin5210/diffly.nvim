@@ -7,7 +7,7 @@ if vim.g.loaded_difit then
 end
 vim.g.loaded_difit = true
 
-local SUBCOMMANDS = { "close", "toggle", "clean", "refresh" }
+local SUBCOMMANDS = { "close", "toggle", "clean", "refresh", "focus" }
 
 ---@return string[]
 local function local_branches()
@@ -34,9 +34,17 @@ vim.api.nvim_create_user_command("Difit", function(cmd_opts)
 end, {
   nargs = "*",
   complete = complete,
-  desc = "Open/control the difit review UI (subcommands: close, toggle, clean, refresh)",
+  desc = "Open/control the difit review UI (subcommands: close, toggle, clean, refresh, focus)",
 })
 
 vim.keymap.set("n", "<Plug>(difit-toggle-viewed)", function()
   require("difit").toggle_viewed_current()
 end, { desc = "difit: toggle viewed for the current buffer's file" })
+
+vim.keymap.set("n", "<Plug>(difit-toggle-mode)", function()
+  require("difit").toggle_mode()
+end, { desc = "difit: toggle side-by-side/unified" })
+
+vim.keymap.set("n", "<Plug>(difit-focus-panel)", function()
+  require("difit").focus()
+end, { desc = "difit: focus the panel" })

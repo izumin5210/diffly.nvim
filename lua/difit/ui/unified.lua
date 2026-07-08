@@ -5,14 +5,18 @@
 
 local config = require("difit.config")
 local git = require("difit.git")
+local ui_keymaps = require("difit.ui.keymaps")
 
 local M = {}
 
---- Module-level seam for `config.keymaps.diff.toggle_viewed`, mirroring the pattern used
---- by the side-by-side view: this module has no session dependency of its own, so the
---- integration WP overrides this to actually record viewed state. No-op by default.
+--- Module-level seams for `config.keymaps.diff`, mirroring the pattern used by the
+--- side-by-side view: this module has no session dependency of its own, so the
+--- integration WP overrides these to actually drive the session. No-ops by default.
 ---@param path string
 function M._on_toggle_viewed(path) end
+function M._on_toggle_mode() end
+function M._on_focus_panel() end
+function M._on_close() end
 
 ---@class difit.ui.UnifiedBufMeta
 ---@field path string      -- entry.path, relative to toplevel
@@ -201,7 +205,10 @@ local function jump_to_file(self, buf)
   vim.api.nvim_win_set_cursor(win, { math.min(target_line, line_count), 0 })
 end
 
---- Apply the hardcoded jump key plus the configurable toggle-viewed key to `buf`.
+--- Apply the hardcoded jump key plus the full configurable `config.keymaps.diff` action
+--- set (toggle_viewed/toggle_mode/focus_panel/close) to `buf`. This buffer is always
+--- difit-owned (`difit://unified/...`), so it only ever gets `keymaps.diff`, never
+--- `keymaps.file` -- see `ui/sidebyside.lua` for the real-buffer case.
 ---@param self difit.ui.UnifiedView
 ---@param buf integer
 ---@param entry difit.FileEntry
@@ -210,12 +217,33 @@ local function setup_keymaps(self, buf, entry)
     jump_to_file(self, buf)
   end, { buffer = buf, silent = true, nowait = true, desc = "difit: jump to file" })
 
-  local toggle_key = config.get().keymaps.diff.toggle_viewed
-  if toggle_key then
-    vim.keymap.set("n", toggle_key, function()
-      M._on_toggle_viewed(entry.path)
-    end, { buffer = buf, silent = true, desc = "difit: toggle viewed" })
-  end
+  local cfg = config.get().keymaps.diff
+  ui_keymaps.apply(buf, {
+    toggle_viewed = {
+      key = cfg.toggle_viewed,
+      callback = function()
+        M._on_toggle_viewed(entry.path)
+      end,
+    },
+    toggle_mode = {
+      key = cfg.toggle_mode,
+      callback = function()
+        M._on_toggle_mode()
+      end,
+    },
+    focus_panel = {
+      key = cfg.focus_panel,
+      callback = function()
+        M._on_focus_panel()
+      end,
+    },
+    close = {
+      key = cfg.close,
+      callback = function()
+        M._on_close()
+      end,
+    },
+  })
 end
 
 ---@param entry difit.FileEntry

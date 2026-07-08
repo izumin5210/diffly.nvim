@@ -16,6 +16,32 @@ local function realpath(path)
   return vim.uv.fs_realpath(path)
 end
 
+--- `vim.fn.maparg(key, "n", false, true)` for `bufnr`, stripped of its (unserializable)
+--- `callback` field before crossing the RPC boundary. Only `buffer == 1` distinguishes an
+--- actual buffer-local mapping from `maparg`'s fallback to a same-named global one.
+---@param child table
+---@param bufnr integer
+---@param key string
+---@return table
+local function buf_maparg(child, bufnr, key)
+  return child.lua(
+    [[
+      local bufnr, key = ...
+      local m = vim.api.nvim_buf_call(bufnr, function()
+        return vim.fn.maparg(key, "n", false, true)
+      end)
+      return { buffer = m.buffer, nowait = m.nowait, lhs = m.lhs }
+    ]],
+    { bufnr, key }
+  )
+end
+
+---@param m table
+---@return boolean
+local function mapped(m)
+  return m ~= nil and next(m) ~= nil and m.buffer == 1
+end
+
 local repo, paths, child
 
 --- Build a real difit.RepoIdentity + entries map (keyed by path) + a difit.DiffSpec for
@@ -315,6 +341,51 @@ T["close(): wipes owned buffers and closes its window"] = function()
 
   local win_valid = child.lua([[return vim.api.nvim_win_is_valid(...)]], { first.win })
   eq(win_valid, false)
+end
+
+---------------------------------------------------------------------------------------
+-- keymaps.diff on the unified buffer: before this fix it only ever carried `v`
+-- (toggle_viewed); `s`/`q`/`<leader>e` (toggle_mode/close/focus_panel) are new.
+---------------------------------------------------------------------------------------
+
+T["open(): the unified buffer gets keymaps.diff's toggle_mode/close/focus_panel in addition to v"] = function()
+  local result = open(paths.modified)
+
+  for _, key in ipairs({ "v", "s", "<leader>e", "q" }) do
+    eq(mapped(buf_maparg(child, result.buf, key)), true, key .. " missing on the unified buffer")
+  end
+end
+
+T["open(): keymaps.diff maps on the unified buffer are set with nowait"] = function()
+  local result = open(paths.modified)
+
+  eq(buf_maparg(child, result.buf, "v").nowait, 1)
+  eq(buf_maparg(child, result.buf, "s").nowait, 1)
+  eq(buf_maparg(child, result.buf, "<leader>e").nowait, 1)
+  eq(buf_maparg(child, result.buf, "q").nowait, 1)
+end
+
+T["toggle_mode/focus_panel/close seams fire when their keys are pressed"] = function()
+  child.lua([[
+    _G.__calls = { toggle_mode = 0, focus_panel = 0, close = 0 }
+    unified._on_toggle_mode = function()
+      _G.__calls.toggle_mode = _G.__calls.toggle_mode + 1
+    end
+    unified._on_focus_panel = function()
+      _G.__calls.focus_panel = _G.__calls.focus_panel + 1
+    end
+    unified._on_close = function()
+      _G.__calls.close = _G.__calls.close + 1
+    end
+  ]])
+
+  open(paths.modified)
+
+  child.type_keys("s")
+  child.type_keys([[\e]]) -- the literal keys `<leader>e` sends with the default mapleader
+  child.type_keys("q")
+
+  eq(child.lua_get("_G.__calls"), { toggle_mode = 1, focus_panel = 1, close = 1 })
 end
 
 return T

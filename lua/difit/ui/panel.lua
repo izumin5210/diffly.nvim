@@ -296,6 +296,21 @@ local function row_for_path(panel, path)
   return nil
 end
 
+--- Move the cursor to `path`'s row WITHOUT taking window focus. `on_toggle_viewed` below
+--- already does this itself when the toggle originates *in* the panel; this public
+--- method is for the opposite direction -- `init.lua`'s `toggle_viewed_and_advance`, which
+--- runs when a diff/file buffer's own `toggle_viewed` key advances to the next file, needs
+--- a way to keep the panel's cursor in sync without stealing focus away from wherever the
+--- user actually is (the diff/file buffer). A no-op when `path` isn't currently a visible
+--- row (e.g. hidden behind a fold).
+---@param path string
+function Panel:set_cursor(path)
+  local lnum = row_for_path(self, path)
+  if lnum and vim.api.nvim_win_is_valid(self.win) then
+    pcall(vim.api.nvim_win_set_cursor, self.win, { lnum, 0 })
+  end
+end
+
 ---@param node difit.TreeNode
 ---@return string|nil
 local function parent_dir_path(node)

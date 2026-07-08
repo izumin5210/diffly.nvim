@@ -55,6 +55,7 @@ the plugin works with its defaults untouched.
 :Difit close    " close the review UI and restore your previous layout
 :Difit toggle   " open, or close if already open
 :Difit refresh  " recompute the diff
+:Difit focus    " focus the panel window from wherever you currently are
 :Difit clean    " remove viewed state for the current review (prompts first)
 :Difit clean all
 ```
@@ -63,25 +64,40 @@ the plugin works with its defaults untouched.
 
 ### Keymaps
 
-No global keymaps are defined; everything below is buffer-local to difit's own buffers and
-configurable via `keymaps.panel`/`keymaps.diff` (see [Configuration](#configuration)).
+No global keymaps are defined. Everything below is buffer-local and configurable via
+`keymaps.panel`/`keymaps.diff`/`keymaps.file` (see [Configuration](#configuration)).
 
-| Where        | Key    | Action                                                      |
-| ------------ | ------ | ------------------------------------------------------------ |
-| Panel        | `<CR>` | Open the file under the cursor / toggle a directory's fold  |
-| Panel        | `v`    | Toggle viewed (auto-advances to the next un-viewed file)    |
-| Panel        | `R`    | Refresh the diff                                            |
-| Panel        | `s`    | Toggle side-by-side ⇔ unified                                |
-| Panel        | `q`    | Close the review UI                                         |
-| Panel        | `za`   | Toggle fold (mirrors native `za`)                            |
-| Diff buffers | `v`    | Toggle viewed for the current file                           |
-| Unified diff | `<CR>` | Jump to the corresponding real-file line (hardcoded)         |
+| Where             | Key           | Action                                                     |
+| ----------------- | ------------- | ------------------------------------------------------------ |
+| Panel              | `<CR>`        | Open the file under the cursor / toggle a directory's fold |
+| Panel              | `v`           | Toggle viewed (auto-advances to the next un-viewed file)   |
+| Panel              | `R`           | Refresh the diff                                           |
+| Panel              | `s`           | Toggle side-by-side ⇔ unified                                |
+| Panel              | `q`           | Close the review UI                                        |
+| Panel              | `za`          | Toggle fold (mirrors native `za`)                           |
+| Diff buffers*      | `v`           | Toggle viewed for the current file                          |
+| Diff buffers*      | `s`           | Toggle side-by-side ⇔ unified                                |
+| Diff buffers*      | `<leader>e`   | Focus the panel                                             |
+| Diff buffers*      | `q`           | Close the review UI                                         |
+| Unified diff       | `<CR>`        | Jump to the corresponding real-file line (hardcoded)        |
+| Real file buffers† | `<leader>v`   | Toggle viewed for the current file                          |
+| Real file buffers† | `<leader>s`   | Toggle side-by-side ⇔ unified                                |
+| Real file buffers† | `<leader>e`   | Focus the panel                                              |
 
-Real file buffers (e.g. the side-by-side view's right-hand window) get no default mapping;
-map `<Plug>(difit-toggle-viewed)` yourself to toggle viewed from there too:
+\* difit-owned buffers only (the side-by-side blob windows and the unified view).
+† real, non-difit-owned buffers currently shown in the viewer (the side-by-side view's
+worktree right-hand window); these maps are removed again once the view moves on to a
+different file or the review closes, so a real file buffer never keeps difit's keymaps
+once the viewer stops showing it. There is no `close` here — closing a real file buffer
+isn't "closing the review".
+
+`<Plug>` mappings are also available if you'd rather bind your own keys (e.g. to reach
+these actions from buffers difit doesn't map by default):
 
 ```lua
 vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
+vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
+vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
 ```
 
 ## Configuration
@@ -106,7 +122,10 @@ require("difit").setup({
       fold = "za",
     },
     -- applied ONLY in difit-owned buffers (blob/unified), never real files
-    diff = { toggle_viewed = "v" },
+    diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+    -- applied to REAL file buffers while shown in the viewer (the side-by-side
+    -- worktree right buffer); removed again once the view moves on or closes
+    file = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
   },
 })
 ```

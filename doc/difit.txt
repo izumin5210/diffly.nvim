@@ -53,6 +53,11 @@ Call it only to override them: >lua
                         `refresh` key, see |difit-keymaps|). Also runs
                         automatically on `BufWritePost`/`FocusGained`.
 
+:Difit focus            Focus the panel window (same as
+                        |<Plug>(difit-focus-panel)|, or the `focus_panel` key
+                        in |difit-keymaps|). A no-op with a notice when no
+                        review is open.
+
 :Difit clean            Prompt to delete the *current* review's persisted
                         viewed state (the key the currently open review uses,
                         or the key that would be resolved if none is open).
@@ -60,9 +65,9 @@ Call it only to override them: >lua
 :Difit clean all        Prompt to delete every persisted viewed-state file
                         for every review, across all repos.
 
-Completion offers the four subcommands above plus the repo's local branch
-names, so `:Difit <Tab>` can be used either to pick a subcommand or to jump
-straight to reviewing against a specific base branch.
+Completion offers the subcommands above plus the repo's local branch names,
+so `:Difit <Tab>` can be used either to pick a subcommand or to jump straight
+to reviewing against a specific base branch.
 
 ==============================================================================
 3. Configuration                                                *difit-config*
@@ -87,7 +92,10 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
         fold = "za",
       },
       -- applied ONLY in difit-owned buffers (blob/unified), never real files
-      diff = { toggle_viewed = "v" },
+      diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+      -- applied to REAL file buffers while shown in the viewer (the side-by-side
+      -- worktree right buffer); removed again once the view moves on or closes
+      file = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
     },
   }
 <
@@ -107,7 +115,8 @@ Notes:
 4. Keymaps                                                     *difit-keymaps*
 
 No global keymaps are defined. All of the following are buffer-local and
-configurable via `keymaps.panel`/`keymaps.diff` (see |difit-config|).
+configurable via `keymaps.panel`/`keymaps.diff`/`keymaps.file` (see
+|difit-config|).
 
 Panel (the left-hand file tree) ~
   <CR>    Open the file under the cursor (or toggle a directory's fold).
@@ -121,28 +130,55 @@ Panel (the left-hand file tree) ~
           when the cursor is on a file row) -- mirrors native `za`.
 
 Diff buffers (difit-owned side-by-side/unified buffers only) ~
-  v       Toggle the current file as viewed/un-viewed (same key and
-          semantics as the panel's `v`). Never mapped in real file buffers --
-          use `<Plug>(difit-toggle-viewed)` for that (see below).
+  v            Toggle the current file as viewed/un-viewed (same key and
+               semantics as the panel's `v`).
+  s            Toggle between side-by-side and unified diff modes.
+  <leader>e    Focus the panel (same as `:Difit focus`).
+  q            Close the review UI (same as `:Difit close`/the panel's `q`).
 
   In the unified view specifically, `<CR>` (hardcoded, not configurable)
   jumps from a diff line to the corresponding line of the real file.
 
 Real file buffers ~
+`keymaps.file` is applied to REAL (non-difit-owned) file buffers currently
+shown in the viewer -- in practice, the side-by-side view's worktree
+right-hand window (`right = "worktree"`, the default). Its keys are
+leader-prefixed by default so they don't collide with the buffer's own,
+unrelated keymaps:
+  <leader>v    Toggle the current file as viewed/un-viewed.
+  <leader>s    Toggle between side-by-side and unified diff modes.
+  <leader>e    Focus the panel (same as `:Difit focus`).
+
+There is no `close` in `keymaps.file`: closing a real file buffer isn't
+"closing the review". These maps are applied only while the buffer is the
+one currently open in the view, and are removed again the moment the view
+opens a different file or the review closes -- a real file buffer never
+keeps difit's keymaps once the viewer stops showing it.
+
                                                  *<Plug>(difit-toggle-viewed)*
-`<Plug>(difit-toggle-viewed)` toggles the viewed mark for the file backing
-the current buffer, when that buffer belongs to the currently open review
-(e.g. the side-by-side view's right-hand window in `right = "worktree"`
-mode). It has no default binding; map it yourself if wanted: >lua
+                                                    *<Plug>(difit-toggle-mode)*
+                                                   *<Plug>(difit-focus-panel)*
+Three `<Plug>` mappings are available for binding your own keys, e.g. to
+reach these actions from buffers difit doesn't map by default:
+  <Plug>(difit-toggle-viewed)    Toggle the viewed mark for the file backing
+                                 the current buffer, when that buffer belongs
+                                 to the currently open review.
+  <Plug>(difit-toggle-mode)      Toggle between side-by-side and unified.
+  <Plug>(difit-focus-panel)      Focus the panel (same as `:Difit focus`).
+
+None has a default binding; map them yourself if wanted: >lua
   vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
+  vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
+  vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
 <
 
 ==============================================================================
 5. Viewed-state semantics                                 *difit-viewed-state*
 
 Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
-and is shared between the panel and the diff buffers: the same `v` key (or
-`<Plug>(difit-toggle-viewed)`) works from any of them.
+and is shared between the panel, the diff buffers, and real file buffers: `v`
+(panel/diff buffers), `<leader>v` (real file buffers, `keymaps.file`), and
+`<Plug>(difit-toggle-viewed)` all record the same mark.
 
 Key ~
 Viewed marks are persisted keyed by:

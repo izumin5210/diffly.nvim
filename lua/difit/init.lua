@@ -96,6 +96,15 @@ local function toggle_viewed_and_advance(path)
     local nxt = M._session:next_unviewed(path)
     if nxt then
       M._session:open_file(nxt)
+      -- `session:open_file` only moves the *view*; unlike the panel's own toggle_viewed
+      -- keymap (which manages its own cursor directly), this call originates from a
+      -- diff/file buffer, so the panel's cursor would otherwise keep sitting on whatever
+      -- row it was on before the advance -- `<leader>e` (focus panel) right after this
+      -- would land on the wrong row. `Panel:set_cursor` only moves the cursor, never
+      -- focus, so it can't steal focus away from wherever the user actually is.
+      if M._panel then
+        M._panel:set_cursor(nxt)
+      end
     end
   end
 end
@@ -105,6 +114,28 @@ end
 -- ever reads `M._session` at call time, so there is nothing to re-wire per `:Difit` call.
 sidebyside._on_toggle_viewed = toggle_viewed_and_advance
 unified._on_toggle_viewed = toggle_viewed_and_advance
+
+-- Same pattern for the new `toggle_mode`/`focus_panel`/`close` seams (config.keymaps.diff
+-- and .file): both views delegate to the same `M.*` entry points a user's own <Plug>
+-- mapping or `:Difit` subcommand would call, so there is exactly one implementation of
+-- "what toggling mode/focusing the panel/closing the review means" regardless of which
+-- buffer the key was pressed in.
+local function on_toggle_mode_seam()
+  M.toggle_mode()
+end
+local function on_focus_panel_seam()
+  M.focus()
+end
+local function on_close_seam()
+  M.close()
+end
+
+sidebyside._on_toggle_mode = on_toggle_mode_seam
+unified._on_toggle_mode = on_toggle_mode_seam
+sidebyside._on_focus_panel = on_focus_panel_seam
+unified._on_focus_panel = on_focus_panel_seam
+sidebyside._on_close = on_close_seam
+unified._on_close = on_close_seam
 
 --- `session:set_mode()` always builds a brand-new `difit.View` via the factory (see
 --- session.lua), and neither view module closes its *windows* on `close()` -- only its
@@ -365,6 +396,33 @@ function M.refresh()
   end
 end
 
+--- Focus the panel window: the backing function for `:Difit focus`,
+--- `<Plug>(difit-focus-panel)`, and both views' `focus_panel` seam (problem 1 in the bug
+--- report this shipped with -- pressing <CR> in the panel had no discoverable way back to
+--- it). `Panel:focus()` itself calls `nvim_set_current_win`, which also switches to the
+--- panel's tabpage when called from the origin tabpage, so there is nothing tabpage-
+--- specific to do here.
+function M.focus()
+  if not M._session then
+    vim.notify("difit: no review is open", vim.log.levels.WARN)
+    return
+  end
+  if M._panel then
+    M._panel:focus()
+  end
+end
+
+--- Flip between side-by-side and unified: the backing function for both views'
+--- `toggle_mode` seam (`keymaps.diff`/`keymaps.file`), mirroring
+--- `lua/difit/ui/panel.lua`'s own `s` keymap.
+function M.toggle_mode()
+  if not M._session then
+    return
+  end
+  local next_mode = M._session.mode == "sidebyside" and "unified" or "sidebyside"
+  M._session:set_mode(next_mode)
+end
+
 --- Remove persisted viewed-state: `all=true` wipes every review's file, otherwise just
 --- the current review's (the open session's key, or -- when nothing is open -- a
 --- throwaway session built only to resolve that key; see the comment below).
@@ -424,6 +482,8 @@ function M.open(args)
     return M.refresh()
   elseif first == "clean" then
     return M.clean(args[2] == "all")
+  elseif first == "focus" then
+    return M.focus()
   end
 
   if M._session then

@@ -88,8 +88,14 @@ flat list toggle in the panel, fs-watch based refresh.
 - Single `:Difit` command with subcommands: `:Difit [base]` (open/focus), `:Difit close`,
   `:Difit toggle`, `:Difit clean`, with completion.
 - `setup()` is optional — the plugin works with defaults; `setup()` only overrides them.
-- No global keymaps. Buffer-local keymaps in the panel/diff buffers are provided by
-  default and configurable.
+- No global keymaps. Buffer-local keymaps are provided by default and configurable: the
+  panel and difit-owned diff buffers (blob/unified) get the full `keymaps.diff` set
+  (toggle viewed, toggle side-by-side/unified, focus the panel, close the review). Real
+  file buffers shown in the viewer (the side-by-side worktree right buffer) get a
+  separate, leader-prefixed `keymaps.file` set (toggle viewed/mode, focus the panel; no
+  `close`) — mapped only while that buffer is the one currently open in the view, and
+  removed again once the view moves on to a different file or closes, so a real file
+  buffer never keeps difit's keymaps after the viewer stops showing it.
 
 ### Tech
 

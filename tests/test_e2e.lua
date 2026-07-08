@@ -134,6 +134,25 @@ local function focus_panel(child)
 end
 
 ---@param child table
+---@return integer
+local function panel_cursor_row(child)
+  -- `child.lua` (unlike `lua_get`, which prepends its own `return `) is required here:
+  -- the body needs its own `local` before the `return`, and also avoids `lua_get`'s
+  -- `[[...)[1]]]` trap -- Lua's `[[ ]]` long-bracket string terminates at the first
+  -- literal `]]`, which a trailing `[1]]]` would supply one character early.
+  return child.lua([[
+    local pos = vim.api.nvim_win_get_cursor(require("difit")._panel.win)
+    return pos[1]
+  ]])
+end
+
+---@param child table
+---@return boolean
+local function panel_is_current_win(child)
+  return child.lua_get([[vim.api.nvim_get_current_win() == require("difit")._panel.win]])
+end
+
+---@param child table
 ---@param expr string @Lua expression relative to `require("difit")._session`
 local function session_field(child, expr)
   return denil(child.lua_get([[require("difit")._session.]] .. expr))
@@ -617,6 +636,102 @@ T["bonus regression: <Plug>(difit-toggle-viewed) un-marking a real file buffer d
     paths.modified,
     "un-marking from a real file buffer must not auto-advance away from it"
   )
+end
+
+---------------------------------------------------------------------------------------
+-- keymaps.file / keymaps.diff's new toggle_mode/focus_panel/close actions, and
+-- `:Difit focus` -- the fix for "no discoverable way back to the panel, and no way to
+-- toggle mode or mark viewed from the real file buffer". Default mapleader is backslash
+-- (never overridden here), so `<leader>x` is sent as the literal two keys `\x` below
+-- (mirrors tests/test_sidebyside.lua and tests/test_unified.lua).
+---------------------------------------------------------------------------------------
+
+T["from the side-by-side right buffer, <leader>s (keymaps.file.toggle_mode) switches to unified"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- focus lands on the real worktree right buffer
+  eq(session_field(child, "current_path"), paths.modified)
+
+  child.type_keys([[\s]])
+
+  eq(session_field(child, "mode"), "unified")
+end
+
+T["<leader>v (keymaps.file.toggle_viewed) from the real file buffer marks viewed, auto-advances, and syncs the panel's cursor"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+
+  child.type_keys([[\v]])
+
+  eq(is_viewed(child, paths.modified), true)
+  -- auto_advance opens the next un-viewed file in file_order (gone < mod < new < renamed):
+  -- src/new.lua, row 6 per this file's fixed fixture layout.
+  eq(session_field(child, "current_path"), paths.new)
+  eq(
+    panel_cursor_row(child),
+    6,
+    "the panel's own cursor follows the diff-originated auto-advance (Panel:set_cursor)"
+  )
+end
+
+T["<leader>e (keymaps.file.focus_panel) from the real file buffer focuses the panel"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5)
+  child.type_keys("<CR>")
+  eq(panel_is_current_win(child), false, "sanity: focus is on the real file buffer, not the panel")
+
+  child.type_keys([[\e]])
+
+  eq(panel_is_current_win(child), true)
+end
+
+T["q in the unified buffer (keymaps.diff.close) closes the entire viewer"] = function()
+  child.cmd("Difit")
+
+  child.type_keys("s") -- panel's own toggle_mode key -> unified, focuses the new view
+  eq(session_field(child, "mode"), "unified")
+
+  child.type_keys("q")
+
+  eq(is_open(child), false)
+end
+
+T["`:Difit focus` focuses the panel from wherever the cursor currently is"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5)
+  child.type_keys("<CR>")
+  eq(panel_is_current_win(child), false)
+
+  child.cmd("Difit focus")
+
+  eq(panel_is_current_win(child), true)
+end
+
+T["`:Difit focus` does not error when no review is open"] = function()
+  eq(is_open(child), false)
+  eq(pcall(child.cmd, "Difit focus"), true)
+end
+
+T["bonus: <Plug>(difit-toggle-mode) and <Plug>(difit-focus-panel) work as user-mappable Plug targets"] = function()
+  child.cmd("Difit")
+  child.lua([[
+    vim.keymap.set("n", "<F3>", "<Plug>(difit-toggle-mode)")
+    vim.keymap.set("n", "<F4>", "<Plug>(difit-focus-panel)")
+  ]])
+
+  set_cursor(child, 5)
+  child.type_keys("<CR>") -- move away from the panel first
+
+  child.type_keys("<F3>")
+  eq(session_field(child, "mode"), "unified")
+
+  child.type_keys("<F4>")
+  eq(panel_is_current_win(child), true)
 end
 
 return T
