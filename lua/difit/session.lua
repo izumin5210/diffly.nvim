@@ -323,11 +323,14 @@ function Session:progress()
   return { viewed = viewed, total = #self.entries }
 end
 
---- Switch view modes: close the current view, build the new one via the injected
---- factory, and reopen `current_path` (if any) through it.
+--- Switch view modes: build the new view via the injected factory and reopen
+--- `current_path` (if any) through it BEFORE closing the outgoing view (docs/
+--- refactor-v1.md R2, diffview's `StandardView:use_entry` order) -- so the replacement
+--- windows exist before the old ones ever disappear, instead of the diff area flashing
+--- empty (or vanishing entirely) in between.
 ---@param mode "sidebyside"|"unified"
 function Session:set_mode(mode)
-  self._view:close()
+  local old_view = self._view
   self.mode = mode
   self._view = self._view_factory(mode)
 
@@ -337,6 +340,8 @@ function Session:set_mode(mode)
       self._view:open(entry, self.spec)
     end
   end
+
+  old_view:close()
 
   self:_notify()
 end

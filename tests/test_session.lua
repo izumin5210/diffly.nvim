@@ -509,7 +509,7 @@ end
 
 -- 6. open_file() / set_mode() -------------------------------------------------------------
 
-T["set_mode(): closes the current view, opens the new one via view_factory, reopens current_path"] = function()
+T["set_mode(): opens the new view via view_factory and reopens current_path BEFORE closing the old one"] = function()
   local repo = helpers.new_repo()
   repo:write("a.txt", "1\n")
   repo:commit("chore: base")
@@ -538,9 +538,9 @@ T["set_mode(): closes the current view, opens the new one via view_factory, reop
   eq(notify_count(child), 1)
   eq(view_log(child), {
     { event = "open", mode = "sidebyside", path = "src/one.lua" },
-    { event = "close", mode = "sidebyside" },
     { event = "open", mode = "unified", path = "src/one.lua" },
-  }, "reopens current_path through the freshly-created view")
+    { event = "close", mode = "sidebyside" },
+  }, "docs/refactor-v1.md R2: the new view opens current_path before the old view closes")
 
   child.stop()
   repo:destroy()

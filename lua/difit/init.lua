@@ -9,6 +9,15 @@
 -- once (different repos/branches/PRs each get their own dedicated tabpage). Every public
 -- entry point resolves "the" session by asking `current_entry()` which tabpage it was
 -- called from, instead of reading a singleton.
+--
+-- R2/R3 (docs/refactor-v1.md): views no longer read "the current window" or reach for
+-- module-level `_on_*` seam slots. Each session gets one `difit.ui.ViewCtx` table (see
+-- `ui/keymaps.lua`), built here and passed BY REFERENCE into every view the session's
+-- `view_factory` closure ever constructs (including across `set_mode`). `ctx.anchor`/
+-- `ctx.claim` are filled in once the viewer tabpage/panel exist (session.new() runs
+-- before either does -- see `open_new`); `ctx.actions` is `build_actions(tab)`, whose
+-- closures resolve the live registry entry by tabpage handle on every call, so a stale
+-- action surviving past `close_entry` degrades to a no-op notify instead of an error.
 
 local config = require("difit.config")
 local session = require("difit.session")
@@ -24,7 +33,6 @@ local M = {}
 ---@field session difit.Session
 ---@field panel difit.Panel
 ---@field origin_tab integer  -- tabpage handle the user was on before this review opened
----@field known_view_wins table<integer, boolean>  -- see `reap_stray_windows`
 ---@field refresh_timer uv.uv_timer_t?             -- BufWritePost/FocusGained debounce
 
 --- The session registry itself: one entry per open review, keyed by the dedicated
@@ -76,43 +84,6 @@ local function find_entry_by_review_key(key)
   return nil
 end
 
---- Build a `difit.View` factory that also records every window the resulting view ever
---- opens into `known_view_wins` -- not only at the next `session:refresh()`/
---- `toggle_viewed()`/`set_mode()` notification, because `session:open_file()` (how the
---- panel's own navigation, and the very first file, get opened) never notifies
---- subscribers at all. Without recording here, a mode switch away from a view whose
---- windows were opened purely through `open_file()` would leave `reap_stray_windows`
---- with no way to recognize them as difit's own once they're orphaned. Per-entry (rather
---- than module-level) because two concurrent reviews' views must never be confused with
---- each other's windows.
----@param known_view_wins table<integer, boolean>
----@return fun(mode: "sidebyside"|"unified"): difit.View
-local function make_view_factory(known_view_wins)
-  return function(mode)
-    local view = mode == "unified" and unified.new() or sidebyside.new()
-
-    local real_open = view.open
-    view.open = function(self, file_entry, spec)
-      real_open(self, file_entry, spec)
-      -- NB: deliberately not `ipairs({ self.win, self.left_win, self.right_win })` --
-      -- the side-by-side view never sets `self.win` (it uses `left_win`/`right_win`
-      -- instead), so that table literal's first element is nil, and `ipairs` stops
-      -- before ever visiting the later, non-nil elements.
-      if self.win then
-        known_view_wins[self.win] = true
-      end
-      if self.left_win then
-        known_view_wins[self.left_win] = true
-      end
-      if self.right_win then
-        known_view_wins[self.right_win] = true
-      end
-    end
-
-    return view
-  end
-end
-
 --- Mark `path` viewed/unviewed on `entry`'s session and, per `config.auto_advance`, open
 --- the next un-viewed file -- the same policy `lua/difit/ui/panel.lua`'s own
 --- `toggle_viewed` keymap applies, reimplemented here because it is invoked from two
@@ -139,126 +110,6 @@ local function toggle_viewed_and_advance(entry, path)
       -- never focus, so it can't steal focus away from wherever the user actually is.
       if entry.panel then
         entry.panel:set_cursor(nxt)
-      end
-    end
-  end
-end
-
---- Seam for the views' `_on_toggle_viewed` slot: resolves the CURRENT tabpage's entry at
---- call time (never at wiring time), so this one wired-once seam keeps working correctly
---- regardless of how many reviews are open simultaneously.
----@param path string
-local function toggle_viewed_and_advance_seam(path)
-  local entry = current_entry()
-  if entry then
-    toggle_viewed_and_advance(entry, path)
-  end
-end
-
--- Wire the views' `_on_toggle_viewed` seams once, at require-time: both fields are plain
--- module-level function slots (see sidebyside.lua/unified.lua), and the closure above
--- only ever reads the current tabpage's entry at call time, so there is nothing to
--- re-wire per `:Difit` call.
-sidebyside._on_toggle_viewed = toggle_viewed_and_advance_seam
-unified._on_toggle_viewed = toggle_viewed_and_advance_seam
-
--- Same pattern for the `toggle_mode`/`focus_panel`/`close` seams (config.keymaps.diff and
--- .file): both views delegate to the same `M.*` entry points a user's own <Plug> mapping
--- or `:Difit` subcommand would call -- which themselves resolve the current tabpage's
--- entry -- so there is exactly one implementation of "what toggling mode/focusing the
--- panel/closing the review means" regardless of which buffer the key was pressed in.
-local function on_toggle_mode_seam()
-  M.toggle_mode()
-end
-local function on_focus_panel_seam()
-  M.focus()
-end
-local function on_close_seam()
-  M.close()
-end
-
-sidebyside._on_toggle_mode = on_toggle_mode_seam
-unified._on_toggle_mode = on_toggle_mode_seam
-sidebyside._on_focus_panel = on_focus_panel_seam
-unified._on_focus_panel = on_focus_panel_seam
-sidebyside._on_close = on_close_seam
-unified._on_close = on_close_seam
-
---- `session:set_mode()` always builds a brand-new `difit.View` via the factory (see
---- session.lua), and neither view module closes its *windows* on `close()` -- only its
---- owned buffers (by design: the same view instance normally reuses its windows across
---- repeated `open()` calls). Across a mode switch there is no "same instance" to reuse,
---- so the outgoing view's windows would otherwise pile up showing blank scratch buffers
---- forever. `left_win`/`right_win` (sidebyside) and `win` (unified) aren't part of the
---- documented `difit.View` contract, but sidebyside.lua itself documents them as
---- "exposed for tests" -- reading them here, purely to know which windows are still in
---- use, is the same kind of reach-through, not a modification of either view module.
----@param sess difit.Session?
----@return table<integer, boolean>
-local function live_view_windows(sess)
-  local view = sess and sess._view
-  local wins = {}
-  if not view then
-    return wins
-  end
-  if view.win then
-    wins[view.win] = true
-  end
-  if view.left_win then
-    wins[view.left_win] = true
-  end
-  if view.right_win then
-    wins[view.right_win] = true
-  end
-  return wins
-end
-
---- Subscribed to `entry.session` (see `open_new`): closes windows in `tab` that used to
---- belong to a difit view but no longer do -- e.g. a `difit://unified/...` or blob window
---- orphaned by a mode switch, or a sidebyside pane still showing a real worktree file
---- after the view moved on (see `entry.known_view_wins`). A no-op whenever the live view
---- hasn't opened anything yet (an empty `keep` means "nothing to protect", not "close
---- everything") -- notably the placeholder window `open_new` leaves showing before the
---- first file opens.
----
---- Never closes a window that isn't (or never was) part of some difit view: this plugin
---- has no business closing a window the *user* opened in its own tabpage (`:vsplit`,
---- `:help`, ...) just because it happens not to be the panel or the current live view --
---- doing so used to nuke arbitrary user splits on every single refresh/toggle
---- notification. A window is only ever reaped when it is either recognized via
---- `entry.known_view_wins`, or -- as a belt-and-suspenders fallback -- still shows a
---- `difit://`-named buffer.
----@param tab integer
-local function reap_stray_windows(tab)
-  local entry = entries[tab]
-  if not entry then
-    return
-  end
-  if not vim.api.nvim_tabpage_is_valid(tab) then
-    return
-  end
-
-  local keep = live_view_windows(entry.session)
-  if not next(keep) then
-    return
-  end
-  for win in pairs(keep) do
-    entry.known_view_wins[win] = true
-  end
-  if entry.panel then
-    keep[entry.panel.win] = true
-  end
-
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
-    if
-      not keep[win]
-      and vim.api.nvim_win_is_valid(win)
-      and #vim.api.nvim_tabpage_list_wins(tab) > 1
-    then
-      local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
-      if entry.known_view_wins[win] or vim.startswith(bufname, "difit://") then
-        pcall(vim.api.nvim_win_close, win, true)
-        entry.known_view_wins[win] = nil
       end
     end
   end
@@ -349,8 +200,9 @@ local function clear_entry_autocmds(tab)
 end
 
 --- The single idempotent teardown every close path funnels through: `:Difit close`/`q`
---- (via the seams above), the `TabClosed` reconciler, and the `WinClosed` panel-gone
---- detector all end up here. Removing `tab` from the registry FIRST makes every step
+--- (via the `close` action -- see `build_actions`), the `TabClosed` reconciler, and the
+--- `WinClosed` panel-gone detector all end up here. Removing `tab` from the registry FIRST
+--- makes every step
 --- below safe to run twice (e.g. `WinClosed` firing as a side effect of the
 --- `close_tabpage_safe` call further down): a second call finds nothing to do.
 ---@param tab integer
@@ -369,15 +221,23 @@ local function close_entry(tab)
     entry.panel:close()
   end
 
-  -- Only try to close/navigate away from a tabpage that is still actually there: when
-  -- this runs from the `TabClosed` reconciler the tabpage is already gone, and there is
-  -- nothing left to close or to move focus away from -- just the session/panel state
-  -- cleanup above.
+  -- `session:close()`/`panel:close()` may already have closed every window `tab` had
+  -- (docs/refactor-v1.md R2: a view's own `close()` destroys its owned windows now, not
+  -- just its buffers) -- closing a tabpage's last window makes Neovim remove the tabpage
+  -- itself as a side effect, so `tab` can legitimately already be gone by the time we get
+  -- here, same as when this runs from the `TabClosed` reconciler. Only ask to close it
+  -- explicitly when it's still actually there.
   if vim.api.nvim_tabpage_is_valid(tab) then
     close_tabpage_safe(tab)
-    if entry.origin_tab and vim.api.nvim_tabpage_is_valid(entry.origin_tab) then
-      vim.api.nvim_set_current_tabpage(entry.origin_tab)
-    end
+  end
+
+  -- Restore focus to wherever the user was before this review opened UNCONDITIONALLY on
+  -- `tab` itself still existing: whether `tab` needed an explicit `close_tabpage_safe`
+  -- above or had already vanished on its own, Neovim's own choice of which tab to land on
+  -- next (typically whatever is adjacent) is not necessarily `entry.origin_tab` once more
+  -- than one other tabpage exists (docs/refactor-v1.md R1: concurrent reviews).
+  if entry.origin_tab and vim.api.nvim_tabpage_is_valid(entry.origin_tab) then
+    vim.api.nvim_set_current_tabpage(entry.origin_tab)
   end
 end
 
@@ -473,26 +333,92 @@ local function setup_global_autocmds()
   })
 end
 
+--- Resolve tab's live registry entry, or notify (once, per call) that it's gone. Every
+--- `difit.ui.Actions` closure (see `build_actions`) goes through this instead of holding a
+--- `difit.Session`/`difit.init.Entry` reference directly -- the entry a buffer-local
+--- keymap was wired against can always outlive the review itself (a real file buffer, or a
+--- `difit://` scratch buffer some other window still shows), and a stale action firing
+--- after `close_entry` must degrade to a harmless no-op, never an error (docs/
+--- refactor-v1.md R3).
+---@param tab integer
+---@param what string  -- action name, folded into the notify message
+---@return difit.init.Entry?
+local function resolve_live_entry(tab, what)
+  local entry = entries[tab]
+  if not entry then
+    vim.notify(string.format("difit: review already closed; %s ignored", what), vim.log.levels.WARN)
+  end
+  return entry
+end
+
+--- Build the `difit.ui.Actions` table (see `ui/keymaps.lua`) for the review at `tab`:
+--- the single implementation of "what toggling viewed/mode, focusing the panel, or
+--- closing the review means" that both views' buffer-local keymaps call into, regardless
+--- of which buffer/window the key was pressed in. Captures `tab`, a plain tabpage handle,
+--- rather than `sess`/`entry` themselves (codediff pattern) -- so every call re-resolves
+--- the CURRENT live entry for that tabpage rather than risking acting on a torn-down
+--- session.
+---@param tab integer
+---@return difit.ui.Actions
+local function build_actions(tab)
+  return {
+    toggle_viewed = function(path)
+      local entry = resolve_live_entry(tab, "toggle_viewed")
+      if entry then
+        toggle_viewed_and_advance(entry, path)
+      end
+    end,
+    toggle_mode = function()
+      local entry = resolve_live_entry(tab, "toggle_mode")
+      if entry then
+        local next_mode = entry.session.mode == "sidebyside" and "unified" or "sidebyside"
+        entry.session:set_mode(next_mode)
+      end
+    end,
+    focus_panel = function()
+      local entry = resolve_live_entry(tab, "focus_panel")
+      if entry and entry.panel then
+        entry.panel:focus()
+      end
+    end,
+    close = function()
+      local entry = resolve_live_entry(tab, "close")
+      if entry then
+        close_entry(tab)
+      end
+    end,
+  }
+end
+
 --- Build the dedicated review tabpage: a fresh tab (so the origin layout is untouched),
 --- the panel split off to the left, and -- if there is an un-viewed file -- its diff
---- opened on the right. `sidebyside`/`unified` both split relative to "the current
---- window" (see their own module docs), so the diff area must be current when
---- `session:open_file` runs; `panel.open` steals focus for its own split, hence the
---- explicit refocus below before opening a file, and the final refocus back onto the
---- panel afterwards.
+--- opened on the right.
 ---
 --- The session is built BEFORE any tabpage exists: `session.new()` never depends on which
 --- tabpage is current (repo identity comes from `vim.fn.getcwd()`), so this lets a
 --- same-review-key match (below) or a resolution failure both bail out without ever
---- flashing a throwaway tabpage into existence.
+--- flashing a throwaway tabpage into existence. That means the view factory closure below
+--- must close over a `ctx` table (docs/refactor-v1.md R2) BEFORE its `anchor`/`claim`/
+--- `actions` fields are actually known: `session.new()` calls it once immediately (just to
+--- construct the initial, window-less `difit.View` instance), well before the tabpage,
+--- panel, or diff placeholder window exist. Because `ctx` is a plain table passed BY
+--- REFERENCE into every view the factory ever builds, filling its fields in further down
+--- -- once the tabpage/panel genuinely exist -- is enough: no view actually reads
+--- `ctx.anchor`/`ctx.claim`/`ctx.actions` until its own `ensure_windows`/`ensure_window`
+--- first runs, which never happens before `sess:open_file()` below.
 ---@param base string?
 local function open_new(base)
   local origin_tab = vim.api.nvim_get_current_tabpage()
 
   hl.setup()
 
-  local known_view_wins = {}
-  local sess, err = session.new({ base = base, view_factory = make_view_factory(known_view_wins) })
+  ---@type difit.ui.ViewCtx
+  local ctx = { anchor = nil, claim = nil, actions = nil }
+  local function view_factory(mode)
+    return mode == "unified" and unified.new(ctx) or sidebyside.new(ctx)
+  end
+
+  local sess, err = session.new({ base = base, view_factory = view_factory })
   if not sess then
     vim.notify("difit: " .. tostring(err), vim.log.levels.ERROR)
     return
@@ -511,30 +437,29 @@ local function open_new(base)
   local viewer_tab = vim.api.nvim_get_current_tabpage()
   local diff_win = vim.api.nvim_get_current_win()
   -- R1 sentinel groundwork for the `WinClosed` teardown funnel above: this window either
-  -- stays a bare placeholder (a review with no entries at all) or gets claimed as the
-  -- view's own window by `ensure_windows` (window-scoped variables survive a buffer swap
-  -- in the same window), so marking it here covers both cases. Views will set this on
-  -- every window they own themselves starting in R2.
+  -- stays a bare placeholder (a review with no entries at all) or gets claimed as
+  -- `ctx.claim` by whichever view opens the first file below (R2's `ensure_windows`/
+  -- `ensure_window` set this sentinel again themselves once that happens; harmless to
+  -- set it twice).
   vim.w[diff_win].difit = true
 
   local pnl = panel.open(sess)
+
+  -- Now that the tabpage/panel exist, the view factory closure's `ctx` can be filled in:
+  -- `ctx.anchor` is the panel window every view splits rightward from; `ctx.claim` is the
+  -- placeholder window above, offered ONCE to whichever view opens the very first file.
+  ctx.anchor = pnl.win
+  ctx.claim = diff_win
+  ctx.actions = build_actions(viewer_tab)
 
   ---@type difit.init.Entry
   local entry = {
     session = sess,
     panel = pnl,
     origin_tab = origin_tab,
-    known_view_wins = known_view_wins,
     refresh_timer = nil,
   }
   entries[viewer_tab] = entry
-  sess:subscribe(function()
-    reap_stray_windows(viewer_tab)
-  end)
-
-  if vim.api.nvim_win_is_valid(diff_win) then
-    vim.api.nvim_set_current_win(diff_win)
-  end
 
   local first_unviewed = sess:next_unviewed(nil)
   if first_unviewed then

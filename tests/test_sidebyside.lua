@@ -45,12 +45,45 @@ local function entry_by_path(entries, path)
   error("no entry for path " .. path)
 end
 
---- Create the view under test in the child and stash it as a global, so later calls in
---- the same test case can keep driving the same instance (needed to observe window
---- reuse across multiple `open()` calls).
+--- Build a `difit.ui.ViewCtx` (docs/refactor-v1.md R2/R3) in the child: `anchor` is
+--- whatever window is current at the time this runs (views must split rightward from it
+--- and never touch it -- see the `ensure_windows` regression test below); `actions`
+--- records every call into `_G.__actions_log` instead of driving a real session, so
+--- keymap-wiring tests can assert on it without needing `init.lua` in the loop. Stashed as
+--- `_G.__ctx` so a test can reach in and set `ctx.claim` when it wants to exercise window
+--- absorption specifically.
+---@param child table
+local function new_ctx(child)
+  child.lua([[
+    _G.__actions_log = {}
+    _G.__ctx = {
+      anchor = vim.api.nvim_get_current_win(),
+      claim = nil,
+      actions = {
+        toggle_viewed = function(path)
+          table.insert(_G.__actions_log, { action = "toggle_viewed", path = path })
+        end,
+        toggle_mode = function()
+          table.insert(_G.__actions_log, { action = "toggle_mode" })
+        end,
+        focus_panel = function()
+          table.insert(_G.__actions_log, { action = "focus_panel" })
+        end,
+        close = function()
+          table.insert(_G.__actions_log, { action = "close" })
+        end,
+      },
+    }
+  ]])
+end
+
+--- Create the view under test (with a fresh `ctx`, see `new_ctx`) in the child and stash
+--- it as a global, so later calls in the same test case can keep driving the same
+--- instance (needed to observe window reuse across multiple `open()` calls).
 ---@param child table
 local function new_view(child)
-  child.lua([[ _G.__view = require("difit.ui.sidebyside").new() ]])
+  new_ctx(child)
+  child.lua([[ _G.__view = require("difit.ui.sidebyside").new(_G.__ctx) ]])
 end
 
 ---@param child table
@@ -206,7 +239,10 @@ T["modified file: two &diff windows, left is an owned non-modifiable buffer, rig
   new_view(child)
   view_open(child, built.spec, entry)
 
-  eq(win_count(child), 2)
+  -- ctx.anchor (the window `new_ctx` captured) is never claimed (docs/refactor-v1.md R2)
+  -- -- both diff windows are always fresh splits to its right, so it survives alongside
+  -- them as a third window.
+  eq(win_count(child), 3)
   eq(win_diff(child, "left_win"), true)
   eq(win_diff(child, "right_win"), true)
 
@@ -272,11 +308,11 @@ T["reopening a second file reuses the same two windows"] = function()
 
   new_view(child)
   view_open(child, built.spec, first)
-  eq(win_count(child), 2)
+  eq(win_count(child), 3) -- ctx.anchor + left_win + right_win
   local left1, right1 = win_id(child, "left_win"), win_id(child, "right_win")
 
   view_open(child, built.spec, second)
-  eq(win_count(child), 2)
+  eq(win_count(child), 3)
   local left2, right2 = win_id(child, "left_win"), win_id(child, "right_win")
 
   eq(left1, left2)
@@ -284,44 +320,24 @@ T["reopening a second file reuses the same two windows"] = function()
 end
 
 ---------------------------------------------------------------------------------------
--- ensure_windows() must never claim an unclaimable current window (regression: switching
--- unified -> sidebyside lands focus on the panel, which the bare "claim current window"
--- logic used to grab as left_win -- fatal once the panel got 'winfixbuf', silent
--- window-stealing before that).
+-- ensure_windows() must never claim ctx.anchor itself (docs/refactor-v1.md R2 -- this
+-- used to be the "unclaimable current window" regression: switching unified -> sidebyside
+-- lands focus on the panel, which the old bare "claim the current window" logic used to
+-- grab as left_win -- fatal once the panel got 'winfixbuf', silent window-stealing before
+-- that. The explicit ctx.anchor/ctx.claim contract removes the whole class of bug: a view
+-- never even looks at "the current window", so there is nothing left to special-case).
 ---------------------------------------------------------------------------------------
 
-T["ensure_windows: a winfixbuf-protected current window is left untouched; two fresh windows are created instead"] = function()
+T["ensure_windows: ctx.anchor is never claimed or modified, whatever it shows; two fresh windows are created to its right"] = function()
   child.lua([[
-    _G.__protected_win = vim.api.nvim_get_current_win()
-    _G.__protected_buf = vim.api.nvim_win_get_buf(_G.__protected_win)
-    vim.wo[_G.__protected_win].winfixbuf = true
-  ]])
-
-  local built = build(child, "worktree")
-  local entry = entry_by_path(built.entries, paths.modified)
-
-  new_view(child)
-  view_open(child, built.spec, entry)
-
-  eq(win_count(child), 3, "the protected window survives alongside two fresh diff windows")
-  eq(
-    child.lua_get("vim.api.nvim_win_get_buf(_G.__protected_win) == _G.__protected_buf"),
-    true,
-    "the protected window keeps its original buffer"
-  )
-  eq(win_id(child, "left_win") ~= child.lua_get("_G.__protected_win"), true)
-  eq(win_id(child, "right_win") ~= child.lua_get("_G.__protected_win"), true)
-  eq(win_diff(child, "left_win"), true)
-  eq(win_diff(child, "right_win"), true)
-end
-
-T["ensure_windows: a current window showing a difit://-named buffer is left untouched even without winfixbuf"] = function()
-  child.lua([[
+    -- Mirrors what used to require special-casing (winfixbuf, a difit://-named buffer):
+    -- neither matters anymore, since ctx.anchor is never even inspected, only split from.
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_name(buf, "difit://some-owned-scratch")
-    _G.__protected_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(_G.__protected_win, buf)
-    _G.__protected_buf = buf
+    _G.__anchor_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(_G.__anchor_win, buf)
+    vim.wo[_G.__anchor_win].winfixbuf = true
+    _G.__anchor_buf = buf
   ]])
 
   local built = build(child, "worktree")
@@ -330,23 +346,49 @@ T["ensure_windows: a current window showing a difit://-named buffer is left unto
   new_view(child)
   view_open(child, built.spec, entry)
 
-  eq(win_count(child), 3, "the protected window survives alongside two fresh diff windows")
+  eq(win_count(child), 3, "ctx.anchor survives alongside two fresh diff windows")
   eq(
-    child.lua_get("vim.api.nvim_win_get_buf(_G.__protected_win) == _G.__protected_buf"),
+    child.lua_get("vim.api.nvim_win_get_buf(_G.__anchor_win) == _G.__anchor_buf"),
     true,
-    "the protected window keeps its original buffer"
+    "ctx.anchor keeps its original buffer"
   )
-  eq(win_id(child, "left_win") ~= child.lua_get("_G.__protected_win"), true)
-  eq(win_id(child, "right_win") ~= child.lua_get("_G.__protected_win"), true)
+  eq(win_id(child, "left_win") ~= child.lua_get("_G.__anchor_win"), true)
+  eq(win_id(child, "right_win") ~= child.lua_get("_G.__anchor_win"), true)
   eq(win_diff(child, "left_win"), true)
   eq(win_diff(child, "right_win"), true)
 end
 
-T["close(): no difit:// buffers remain and &diff is unset"] = function()
+T["ensure_windows: an offered ctx.claim is absorbed as left_win instead of splitting a third window"] = function()
+  new_view(child)
+  child.lua([[
+    _G.__claim_win = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), false, {
+      split = "right",
+      win = _G.__ctx.anchor,
+    })
+    _G.__ctx.claim = _G.__claim_win
+  ]])
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+  view_open(child, built.spec, entry)
+
+  -- ctx.anchor + the claimed window (now left_win) + one fresh right_win == 3, same as
+  -- the no-claim case above -- claiming just avoids an otherwise-redundant extra split.
+  eq(win_count(child), 3)
+  eq(win_id(child, "left_win"), child.lua_get("_G.__claim_win"))
+  eq(
+    child.lua_get("_G.__ctx.claim == nil"),
+    true,
+    "claim is consumed so a later view never reuses it"
+  )
+end
+
+T["close(): no difit:// buffers remain and both owned windows are closed"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
   new_view(child)
+  local anchor = child.lua_get("_G.__ctx.anchor")
   view_open(child, built.spec, entry)
   local left_win, right_win = win_id(child, "left_win"), win_id(child, "right_win")
 
@@ -365,8 +407,11 @@ T["close(): no difit:// buffers remain and &diff is unset"] = function()
   ]])
   eq(remaining_difit_bufs, 0)
 
-  eq(child.lua_get(string.format("vim.wo[%d].diff", left_win)), false)
-  eq(child.lua_get(string.format("vim.wo[%d].diff", right_win)), false)
+  -- docs/refactor-v1.md R2: close() destroys every window this view owns...
+  eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", left_win)), false)
+  eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", right_win)), false)
+  -- ...and leaves whatever it never owned (ctx.anchor) completely alone.
+  eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", anchor)), true)
 end
 
 T["worktree mode: editing the right buffer then :write persists to disk"] = function()
@@ -542,21 +587,21 @@ T["regression: buffer-local keymaps.file.toggle_viewed fires immediately despite
   -- mapping right away. Bound the wait so a future regression fails fast instead of
   -- hanging this test for a full 'timeoutlen'.
   child.o.timeoutlen = 50
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
   child.lua([[
     _G.__global_fired = false
     _G.__seam_fired = false
     vim.keymap.set("n", "<leader>vx", function()
       _G.__global_fired = true
     end)
-    require("difit.ui.sidebyside")._on_toggle_viewed = function()
+    _G.__ctx.actions.toggle_viewed = function()
       _G.__seam_fired = true
     end
   ]])
-
-  local built = build(child, "worktree")
-  local entry = entry_by_path(built.entries, paths.modified)
-
-  new_view(child)
   view_open(child, built.spec, entry)
   -- `open()` already focuses the right window (the real file buffer) via
   -- `focus_right_first_change`.

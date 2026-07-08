@@ -1,31 +1,20 @@
 -- Side-by-side diff view (design.md "UI" > "Side-by-side"): a two-window vertical diff
--- pair reused across `open()` calls in the current tabpage. Left window always shows a
--- read-only `difit://` blob buffer for the base side; right window shows either the real
--- worktree file (edits + `:w` work normally) or a read-only HEAD blob, depending on
--- `spec.right`. Window/tabpage positioning relative to a file-tree panel is out of scope
--- here -- WP-I decides where the *first* split lands; this module only guarantees the
--- pair is created once and reused afterwards.
+-- pair reused across `open()` calls. Left window always shows a read-only `difit://` blob
+-- buffer for the base side; right window shows either the real worktree file (edits + `:w`
+-- work normally) or a read-only HEAD blob, depending on `spec.right`.
+--
+-- docs/refactor-v1.md R2/R3 view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- `ui/keymaps.lua`) -- this view never reads "the current window". Both its windows are
+-- always created by splitting rightward from `ctx.anchor` (the panel window), or by
+-- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
+-- go through `ctx.actions` instead of module-level seam slots. `ui/unified.lua` follows
+-- the identical contract.
 
 local git = require("difit.git")
 local config = require("difit.config")
 local ui_keymaps = require("difit.ui.keymaps")
 
 local M = {}
-
--- Seams for `init.lua`: called whenever the user presses the matching
--- `config.get().keymaps.diff`/`keymaps.file` key inside one of this view's buffers.
--- `difit.init` doesn't exist yet at this module's own require-time, so callers can't
--- `require("difit")...` directly; it overwrites these fields once the session/panel
--- wiring exists. Default no-ops so the view module stays usable (e.g. under test) without
--- `init.lua` in the loop.
----@type fun(path: string)
-M._on_toggle_viewed = function(_) end
----@type fun()
-M._on_toggle_mode = function() end
----@type fun()
-M._on_focus_panel = function() end
----@type fun()
-M._on_close = function() end
 
 -- All difit-owned scratch buffers are namespaced under this prefix so they can be told
 -- apart from real file buffers at a glance (bufname prefix check) and swept up on
@@ -70,8 +59,10 @@ local function right_blob_buffer_name(entry)
 end
 
 ---@class difit.ui.SideBySide : difit.View
+---@field ctx difit.ui.ViewCtx
 ---@field left_win integer?   -- not part of the difit.View contract; exposed for tests
 ---@field right_win integer?  -- ditto
+---@field owned_wins integer[]  -- every window this view currently owns; destroyed by close()
 ---@field owned_bufs table<integer, boolean>
 ---@field file_buf integer?    -- real bufnr currently carrying `keymaps.file`, if any
 ---@field file_keys string[]?  -- keys applied to `file_buf`
@@ -92,33 +83,34 @@ local function find_buffer(name)
 end
 
 --- Full `config.keymaps.diff` action set for a difit-owned buffer showing `path`.
+---@param actions difit.ui.Actions
 ---@param path string
 ---@return table<string, difit.ui.KeymapAction>
-local function diff_keymap_spec(path)
+local function diff_keymap_spec(actions, path)
   local cfg = config.get().keymaps.diff
   return {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
-        M._on_toggle_viewed(path)
+        actions.toggle_viewed(path)
       end,
     },
     toggle_mode = {
       key = cfg.toggle_mode,
       callback = function()
-        M._on_toggle_mode()
+        actions.toggle_mode()
       end,
     },
     focus_panel = {
       key = cfg.focus_panel,
       callback = function()
-        M._on_focus_panel()
+        actions.focus_panel()
       end,
     },
     close = {
       key = cfg.close,
       callback = function()
-        M._on_close()
+        actions.close()
       end,
     },
   }
@@ -127,27 +119,28 @@ end
 --- `config.keymaps.file` action set for the real right-hand worktree buffer showing
 --- `path`. No `close` entry: closing a real file buffer doesn't mean "close the review"
 --- (see config.lua).
+---@param actions difit.ui.Actions
 ---@param path string
 ---@return table<string, difit.ui.KeymapAction>
-local function file_keymap_spec(path)
+local function file_keymap_spec(actions, path)
   local cfg = config.get().keymaps.file
   return {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
-        M._on_toggle_viewed(path)
+        actions.toggle_viewed(path)
       end,
     },
     toggle_mode = {
       key = cfg.toggle_mode,
       callback = function()
-        M._on_toggle_mode()
+        actions.toggle_mode()
       end,
     },
     focus_panel = {
       key = cfg.focus_panel,
       callback = function()
-        M._on_focus_panel()
+        actions.focus_panel()
       end,
     },
   }
@@ -177,7 +170,7 @@ function View:owned_buffer(name, lines, opts)
     end
   end
   self.owned_bufs[bufnr] = true
-  ui_keymaps.apply(bufnr, diff_keymap_spec(opts.entry_path))
+  ui_keymaps.apply(bufnr, diff_keymap_spec(self.ctx.actions, opts.entry_path))
   return bufnr
 end
 
@@ -192,7 +185,7 @@ function View:apply_file_keymaps(bufnr, path)
   if self.file_buf and self.file_buf ~= bufnr then
     ui_keymaps.remove(self.file_buf, self.file_keys or {})
   end
-  self.file_keys = ui_keymaps.apply(bufnr, file_keymap_spec(path))
+  self.file_keys = ui_keymaps.apply(bufnr, file_keymap_spec(self.ctx.actions, path))
   self.file_buf = bufnr
 end
 
@@ -208,31 +201,19 @@ function View:clear_file_keymaps()
   self.file_keys = nil
 end
 
---- True when `win` must NOT be claimed as this view's left window: either it shows a
---- difit-owned buffer (any `difit://`-named scratch -- most notably the panel, but also a
---- leftover window from some other view) or it has 'winfixbuf' set (the panel's own
---- defense-in-depth, see ui/panel.lua). Claiming such a window would either silently
---- steal it out from under whatever owns it, or error outright (E1513 on 'winfixbuf').
+--- Build the two-window vertical pair on first use, splitting rightward from
+--- `self.ctx.anchor` (the panel window) -- or absorbing `self.ctx.claim` (the initial
+--- placeholder window `init.lua` creates alongside the viewer tabpage, before any view has
+--- opened anything) as the left window, when one is offered and still valid. `claim` is
+--- consumed at most once: absorbing it clears `ctx.claim` so a later view build (a mode
+--- switch) never mistakes some other window for a fresh claim.
 ---
---- This matters because `ensure_windows` doesn't only run on the very first open, when
---- `init.lua` is guaranteed to have focus parked in a plain placeholder window: switching
---- modes closes the outgoing view first (`session.lua:set_mode`), and a view that closes
---- its own window (ui/unified.lua's `close()`) drops focus back onto whatever other
---- window remains -- typically the panel -- before this one ever gets asked to open.
----@param win integer
----@return boolean
-local function is_unclaimable(win)
-  if vim.wo[win].winfixbuf then
-    return true
-  end
-  local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
-  return vim.startswith(bufname, NS_PREFIX)
-end
-
---- Create the two-window vertical pair on first use, to the right of wherever the
---- current window is (that's "wherever the panel would be" per plan.md -- this WP only
---- ever sees the current window, WP-I positions the panel before calling into this
---- view). Subsequent calls are a no-op as long as both windows are still valid.
+--- `ctx.anchor` itself is NEVER claimed or otherwise touched here -- it is only ever a
+--- split point -- so this view's windows can never collide with, or silently steal,
+--- whatever the anchor currently shows (the historical bug class this replaces: guessing
+--- at "the current window" and erroring on 'winfixbuf' or hijacking some other window).
+---
+--- Subsequent calls are a no-op as long as both windows are still valid.
 function View:ensure_windows()
   if
     self.left_win
@@ -243,24 +224,27 @@ function View:ensure_windows()
     return
   end
 
-  local current = vim.api.nvim_get_current_win()
-  local placeholder = vim.api.nvim_create_buf(false, true)
-
-  if is_unclaimable(current) then
-    -- Never claim the current window here -- build both windows fresh to its right
-    -- instead, leaving it (and whatever it shows) completely untouched.
-    local left = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
-    local right = vim.api.nvim_open_win(
-      vim.api.nvim_create_buf(false, true),
-      true,
-      { split = "right", win = left }
-    )
-    self.left_win, self.right_win = left, right
-    return
+  local ctx = self.ctx
+  local left
+  if ctx.claim and vim.api.nvim_win_is_valid(ctx.claim) then
+    left = ctx.claim
+    ctx.claim = nil
+  else
+    local placeholder = vim.api.nvim_create_buf(false, true)
+    left = vim.api.nvim_open_win(placeholder, true, { split = "right", win = ctx.anchor })
   end
 
-  local right = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
-  self.left_win, self.right_win = current, right
+  local right = vim.api.nvim_open_win(
+    vim.api.nvim_create_buf(false, true),
+    true,
+    { split = "right", win = left }
+  )
+
+  vim.w[left].difit = true
+  vim.w[right].difit = true
+
+  self.left_win, self.right_win = left, right
+  self.owned_wins = { left, right }
 end
 
 --- Turn off 'diff' in both windows if it happens to be set. Reused windows may still be
@@ -401,27 +385,29 @@ function View:open(entry, spec)
   self:focus_right_first_change()
 end
 
---- `diffoff` where applicable, wipe every difit-owned buffer this view created. Windows
---- themselves are left alone (WP-I owns closing the tabpage/layout); a real file buffer
---- shown in the right window is never touched beyond turning its window's diff off and
---- losing its `keymaps.file` maps.
+--- `diffoff` where applicable, close every owned window, then wipe every difit-owned
+--- buffer this view created (docs/refactor-v1.md R2: views own their windows now, not
+--- just their buffers -- WP-I no longer reaps them). Real file BUFFERS are still never
+--- wiped: closing the right window when it shows one just closes that window, exactly
+--- like any other window onto it closing would -- the buffer itself survives, hidden.
 function View:close()
   self:diffoff()
   self:clear_file_keymaps()
 
-  -- Deleting a buffer that is the only thing a window shows makes Neovim close that
-  -- window outright (`:bwipeout` semantics) as long as another window remains open --
-  -- an unwanted side effect here, since this WP never closes windows itself. Swap any
-  -- window still showing one of our own buffers to a fresh empty buffer first so the
-  -- wipe below can't take a window down with it.
-  for _, win in ipairs({ self.left_win, self.right_win }) do
-    if win and vim.api.nvim_win_is_valid(win) then
-      local buf = vim.api.nvim_win_get_buf(win)
-      if self.owned_bufs[buf] then
-        vim.api.nvim_win_set_buf(win, vim.api.nvim_create_buf(false, true))
+  for _, win in ipairs(self.owned_wins) do
+    if vim.api.nvim_win_is_valid(win) then
+      local tab = vim.api.nvim_win_get_tabpage(win)
+      -- Never close the last window in a tabpage outright (`nvim_win_close` would error,
+      -- or worse, tear down the whole tabpage/session) -- something besides this view's
+      -- own windows (the panel, at minimum) is always expected to remain whenever
+      -- `close()` runs as part of ordinary session lifecycle.
+      if #vim.api.nvim_tabpage_list_wins(tab) > 1 then
+        pcall(vim.api.nvim_win_close, win, true)
       end
     end
   end
+  self.owned_wins = {}
+  self.left_win, self.right_win = nil, nil
 
   for bufnr in pairs(self.owned_bufs) do
     if vim.api.nvim_buf_is_valid(bufnr) then
@@ -431,11 +417,14 @@ function View:close()
   self.owned_bufs = {}
 end
 
+---@param ctx difit.ui.ViewCtx
 ---@return difit.View
-function M.new()
+function M.new(ctx)
   return setmetatable({
+    ctx = ctx,
     left_win = nil,
     right_win = nil,
+    owned_wins = {},
     owned_bufs = {},
     file_buf = nil, -- real bufnr currently carrying `keymaps.file`, if any
     file_keys = nil, -- keys applied to `file_buf`, for `ui_keymaps.remove`

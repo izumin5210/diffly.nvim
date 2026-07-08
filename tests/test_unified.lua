@@ -47,6 +47,11 @@ local repo, paths, child
 --- Build a real difit.RepoIdentity + entries map (keyed by path) + a difit.DiffSpec for
 --- the fixture's `main`...`feature` comparison, and stash them as globals in the child so
 --- later `child.lua(...)` calls (one per assertion) can all see the same view instance.
+--
+--- `_G.ctx` (docs/refactor-v1.md R2/R3) is the `difit.ui.ViewCtx` the view is built with:
+--- `anchor` is whatever window is current when this runs (never touched -- views only
+--- ever split rightward from it); `actions` records every call into `_G.__actions_log`
+--- instead of driving a real session.
 local function setup_child()
   child.lua([[
     _G.git = require("difit.git")
@@ -68,7 +73,27 @@ local function setup_child()
       right = "head",
       review_key = { kind = "branch", repo = repo.id, base = "main", head = "feature" },
     }
-    _G.view = unified.new()
+
+    _G.__actions_log = {}
+    _G.ctx = {
+      anchor = vim.api.nvim_get_current_win(),
+      claim = nil,
+      actions = {
+        toggle_viewed = function(path)
+          table.insert(_G.__actions_log, { action = "toggle_viewed", path = path })
+        end,
+        toggle_mode = function()
+          table.insert(_G.__actions_log, { action = "toggle_mode" })
+        end,
+        focus_panel = function()
+          table.insert(_G.__actions_log, { action = "focus_panel" })
+        end,
+        close = function()
+          table.insert(_G.__actions_log, { action = "close" })
+        end,
+      },
+    }
+    _G.view = unified.new(_G.ctx)
   ]])
 end
 
@@ -187,6 +212,25 @@ T["open(): reuses the same window across multiple opens"] = function()
 
   eq(second.win, first.win)
   eq(after, before)
+end
+
+T["ensure_window: an offered ctx.claim is absorbed instead of splitting a fresh window"] = function()
+  child.lua([[
+    _G.__claim_win = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), false, {
+      split = "right",
+      win = _G.ctx.anchor,
+    })
+    _G.ctx.claim = _G.__claim_win
+  ]])
+
+  local result = open(paths.modified)
+
+  eq(result.win, child.lua_get("_G.__claim_win"))
+  eq(
+    child.lua_get("_G.ctx.claim == nil"),
+    true,
+    "claim is consumed so a later view build never reuses it"
+  )
 end
 
 -- NOTE: `_G.spec` (built by `setup_child`) has `right = "head"`, so from here down every
@@ -330,7 +374,7 @@ T["open(): renamed files render without error, using old_path in the header"] = 
   eq(result.lines[1], "diff --git a/" .. paths.renamed_from .. " b/" .. paths.renamed_to)
 end
 
-T["close(): wipes owned buffers and closes its window"] = function()
+T["close(): wipes owned buffers and closes its window, leaving ctx.anchor untouched"] = function()
   local first = open(paths.modified)
   open(paths.new)
 
@@ -339,8 +383,13 @@ T["close(): wipes owned buffers and closes its window"] = function()
   local buf_valid = child.lua([[return vim.api.nvim_buf_is_valid(...)]], { first.buf })
   eq(buf_valid, false)
 
+  -- docs/refactor-v1.md R2: close() destroys every window this view owns...
   local win_valid = child.lua([[return vim.api.nvim_win_is_valid(...)]], { first.win })
   eq(win_valid, false)
+
+  -- ...and leaves whatever it never owned (ctx.anchor) completely alone.
+  local anchor_valid = child.lua([[return vim.api.nvim_win_is_valid(_G.ctx.anchor)]])
+  eq(anchor_valid, true)
 end
 
 ---------------------------------------------------------------------------------------
@@ -365,16 +414,16 @@ T["open(): keymaps.diff maps on the unified buffer are set with nowait"] = funct
   eq(buf_maparg(child, result.buf, "q").nowait, 1)
 end
 
-T["toggle_mode/focus_panel/close seams fire when their keys are pressed"] = function()
+T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = function()
   child.lua([[
     _G.__calls = { toggle_mode = 0, focus_panel = 0, close = 0 }
-    unified._on_toggle_mode = function()
+    _G.ctx.actions.toggle_mode = function()
       _G.__calls.toggle_mode = _G.__calls.toggle_mode + 1
     end
-    unified._on_focus_panel = function()
+    _G.ctx.actions.focus_panel = function()
       _G.__calls.focus_panel = _G.__calls.focus_panel + 1
     end
-    unified._on_close = function()
+    _G.ctx.actions.close = function()
       _G.__calls.close = _G.__calls.close + 1
     end
   ]])

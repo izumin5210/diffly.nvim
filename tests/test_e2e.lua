@@ -460,10 +460,11 @@ T["7. `s` switches to unified mode and <CR> jumps to the real file"] = function(
 
   expect_screenshot(child)
 
-  -- `set_mode` always builds a fresh view (see init.lua's `reap_stray_windows`), so the
-  -- only non-panel window left in the tab is the unified one, and pressing `s` already
-  -- focused it (unified.lua's `open()` always takes focus for itself) -- so the current
-  -- window/buffer already *is* the unified view; jump straight from it.
+  -- `set_mode` always builds a fresh view whose own `close()` destroys the outgoing
+  -- view's windows (docs/refactor-v1.md R2), so the only non-panel window left in the tab
+  -- is the unified one, and pressing `s` already focused it (unified.lua's `open()`
+  -- always takes focus for itself) -- so the current window/buffer already *is* the
+  -- unified view; jump straight from it.
   local target_lnum = child.lua_get([[
     (function()
       local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
@@ -570,9 +571,15 @@ T["bonus: <Plug>(difit-toggle-viewed) toggles viewed for a real file buffer"] = 
   eq(is_viewed(child, paths.modified), true)
 end
 
--- Regression (finding 1): reap_stray_windows must not kill user-created splits -----------
+-- Regression (finding 1, docs/refactor-v1.md R2): difit must never touch a window it
+-- doesn't own. This used to require a `reap_stray_windows` sweep that recognized "my
+-- windows" by name/registry and left everything else alone; now it holds trivially,
+-- since no such sweep exists at all -- views only ever create/close windows they
+-- themselves opened via their explicit `ctx.anchor`/`ctx.claim`, so a user's own split can
+-- never even be mistaken for one of difit's.
+-----------------------------------------------------------------------------------------
 
-T["reap_stray_windows: a user's real-file split survives a refresh; an orphaned view window is still reaped after a mode switch"] = function()
+T["a user's real-file split survives a refresh and a mode switch; the outgoing view's own windows are still closed"] = function()
   set_size(child, 24, 100)
   child.cmd("Difit")
 
@@ -580,13 +587,13 @@ T["reap_stray_windows: a user's real-file split survives a refresh; an orphaned 
   child.type_keys("<CR>") -- opens the sidebyside view (2 windows)
 
   -- Simulate the user opening their own split on a real, unrelated file inside the
-  -- viewer tabpage (e.g. :vsplit or :help) -- this must never be treated as "stray".
+  -- viewer tabpage (e.g. :vsplit or :help) -- difit has no business ever closing this.
   child.cmd("vsplit " .. vim.fn.fnameescape(repo.dir .. "/README.md"))
   local user_win = child.lua_get("vim.api.nvim_get_current_win()")
   eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), "/README.md"), true)
 
   focus_panel(child)
-  child.type_keys("R") -- refresh -> session:refresh() -> notify -> reap_stray_windows
+  child.type_keys("R") -- refresh -> session:refresh()
 
   eq(
     child.lua_get("vim.api.nvim_win_is_valid(...)", { user_win }),
@@ -602,9 +609,9 @@ T["reap_stray_windows: a user's real-file split survives a refresh; an orphaned 
     "the user's split still shows the real file, not hijacked"
   )
 
-  -- Mode switch: the previous sidebyside view's own windows are now orphaned (nothing in
-  -- `keep`, since a fresh view was built) -- these must still be reaped, same as before
-  -- this fix (this is what init.lua's per-entry `known_view_wins` is for).
+  -- Mode switch: the outgoing sidebyside view's own windows must be closed by its own
+  -- `close()` (docs/refactor-v1.md R2), same end result as the old reaper, but as a
+  -- direct consequence of the view owning its windows rather than a separate sweep.
   focus_panel(child)
   child.type_keys("s")
   eq(session_field(child, "mode"), "unified")
@@ -977,6 +984,101 @@ T["registry: two concurrent reviews (different repos) get independent tabpages a
   eq(tab_count(child), 1)
 
   repo2:destroy()
+end
+
+---------------------------------------------------------------------------------------
+-- R2/R3 (docs/refactor-v1.md): each session's `view_factory` closure captures its own
+-- `ctx` (anchor/claim/actions -- see `ui/keymaps.lua`'s `difit.ui.ViewCtx`), so nothing
+-- about one review's windows or buffer-local keymap wiring can leak into another's.
+---------------------------------------------------------------------------------------
+
+T["registry: switching mode in one concurrent review never touches the other's windows"] = function()
+  set_size(child, 24, 100)
+  -- Deliberately NOT `helpers.fixture_branch_repo()` again: that fixture's commits are
+  -- byte-identical (same paths/content/messages) across separate calls, and git commit
+  -- SHAs only vary by author/committer timestamp -- two calls landing in the same wall-
+  -- clock second (routine on a fast machine) produce the SAME merge-base commit SHA, and
+  -- therefore the SAME `difit://<sha>/src/mod.lua` buffer name in both reviews. That's a
+  -- pre-existing buffer-naming gap (buffer names carry no repo identity) unrelated to
+  -- what this test is actually about, so it uses a repo with a distinct path/content
+  -- instead of fighting that collision.
+  local repo2 = helpers.new_repo()
+  repo2:write("a.txt", "1\n")
+  repo2:commit("chore: base")
+  repo2:branch("feature")
+  repo2:write("src/one.lua", "one\n")
+  repo2:commit("feat: add one")
+  local repo2_path = "src/one.lua"
+
+  local origin_tab = current_tab(child)
+  child.cmd("Difit")
+  local viewer1_tab = current_tab(child)
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  assert_sidebyside_layout(child, paths.modified)
+  local before = layout_snapshot(child)
+
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { origin_tab })
+  child.cmd("tcd " .. vim.fn.fnameescape(repo2.dir))
+  child.cmd("Difit")
+  local viewer2_tab = current_tab(child)
+  eq(viewer2_tab ~= viewer1_tab, true)
+
+  -- repo2's tree is a single "src" dir (one child, so it does NOT compress) containing
+  -- one file: row 1 header, row 2 progress, row 3 "src", row 4 "src/one.lua".
+  set_cursor(child, 4)
+  child.type_keys("<CR>")
+  eq(session_field(child, "current_path"), repo2_path)
+  focus_panel(child)
+  child.type_keys("s") -- toggle_mode fires ONLY in viewer2
+  assert_unified_layout(child)
+
+  -- viewer1's own layout/windows are byte-for-byte the same as before viewer2 ever
+  -- switched modes -- nothing about viewer2's `set_mode` reached across.
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { viewer1_tab })
+  eq(layout_snapshot(child), before)
+  assert_sidebyside_layout(child, paths.modified)
+
+  child.cmd("Difit close")
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { viewer2_tab })
+  child.cmd("Difit close")
+
+  repo2:destroy()
+end
+
+T["actions resolve at call time: a stale action captured before close() notifies instead of erroring"] = function()
+  child.cmd("Difit")
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- sidebyside opens; ctx.actions is wired for real from here on
+
+  child.lua([[
+    _G.__stale_actions = __difit_entry().session._view.ctx.actions
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  child.cmd("Difit close")
+
+  -- Every action captured from the now-closed review must degrade to a no-op notify,
+  -- never raise, when invoked after the fact (docs/refactor-v1.md R3).
+  local ok_toggle_viewed =
+    child.lua([[return pcall(_G.__stale_actions.toggle_viewed, ...)]], { paths.modified })
+  local ok_toggle_mode = child.lua([[return pcall(_G.__stale_actions.toggle_mode)]])
+  local ok_focus_panel = child.lua([[return pcall(_G.__stale_actions.focus_panel)]])
+  local ok_close = child.lua([[return pcall(_G.__stale_actions.close)]])
+
+  eq(ok_toggle_viewed, true, "stale toggle_viewed must not error")
+  eq(ok_toggle_mode, true, "stale toggle_mode must not error")
+  eq(ok_focus_panel, true, "stale focus_panel must not error")
+  eq(ok_close, true, "stale close must not error")
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 4, "every stale action call notifies instead of silently erroring")
+  for _, n in ipairs(notes) do
+    eq(n.level, vim.log.levels.WARN)
+  end
 end
 
 return T

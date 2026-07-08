@@ -10,6 +10,36 @@ local M = {}
 ---@field key string|false|nil  -- falsy disables the mapping (config.lua convention)
 ---@field callback fun()
 
+--- docs/refactor-v1.md R3: the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
+--- call into for `config.keymaps.diff`/`keymaps.file`, replacing the old module-level
+--- `_on_toggle_viewed`/`_on_toggle_mode`/`_on_focus_panel`/`_on_close` slots. Built once per
+--- session entry in `init.lua` (see `build_actions` there): every field resolves the LIVE
+--- entry through the R1 tabpage registry at call time (never by holding a reference to a
+--- `difit.Session`), so a stale closure surviving past `close_entry` degrades to a no-op
+--- notify instead of erroring.
+---@class difit.ui.Actions
+---@field toggle_viewed fun(path: string)
+---@field toggle_mode fun()
+---@field focus_panel fun()
+---@field close fun()
+
+--- docs/refactor-v1.md R2: the explicit window-ownership contract both diff views' `M.new`
+--- takes in place of ever reading "the current window". `anchor` is the window to split
+--- rightward from (`init.lua` passes the panel window); `claim` is an optional window a
+--- view may absorb as one of its own instead of splitting a fresh one (`init.lua` passes
+--- the placeholder window created alongside the viewer tabpage, but only for the very
+--- first view -- see `ensure_windows`/`ensure_window` in the two view modules, which clear
+--- it once consumed so a later mode switch never mistakes some other window for a fresh
+--- claim). Built once per session entry and passed BY REFERENCE to every view the
+--- session's `view_factory` ever constructs (including across `set_mode`), so `anchor`
+--- stays valid for the entry's whole lifetime even though it is filled in AFTER the
+--- session itself is constructed (see `init.lua`'s `open_new`: the tabpage/panel don't
+--- exist yet at `session.new()` time, only by the time a view's windows actually get built).
+---@class difit.ui.ViewCtx
+---@field anchor integer      -- winid to split rightward from (the panel window)
+---@field claim integer?      -- a window this view may absorb as its own; consumed once
+---@field actions difit.ui.Actions
+
 --- Apply every action in `spec` to `bufnr`, skipping falsy keys. Returns the list of keys
 --- actually mapped so callers can hand it straight to `M.remove` later -- callers would
 --- otherwise have to re-derive "which of these were actually enabled" themselves.

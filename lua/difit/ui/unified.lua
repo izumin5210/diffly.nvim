@@ -2,21 +2,19 @@
 -- a jump-to-file key; kept deliberately dumb (no diff algorithm of its own) so it can
 -- later be swapped for an inline-overlay implementation without touching callers -- the
 -- `difit.View` interface (open/close) is the only contract other modules depend on.
+--
+-- docs/refactor-v1.md R2/R3 view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- `ui/keymaps.lua`) -- this view never reads "the current window". Its one window is
+-- always created by splitting rightward from `ctx.anchor` (the panel window), or by
+-- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
+-- go through `ctx.actions` instead of module-level seam slots. `ui/sidebyside.lua` follows
+-- the identical contract.
 
 local config = require("difit.config")
 local git = require("difit.git")
 local ui_keymaps = require("difit.ui.keymaps")
 
 local M = {}
-
---- Module-level seams for `config.keymaps.diff`, mirroring the pattern used by the
---- side-by-side view: this module has no session dependency of its own, so the
---- integration WP overrides these to actually drive the session. No-ops by default.
----@param path string
-function M._on_toggle_viewed(path) end
-function M._on_toggle_mode() end
-function M._on_focus_panel() end
-function M._on_close() end
 
 ---@class difit.ui.UnifiedBufMeta
 ---@field path string      -- entry.path, relative to toplevel
@@ -27,7 +25,9 @@ function M._on_close() end
 ---@field jump_map table<integer, integer>  -- 1-based buffer line -> new-file line
 
 ---@class difit.ui.UnifiedView : difit.View
+---@field ctx difit.ui.ViewCtx
 ---@field win integer?                          -- the one window this view owns
+---@field owned_wins integer[]                  -- same window as `win`; destroyed by close()
 ---@field bufs table<string, integer>            -- bufname -> owned bufnr
 ---@field meta table<integer, difit.ui.UnifiedBufMeta>  -- bufnr -> jump metadata
 local View = {}
@@ -94,41 +94,32 @@ local function get_or_create_buf(self, name, filetype)
   return buf
 end
 
---- True when `win` must NOT be used as the base for a bare `vsplit`: it shows a
---- difit-owned buffer (any `difit://`-named scratch -- most notably the panel) or has
---- 'winfixbuf' set. Mirrors `ui/sidebyside.lua`'s own guard of the same name and for the
---- same reason: a mode switch away from side-by-side or unified closes the outgoing
---- view's window(s) first (`session.lua:set_mode`), which can drop focus back onto the
---- panel before this view is ever asked to open. A bare `vsplit` from the panel wouldn't
---- error (unlike sidebyside's window reuse), but with 'splitright' unset it would
---- silently land the new unified window to the panel's LEFT instead of its right.
----@param win integer
----@return boolean
-local function is_unclaimable(win)
-  if vim.wo[win].winfixbuf then
-    return true
-  end
-  local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
-  return vim.startswith(bufname, "difit://")
-end
-
---- Ensure `self.win` points at a live window, splitting off the current one on first
---- use. Subsequent opens reuse it.
+--- Ensure `self.win` points at a live window: splitting rightward from `self.ctx.anchor`
+--- (the panel window) on first use, or absorbing `self.ctx.claim` (the initial placeholder
+--- window `init.lua` creates alongside the viewer tabpage) when one is offered and still
+--- valid -- consumed at most once, mirroring `ui/sidebyside.lua`'s `ensure_windows`
+--- (docs/refactor-v1.md R2). `ctx.anchor` itself is never claimed or touched, so this
+--- view's window can never collide with whatever the anchor currently shows. Subsequent
+--- opens reuse `self.win`.
 ---@param self difit.ui.UnifiedView
 local function ensure_window(self)
   if self.win and vim.api.nvim_win_is_valid(self.win) then
     return
   end
 
-  local current = vim.api.nvim_get_current_win()
-  if is_unclaimable(current) then
-    local placeholder = vim.api.nvim_create_buf(false, true)
-    self.win = vim.api.nvim_open_win(placeholder, true, { split = "right", win = current })
-    return
+  local ctx = self.ctx
+  if ctx.claim and vim.api.nvim_win_is_valid(ctx.claim) then
+    self.win = ctx.claim
+    ctx.claim = nil
+  else
+    self.win = vim.api.nvim_open_win(
+      vim.api.nvim_create_buf(false, true),
+      true,
+      { split = "right", win = ctx.anchor }
+    )
   end
-
-  vim.cmd("vsplit")
-  self.win = vim.api.nvim_get_current_win()
+  vim.w[self.win].difit = true
+  self.owned_wins = { self.win }
 end
 
 --- Resolve the window that a file jump should land in: Vim's own "previous window"
@@ -244,29 +235,30 @@ local function setup_keymaps(self, buf, entry)
   end, { buffer = buf, silent = true, nowait = true, desc = "difit: jump to file" })
 
   local cfg = config.get().keymaps.diff
+  local actions = self.ctx.actions
   ui_keymaps.apply(buf, {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
-        M._on_toggle_viewed(entry.path)
+        actions.toggle_viewed(entry.path)
       end,
     },
     toggle_mode = {
       key = cfg.toggle_mode,
       callback = function()
-        M._on_toggle_mode()
+        actions.toggle_mode()
       end,
     },
     focus_panel = {
       key = cfg.focus_panel,
       callback = function()
-        M._on_focus_panel()
+        actions.focus_panel()
       end,
     },
     close = {
       key = cfg.close,
       callback = function()
-        M._on_close()
+        actions.close()
       end,
     },
   })
@@ -300,10 +292,20 @@ function View:open(entry, spec)
   setup_keymaps(self, buf, entry)
 end
 
+--- Closes the owned window (docs/refactor-v1.md R2), then wipes every owned buffer.
 function View:close()
-  if self.win and vim.api.nvim_win_is_valid(self.win) then
-    vim.api.nvim_win_close(self.win, true)
+  for _, win in ipairs(self.owned_wins) do
+    if vim.api.nvim_win_is_valid(win) then
+      local tab = vim.api.nvim_win_get_tabpage(win)
+      -- Never close the last window in a tabpage outright -- mirrors
+      -- `ui/sidebyside.lua`'s own guard; the panel, at minimum, is always expected to
+      -- remain whenever `close()` runs as part of ordinary session lifecycle.
+      if #vim.api.nvim_tabpage_list_wins(tab) > 1 then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end
   end
+  self.owned_wins = {}
   self.win = nil
 
   for _, buf in pairs(self.bufs) do
@@ -315,9 +317,10 @@ function View:close()
   self.meta = {}
 end
 
+---@param ctx difit.ui.ViewCtx
 ---@return difit.View
-function M.new()
-  return setmetatable({ win = nil, bufs = {}, meta = {} }, View)
+function M.new(ctx)
+  return setmetatable({ ctx = ctx, win = nil, owned_wins = {}, bufs = {}, meta = {} }, View)
 end
 
 return M
