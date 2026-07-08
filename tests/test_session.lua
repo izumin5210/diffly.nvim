@@ -274,7 +274,7 @@ T["M.new(): base resolution -- arg beats config beats detected PR base beats def
   local child = helpers.new_child(repo.dir)
   install_fakes(child)
   point_state_dir(child, tmp_state)
-  set_pr_result(child, { number = 999, base_ref = "pr-base", owner_repo = "acme/widgets" }, nil)
+  set_pr_result(child, { number = 999, base_ref = "pr-base" }, nil)
 
   -- opts.base wins over everything else, including a detected PR.
   local res = new_session(child, { base = "arg-base" })

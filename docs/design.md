@@ -105,7 +105,8 @@ flat list toggle in the panel, fs-watch based refresh.
 - **Neovim 0.12+.**
 - **Modules**: `git.lua` (diff/blob access), `github.lua` (gh wrapper, stubbable),
   `state.lua` (viewed persistence), `tree.lua` (file tree model), `ui/panel.lua`,
-  `ui/sidebyside.lua`, `ui/unified.lua`, `config.lua`.
+  `ui/sidebyside.lua`, `ui/unified.lua`, `ui/scratch.lua` (shared `difit://` scratch-buffer
+  find-or-create + LSP-safe highlighting), `config.lua`.
 
 ### Development
 

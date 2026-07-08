@@ -220,19 +220,21 @@ local function build_entries(raw, numstat)
 end
 
 --- Parse a `@@ -old_start,old_count +new_start,new_count @@ ...` header. Git omits the
---- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@").
+--- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@"). Only `new_start`/
+--- `new_count` are kept on `difit.Hunk` (docs/refactor-v1.md R4 dropped `old_start`/
+--- `old_count`: the future inline overlay anchors on new-side positions only; deleted
+--- text comes from the hunk's own "-" lines, not from these old-side numbers) -- the
+--- old-side numbers are still parsed here, just to recognize a header line at all and to
+--- keep this function's shape matching `git diff`'s own header format one-for-one.
 ---@param line string
----@return integer? old_start, integer? old_count, integer? new_start, integer? new_count
+---@return integer? new_start, integer? new_count
 local function match_hunk_header(line)
-  local old_start, old_count, new_start, new_count =
+  local old_start, _old_count, new_start, new_count =
     line:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
   if not old_start then
     return nil
   end
-  return tonumber(old_start),
-    old_count ~= "" and tonumber(old_count) or 1,
-    tonumber(new_start),
-    new_count ~= "" and tonumber(new_count) or 1
+  return tonumber(new_start), new_count ~= "" and tonumber(new_count) or 1
 end
 
 ---@param diff_text string
@@ -241,11 +243,9 @@ local function parse_hunks(diff_text)
   local hunks = {}
   local current
   for _, line in ipairs(vim.split(diff_text, "\n", { plain = true })) do
-    local old_start, old_count, new_start, new_count = match_hunk_header(line)
-    if old_start then
+    local new_start, new_count = match_hunk_header(line)
+    if new_start then
       current = {
-        old_start = old_start,
-        old_count = old_count,
         new_start = new_start,
         new_count = new_count,
         header = line,
@@ -272,13 +272,6 @@ function M.repo_identity(cwd)
   end
   toplevel = vim.trim(toplevel)
 
-  local git_dir
-  git_dir, err = run(cwd, { "rev-parse", "--absolute-git-dir" })
-  if not git_dir then
-    return nil, err
-  end
-  git_dir = vim.trim(git_dir)
-
   local id
   local remote_url = run(cwd, { "remote", "get-url", "origin" })
   if remote_url and vim.trim(remote_url) ~= "" then
@@ -287,7 +280,7 @@ function M.repo_identity(cwd)
     id = toplevel
   end
 
-  return { id = id, toplevel = toplevel, git_dir = git_dir }
+  return { id = id, toplevel = toplevel }
 end
 
 --- List configured remote names (e.g. {"origin", "upstream"}). Used by `resolve_ref`/

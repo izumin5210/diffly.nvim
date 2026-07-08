@@ -13,13 +13,9 @@
 local git = require("difit.git")
 local config = require("difit.config")
 local ui_keymaps = require("difit.ui.keymaps")
+local scratch = require("difit.ui.scratch")
 
 local M = {}
-
--- All difit-owned scratch buffers are namespaced under this prefix so they can be told
--- apart from real file buffers at a glance (bufname prefix check) and swept up on
--- close().
-local NS_PREFIX = "difit://"
 
 ---@param sha string?
 ---@return string?
@@ -32,14 +28,20 @@ end
 --- constant too, in practice, for a fixed merge-base -- but naming it after the spec
 --- makes a `session:refresh()` that moves the merge-base forward produce fresh buffer
 --- names instead of silently reusing stale content under an old name).
+---
+--- `session_id` (docs/refactor-v1.md R4) is `ctx.anchor`, the panel window this view's
+--- session was built with -- stable and unique for the session's whole lifetime, so two
+--- concurrent reviews whose entries happen to share a blob/merge-base sha never collide
+--- on the same buffer name (see ui/scratch.lua).
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
+---@param session_id integer
 ---@return string
-local function left_buffer_name(entry, spec)
+local function left_buffer_name(entry, spec, session_id)
   if not entry.base_sha then
-    return NS_PREFIX .. "empty/" .. entry.path
+    return scratch.name("empty", session_id, entry.path)
   end
-  return NS_PREFIX .. short_sha(spec.merge_base) .. "/" .. entry.path
+  return scratch.name(short_sha(spec.merge_base), session_id, entry.path)
 end
 
 --- Buffer name for the right side when it is a blob (head mode) rather than the real
@@ -48,14 +50,15 @@ end
 --- (e.g. a new commit on the reviewed branch), so the name must track it directly.
 --- A nil `head_sha` means the file doesn't exist at the right-hand revision (deleted),
 --- which is the same situation as a deleted worktree file, hence the shared "deleted"
---- name.
+--- name. See `left_buffer_name` above for why `session_id` is part of the name too.
 ---@param entry difit.FileEntry
+---@param session_id integer
 ---@return string
-local function right_blob_buffer_name(entry)
+local function right_blob_buffer_name(entry, session_id)
   if not entry.head_sha then
-    return NS_PREFIX .. "deleted/" .. entry.path
+    return scratch.name("deleted", session_id, entry.path)
   end
-  return NS_PREFIX .. short_sha(entry.head_sha) .. "/" .. entry.path
+  return scratch.name(short_sha(entry.head_sha), session_id, entry.path)
 end
 
 ---@class difit.ui.SideBySide : difit.View
@@ -68,19 +71,6 @@ end
 ---@field file_keys string[]?  -- keys applied to `file_buf`
 local View = {}
 View.__index = View
-
---- Look up an existing buffer by its exact name (per plan.md: `vim.fn.bufnr()` matches
---- an exact name before falling back to pattern matching, so this is safe even though
---- `name` embeds a path that could otherwise look pattern-like).
----@param name string
----@return integer? bufnr
-local function find_buffer(name)
-  local bufnr = vim.fn.bufnr(name)
-  if bufnr == -1 then
-    return nil
-  end
-  return bufnr
-end
 
 --- Full `config.keymaps.diff` action set for a difit-owned buffer showing `path`.
 ---@param actions difit.ui.Actions
@@ -146,29 +136,17 @@ local function file_keymap_spec(actions, path)
   }
 end
 
---- Get-or-create a difit-owned scratch buffer: `buftype=nofile`, `bufhidden=hide`,
---- non-modifiable once populated. Reuses an existing buffer with the exact same name
---- instead of recreating/re-populating it (buffer names always embed whatever makes
---- their content unique, so reuse is always content-safe).
+--- Get-or-create a difit-owned scratch buffer via ui/scratch.lua: `buftype=nofile`,
+--- `bufhidden=hide`, non-modifiable once populated, LSP-safe highlighting (never
+--- `'filetype'` -- docs/refactor-v1.md R4). Reuses an existing buffer with the exact
+--- same name instead of recreating/re-populating it (buffer names always embed whatever
+--- makes their content unique, so reuse is always content-safe).
 ---@param name string
 ---@param lines string[]
----@param opts { filetype: string?, entry_path: string }
+---@param opts { filename: string?, entry_path: string }
 ---@return integer bufnr
 function View:owned_buffer(name, lines, opts)
-  local bufnr = find_buffer(name)
-  if not bufnr then
-    bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(bufnr, name)
-    vim.bo[bufnr].buftype = "nofile"
-    vim.bo[bufnr].bufhidden = "hide"
-    vim.bo[bufnr].swapfile = false
-    vim.bo[bufnr].modifiable = true
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-    vim.bo[bufnr].modifiable = false
-    if opts.filetype then
-      vim.bo[bufnr].filetype = opts.filetype
-    end
-  end
+  local bufnr = scratch.find_or_create(name, { lines = lines, filename = opts.filename })
   self.owned_bufs[bufnr] = true
   ui_keymaps.apply(bufnr, diff_keymap_spec(self.ctx.actions, opts.entry_path))
   return bufnr
@@ -264,19 +242,34 @@ function View:diffoff()
 end
 
 --- Populate the left window with entry.base_sha's blob content, or an empty scratch
---- buffer when there is no base blob (added/untracked file).
+--- buffer when there is no base blob (added/untracked file). `entry.base_sha == nil` is
+--- a legitimate empty buffer (nothing to load); a non-nil sha that `git.file_content`
+--- still fails to load is a REAL git failure (docs/refactor-v1.md R4) -- notify once
+--- rather than silently degrading to the same empty buffer a legitimate absence would
+--- produce, so the UI still renders instead of erroring.
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:set_left(entry, spec)
   local lines = {}
   if entry.base_sha then
-    lines = git.file_content(spec.repo, { sha = entry.base_sha }) or {}
+    local content, err = git.file_content(spec.repo, { sha = entry.base_sha })
+    if content then
+      lines = content
+    else
+      vim.notify(
+        string.format(
+          "difit: failed to load base blob for %s: %s",
+          entry.path,
+          err or "unknown error"
+        ),
+        vim.log.levels.WARN
+      )
+    end
   end
-  local ft = vim.filetype.match({ filename = entry.path })
   local bufnr = self:owned_buffer(
-    left_buffer_name(entry, spec),
+    left_buffer_name(entry, spec, self.ctx.anchor),
     lines,
-    { filetype = ft, entry_path = entry.path }
+    { filename = entry.path, entry_path = entry.path }
   )
   vim.api.nvim_win_set_buf(self.left_win, bufnr)
 end
@@ -289,7 +282,7 @@ end
 function View:set_right_worktree(entry, spec)
   if not entry.head_sha then
     local bufnr = self:owned_buffer(
-      NS_PREFIX .. "deleted/" .. entry.path,
+      scratch.name("deleted", self.ctx.anchor, entry.path),
       {},
       { entry_path = entry.path }
     )
@@ -301,7 +294,7 @@ function View:set_right_worktree(entry, spec)
     return
   end
 
-  local abs_path = spec.repo.toplevel .. "/" .. entry.path
+  local abs_path = vim.fs.joinpath(spec.repo.toplevel, entry.path)
   vim.api.nvim_win_call(self.right_win, function()
     vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
   end)
@@ -310,19 +303,31 @@ end
 
 --- Populate the right window for `spec.right == "head"`: a read-only blob buffer of
 --- entry.head_sha, following the same empty-scratch rule as the left side when there is
---- no blob (file doesn't exist at HEAD, i.e. deleted).
+--- no blob (file doesn't exist at HEAD, i.e. deleted) -- and the same real-failure
+--- notice as `set_left` when `entry.head_sha` is set but the blob still fails to load.
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:set_right_head(entry, spec)
   local lines = {}
   if entry.head_sha then
-    lines = git.file_content(spec.repo, { sha = entry.head_sha }) or {}
+    local content, err = git.file_content(spec.repo, { sha = entry.head_sha })
+    if content then
+      lines = content
+    else
+      vim.notify(
+        string.format(
+          "difit: failed to load head blob for %s: %s",
+          entry.path,
+          err or "unknown error"
+        ),
+        vim.log.levels.WARN
+      )
+    end
   end
-  local ft = vim.filetype.match({ filename = entry.path })
   local bufnr = self:owned_buffer(
-    right_blob_buffer_name(entry),
+    right_blob_buffer_name(entry, self.ctx.anchor),
     lines,
-    { filetype = ft, entry_path = entry.path }
+    { filename = entry.path, entry_path = entry.path }
   )
   vim.api.nvim_win_set_buf(self.right_win, bufnr)
   -- `spec.right` never actually changes across one View instance's lifetime (see
@@ -340,7 +345,7 @@ function View:show_binary(entry)
   -- window stops showing a real file even in worktree mode -- drop its `keymaps.file` too.
   self:clear_file_keymaps()
   local bufnr = self:owned_buffer(
-    NS_PREFIX .. "binary/" .. entry.path,
+    scratch.name("binary", self.ctx.anchor, entry.path),
     { "binary file" },
     { entry_path = entry.path }
   )

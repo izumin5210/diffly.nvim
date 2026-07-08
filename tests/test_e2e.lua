@@ -60,29 +60,6 @@ local function set_size(child, lines, columns)
   child.o.showtabline = 0
 end
 
---- Like `helpers.path_shim`, but targets *the child's* PATH: mirrors
---- tests/test_github.lua's file-local `child_path_shim` (small enough, and file-local
---- there too, that duplicating it is preferable to widening tests/helpers.lua's public
---- API just for this).
----@param child table
----@param name string
----@param body string
----@return fun() restore
-local function child_path_shim(child, name, body)
-  local dir = vim.fn.tempname()
-  vim.fn.mkdir(dir, "p")
-  local path = dir .. "/" .. name
-  local script = body:match("^#!") and body or ("#!/bin/sh\n" .. body)
-  vim.fn.writefile(vim.split(script, "\n"), path, "b")
-  vim.fn.setfperm(path, "rwxr-xr-x")
-
-  local old_path = child.lua_get("vim.env.PATH")
-  child.lua("vim.env.PATH = ...", { dir .. ":" .. old_path })
-  return function()
-    child.lua("vim.env.PATH = ...", { old_path })
-  end
-end
-
 ---@param v any
 ---@return any
 local function denil(v)
@@ -416,7 +393,7 @@ T["6. a detected PR shows `(PR #N)` in the header and keys viewed state separate
     child.lua_get([[require('difit.state').file_path(__difit_entry().session.spec.review_key)]])
   child.cmd("Difit close")
 
-  local restore_gh = child_path_shim(
+  local restore_gh = helpers.child_path_shim(
     child,
     "gh",
     [[printf '%s' '{"number":7,"baseRefName":"main","url":"https://github.com/acme/widgets/pull/7"}']]
@@ -984,6 +961,76 @@ T["registry: two concurrent reviews (different repos) get independent tabpages a
   eq(tab_count(child), 1)
 
   repo2:destroy()
+end
+
+-- Buffer-name collision across sessions (found in R2 testing, fixed in R4): two
+-- concurrent reviews sharing identical blob content used to collide on the exact same
+-- `difit://<sha>/<path>` buffer name -- the second session's `nvim_buf_set_name` would
+-- silently repoint the FIRST session's buffer, and that view's own `close()` would then
+-- force-close windows the other session still owned. Unlike commit shas (which vary with
+-- author/committer timestamps -- see the comment on the mode-switch isolation test
+-- below), a git BLOB sha is a pure hash of content, so writing byte-identical file
+-- content into two otherwise-unrelated repos deterministically reproduces the same
+-- `entry.head_sha` in both, regardless of timing. `ui/scratch.lua` now embeds a
+-- per-session discriminator (`ctx.anchor`) in every owned buffer name, so this must no
+-- longer collide.
+T["registry: two concurrent sessions with byte-identical blob content never collide on the same difit:// buffer; closing one leaves the other intact"] = function()
+  set_size(child, 24, 100)
+
+  local function make_repo()
+    local r = helpers.new_repo()
+    r:write("shared.txt", "identical content\n")
+    r:commit("chore: base")
+    r:branch("feature")
+    r:write("shared.txt", "identical content\nplus a change\n")
+    r:commit("feat: change shared.txt")
+    return r
+  end
+  local repoA = make_repo()
+  local repoB = make_repo()
+
+  eq(
+    repoA:git({ "rev-parse", "feature:shared.txt" }),
+    repoB:git({ "rev-parse", "feature:shared.txt" }),
+    "sanity: both repos produce the identical blob sha for shared.txt"
+  )
+
+  -- `right = "head"` makes BOTH diff windows blob-backed (keyed purely by sha, no
+  -- worktree real-file window in the mix), so the collision is exercised on both sides.
+  child.lua([[require("difit.config").setup({ right = "head" })]])
+
+  local origin_tab = current_tab(child)
+
+  child.cmd("tcd " .. vim.fn.fnameescape(repoA.dir))
+  child.cmd("Difit")
+  local tab_a = current_tab(child)
+  eq(session_field(child, "current_path"), "shared.txt", "sanity: the only changed file auto-opens")
+  local before = layout_snapshot(child)
+
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { origin_tab })
+  child.cmd("tcd " .. vim.fn.fnameescape(repoB.dir))
+  child.cmd("Difit")
+  local tab_b = current_tab(child)
+  eq(tab_b ~= tab_a, true)
+  eq(session_field(child, "current_path"), "shared.txt")
+
+  local snap_b = layout_snapshot(child)
+  eq(snap_b.left_bufname ~= before.left_bufname, true, "left blob buffers must not collide")
+  eq(snap_b.right_bufname ~= before.right_bufname, true, "right blob buffers must not collide")
+
+  -- Closing repoB's review must not disturb repoA's still-open windows/buffers.
+  child.cmd("Difit close")
+  eq(tab_count(child), 2)
+
+  child.lua("vim.api.nvim_set_current_tabpage(...)", { tab_a })
+  eq(is_open(child), true, "repoA's review is untouched by closing repoB's")
+  eq(layout_snapshot(child), before, "repoA's own layout/buffers are byte-for-byte unchanged")
+
+  child.cmd("Difit close")
+  eq(tab_count(child), 1)
+
+  repoA:destroy()
+  repoB:destroy()
 end
 
 ---------------------------------------------------------------------------------------

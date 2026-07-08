@@ -6,7 +6,6 @@
 ---@class difit.RepoIdentity
 ---@field id string        -- normalized remote URL ("github.com/owner/repo") or toplevel path
 ---@field toplevel string  -- absolute path of the worktree root
----@field git_dir string   -- absolute path of the .git dir
 
 ---@class difit.ReviewKey
 ---@field kind "pr"|"branch"
@@ -34,8 +33,6 @@
 ---@field head_sha string?     -- blob SHA of right side; nil when deleted
 
 ---@class difit.Hunk
----@field old_start integer
----@field old_count integer
 ---@field new_start integer
 ---@field new_count integer
 ---@field header string    -- full "@@ ... @@ ..." line

@@ -4,17 +4,6 @@
 
 local M = {}
 
---- Parse "https://github.com/OWNER/REPO/pull/N" into "OWNER/REPO".
----@param url string
----@return string|nil
-local function parse_owner_repo(url)
-  local owner, repo = url:match("^https?://[^/]+/([^/]+)/([^/]+)/pull/%d+$")
-  if not owner then
-    return nil
-  end
-  return owner .. "/" .. repo
-end
-
 ---@return boolean
 function M.available()
   return vim.fn.executable("gh") == 1
@@ -23,7 +12,6 @@ end
 ---@class difit.PrInfo
 ---@field number integer
 ---@field base_ref string    -- baseRefName, e.g. "main"
----@field owner_repo string  -- "owner/repo", parsed from the PR url
 
 --- Detect the PR (if any) associated with the current branch via `gh pr view`.
 ---
@@ -41,7 +29,7 @@ function M.detect_pr(repo)
   local spawn_ok, res_or_err = pcall(function()
     return vim
       .system(
-        { "gh", "pr", "view", "--json", "number,baseRefName,url" },
+        { "gh", "pr", "view", "--json", "number,baseRefName" },
         { text = true, cwd = repo.toplevel, timeout = 10000 }
       )
       :wait()
@@ -64,24 +52,14 @@ function M.detect_pr(repo)
     return nil, "failed to parse `gh pr view` output as JSON"
   end
 
-  if
-    type(data.number) ~= "number"
-    or type(data.baseRefName) ~= "string"
-    or type(data.url) ~= "string"
-  then
+  if type(data.number) ~= "number" or type(data.baseRefName) ~= "string" then
     return nil, "`gh pr view` output missing expected fields"
-  end
-
-  local owner_repo = parse_owner_repo(data.url)
-  if not owner_repo then
-    return nil, "could not parse owner/repo from PR url: " .. data.url
   end
 
   ---@type difit.PrInfo
   local info = {
     number = data.number,
     base_ref = data.baseRefName,
-    owner_repo = owner_repo,
   }
   return info, nil
 end

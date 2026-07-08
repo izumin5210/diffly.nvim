@@ -211,4 +211,30 @@ function helpers.path_shim(name, body)
   end
 end
 
+--- Like `helpers.path_shim`, but writes the fake executable to disk from the
+--- test-runner process (fine: it's just a filesystem operation) and then points *the
+--- child's* `PATH` at it -- since the child, not this process, is what actually runs the
+--- code under test (`require("difit.github")`/`require("difit")` inside `child.lua`
+--- calls). Promoted from tests/test_github.lua and tests/test_e2e.lua (docs/
+--- refactor-v1.md R4), which had it duplicated identically.
+---@param child table
+---@param name string
+---@param body string
+---@return fun() restore
+function helpers.child_path_shim(child, name, body)
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+
+  local path = dir .. "/" .. name
+  local script = body:match("^#!") and body or ("#!/bin/sh\n" .. body)
+  vim.fn.writefile(vim.split(script, "\n"), path, "b")
+  vim.fn.setfperm(path, "rwxr-xr-x")
+
+  local old_path = child.lua_get("vim.env.PATH")
+  child.lua("vim.env.PATH = ...", { dir .. ":" .. old_path })
+  return function()
+    child.lua("vim.env.PATH = ...", { old_path })
+  end
+end
+
 return helpers

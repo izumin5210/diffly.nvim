@@ -63,7 +63,7 @@ local FAKE_SESSION_SETUP = [[
 
   _G.session = {
     spec = {
-      repo = { id = "example/repo", toplevel = "/tmp/x", git_dir = "/tmp/x/.git" },
+      repo = { id = "example/repo", toplevel = "/tmp/x" },
       base_ref = "origin/main",
       merge_base = "deadbeef",
       right = "worktree",

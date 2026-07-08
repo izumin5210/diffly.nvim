@@ -156,6 +156,16 @@ local function buf_of(child, which)
   return child.lua_get(string.format("vim.api.nvim_win_get_buf(_G.__view.%s)", which))
 end
 
+--- The per-session discriminator (docs/refactor-v1.md R4) every owned buffer name
+--- embeds -- `ctx.anchor`, the window `new_ctx` captured as the split point. Buffer-name
+--- assertions below build the exact expected name around this instead of hardcoding the
+--- pre-R4 `difit://<kind>/<path>` shape.
+---@param child table
+---@return integer
+local function ctx_anchor(child)
+  return child.lua_get("_G.__ctx.anchor")
+end
+
 --- `vim.fn.maparg(key, "n", false, true)`, evaluated with `bufnr` as the current buffer
 --- (via `nvim_buf_call`, no window needed) -- the same dict `nvim_buf_get_keymap` entries
 --- carry, including `nowait`/`buffer`. Returns an empty table when nothing matches
@@ -265,7 +275,7 @@ T["added file: left window is an empty scratch buffer"] = function()
   new_view(child)
   view_open(child, built.spec, entry)
 
-  eq(win_bufname(child, "left_win"), "difit://empty/" .. paths.new)
+  eq(win_bufname(child, "left_win"), "difit://empty/" .. ctx_anchor(child) .. "/" .. paths.new)
   eq(win_bufopt(child, "left_win", "modifiable"), false)
   eq(win_buflines(child, "left_win"), { "" })
 end
@@ -278,7 +288,10 @@ T["deleted file: right window is an empty scratch buffer"] = function()
   new_view(child)
   view_open(child, built.spec, entry)
 
-  eq(win_bufname(child, "right_win"), "difit://deleted/" .. paths.deleted)
+  eq(
+    win_bufname(child, "right_win"),
+    "difit://deleted/" .. ctx_anchor(child) .. "/" .. paths.deleted
+  )
   eq(win_bufopt(child, "right_win", "modifiable"), false)
   eq(win_buflines(child, "right_win"), { "" })
 
@@ -615,6 +628,58 @@ T["regression: buffer-local keymaps.file.toggle_viewed fires immediately despite
     false,
     "the longer global mapping never got a chance to fire"
   )
+end
+
+---------------------------------------------------------------------------------------
+-- Blob-loading error honesty (docs/refactor-v1.md R4): `entry.base_sha`/`head_sha` being
+-- `nil` is a legitimate empty buffer (added/deleted files, covered above); a non-nil sha
+-- that `git.file_content` still fails to load (e.g. it doesn't resolve to a real object)
+-- is a REAL git failure and must not be silently indistinguishable from that legitimate
+-- case -- it should notify once and still render an empty buffer, so the UI survives.
+---------------------------------------------------------------------------------------
+
+local BOGUS_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+---@param child table
+local function install_notify_capture(child)
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+end
+
+T["set_left(): a bogus base_sha notifies WARN once and still renders an empty buffer"] = function()
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+  entry.base_sha = BOGUS_SHA
+
+  new_view(child)
+  install_notify_capture(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_buflines(child, "left_win"), { "" }, "UI still renders (empty) instead of erroring")
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
+end
+
+T["set_right_head(): a bogus head_sha notifies WARN once and still renders an empty buffer"] = function()
+  local built = build(child, "head")
+  local entry = entry_by_path(built.entries, paths.modified)
+  entry.head_sha = BOGUS_SHA
+
+  new_view(child)
+  install_notify_capture(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_buflines(child, "right_win"), { "" }, "UI still renders (empty) instead of erroring")
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
 end
 
 return T

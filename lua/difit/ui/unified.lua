@@ -13,6 +13,7 @@
 local config = require("difit.config")
 local git = require("difit.git")
 local ui_keymaps = require("difit.ui.keymaps")
+local scratch = require("difit.ui.scratch")
 
 local M = {}
 
@@ -36,7 +37,8 @@ View.__index = View
 --- Build the buffer content and its line -> real-file-line jump map for one entry.
 --- Binary entries get a single placeholder line and an empty jump map (nothing to jump
 --- to). Deleted/added/renamed files fall out of `git.hunks` naturally; a nil hunk list
---- (e.g. a transient git error) degrades to just the header line rather than erroring.
+--- is a REAL git failure (docs/refactor-v1.md R4) -- notify once and degrade to just the
+--- header line, so the UI still renders instead of erroring.
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 ---@return string[] lines
@@ -49,8 +51,15 @@ local function build_content(entry, spec)
   local lines = { "diff --git a/" .. (entry.old_path or entry.path) .. " b/" .. entry.path }
   local jump_map = {}
 
-  local hunks = git.hunks(spec.repo, entry, spec.merge_base, spec.right)
-  for _, hunk in ipairs(hunks or {}) do
+  local hunks, err = git.hunks(spec.repo, entry, spec.merge_base, spec.right)
+  if not hunks then
+    vim.notify(
+      string.format("difit: failed to compute hunks for %s: %s", entry.path, err or "unknown error"),
+      vim.log.levels.WARN
+    )
+    hunks = {}
+  end
+  for _, hunk in ipairs(hunks) do
     table.insert(lines, hunk.header)
 
     -- Count only "+"/" " body lines: those are the ones that exist in the new file, so
@@ -73,23 +82,16 @@ local function build_content(entry, spec)
   return lines, jump_map
 end
 
---- Get the owned buffer for `name`, creating (and configuring) it on first use.
+--- Get-or-create the owned buffer for `name` via ui/scratch.lua, tracking it in
+--- `self.bufs` so `close()` can sweep it later (scratch.lua itself no longer needs that
+--- table for lookups -- `vim.fn.bufnr(name)` already handles reuse -- but this view still
+--- owns cleaning up whatever it created).
 ---@param self difit.ui.UnifiedView
 ---@param name string
----@param filetype string?  -- defaults to "diff" (the unified patch buffer's own filetype)
+---@param opts difit.ui.scratch.Opts?
 ---@return integer bufnr
-local function get_or_create_buf(self, name, filetype)
-  local existing = self.bufs[name]
-  if existing and vim.api.nvim_buf_is_valid(existing) then
-    return existing
-  end
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, name)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "hide"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = filetype or "diff"
+local function get_or_create_buf(self, name, opts)
+  local buf = scratch.find_or_create(name, opts)
   self.bufs[name] = buf
   return buf
 end
@@ -164,29 +166,30 @@ end
 --- would land on the wrong line, or the wrong content entirely. Open a read-only blob of
 --- `entry.head_sha` instead, so the line numbers always match what the diff showed,
 --- mirroring `ui/sidebyside.lua`'s own head-mode blob buffers (including its buffer
---- naming scheme, `difit://<short sha>/<path>`).
+--- naming scheme -- see ui/scratch.lua). A `head_sha` that fails to load is a REAL git
+--- failure (docs/refactor-v1.md R4): notify once and still open an empty blob rather
+--- than erroring.
 ---@param self difit.ui.UnifiedView
 ---@param win integer
 ---@param meta difit.ui.UnifiedBufMeta
 ---@return integer bufnr
 local function open_head_blob(self, win, meta)
   local short_sha = meta.head_sha and meta.head_sha:sub(1, 7) or "unknown"
-  local name = "difit://" .. short_sha .. "/" .. meta.path
+  local name = scratch.name(short_sha, self.ctx.anchor, meta.path)
 
-  local existing = self.bufs[name]
-  if existing and vim.api.nvim_buf_is_valid(existing) then
-    vim.api.nvim_win_set_buf(win, existing)
-    return existing
+  local content
+  if meta.head_sha then
+    local err
+    content, err = git.file_content(meta.repo, { sha = meta.head_sha })
+    if not content then
+      vim.notify(
+        string.format("difit: failed to load blob for %s: %s", meta.path, err or "unknown error"),
+        vim.log.levels.WARN
+      )
+    end
   end
 
-  local ft = vim.filetype.match({ filename = meta.path })
-  local buf = get_or_create_buf(self, name, ft)
-
-  local lines = meta.head_sha and (git.file_content(meta.repo, { sha = meta.head_sha }) or {}) or {}
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-
+  local buf = get_or_create_buf(self, name, { lines = content or {}, filename = meta.path })
   vim.api.nvim_win_set_buf(win, buf)
   return buf
 end
@@ -215,7 +218,7 @@ local function jump_to_file(self, buf)
   if meta.right == "head" then
     open_head_blob(self, win, meta)
   else
-    vim.cmd("edit " .. vim.fn.fnameescape(meta.toplevel .. "/" .. meta.path))
+    vim.cmd("edit " .. vim.fn.fnameescape(vim.fs.joinpath(meta.toplevel, meta.path)))
   end
 
   local line_count = vim.api.nvim_buf_line_count(0)
@@ -267,8 +270,12 @@ end
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:open(entry, spec)
-  local bufname = "difit://unified/" .. entry.path
-  local buf = get_or_create_buf(self, bufname)
+  -- `lang = "diff"` (never `entry.path`'s own language): this buffer's content is always
+  -- a unified patch, regardless of which file it's showing -- highlighting it as the
+  -- reviewed file's own language would be wrong even before considering docs/
+  -- refactor-v1.md R4's "never set 'filetype'" rule.
+  local bufname = scratch.name("unified", self.ctx.anchor, entry.path)
+  local buf = get_or_create_buf(self, bufname, { lang = "diff" })
 
   local lines, jump_map = build_content(entry, spec)
 

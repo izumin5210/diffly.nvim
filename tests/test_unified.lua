@@ -195,13 +195,28 @@ T["open(): renders the diff --git header, hunk header and +/- body lines"] = fun
   eq(vim.tbl_contains(result.lines, "+function M.extra()"), true)
 end
 
-T["open(): buffer has filetype=diff, is a read-only scratch buffer"] = function()
+T["open(): buffer never sets 'filetype' (docs/refactor-v1.md R4), is a read-only scratch buffer"] = function()
   local result = open(paths.modified)
 
-  eq(result.filetype, "diff")
+  eq(result.filetype, "", "difit:// buffers must never fire FileType autocmds")
   eq(result.buftype, "nofile")
   eq(result.modifiable, false)
-  eq(result.bufname, "difit://unified/" .. paths.modified)
+  local anchor = child.lua_get("_G.ctx.anchor")
+  eq(result.bufname, "difit://unified/" .. anchor .. "/" .. paths.modified)
+end
+
+T["open(): highlights as 'diff' via treesitter or the legacy 'syntax' option, never 'filetype'"] = function()
+  local result = open(paths.modified)
+
+  local highlighted = child.lua(
+    [[
+      local buf = ...
+      local ts_active = vim.treesitter.highlighter.active[buf] ~= nil
+      return ts_active or vim.bo[buf].syntax == "diff"
+    ]],
+    { result.buf }
+  )
+  eq(highlighted, true)
 end
 
 T["open(): reuses the same window across multiple opens"] = function()
@@ -435,6 +450,61 @@ T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = fu
   child.type_keys("q")
 
   eq(child.lua_get("_G.__calls"), { toggle_mode = 1, focus_panel = 1, close = 1 })
+end
+
+---------------------------------------------------------------------------------------
+-- Blob-loading error honesty (docs/refactor-v1.md R4): a REAL git failure (a sha that
+-- doesn't resolve to an object) must notify once instead of silently degrading to an
+-- empty/truncated render indistinguishable from ordinary "nothing to show" cases.
+---------------------------------------------------------------------------------------
+
+local BOGUS_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+---@param child table
+local function install_notify_capture(child)
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+end
+
+T["<CR>: a bogus head_sha notifies WARN once and still opens an empty read-only blob"] = function()
+  child.lua(
+    [[
+      local path, sha = ...
+      entries[path].head_sha = sha
+    ]],
+    { paths.modified, BOGUS_SHA }
+  )
+
+  local result = open(paths.modified)
+  local target_line = line_index(result.lines, '+  return "hello, world"')
+
+  install_notify_capture(child)
+  local jumped = press_cr_at(target_line)
+
+  assert_head_blob_bufname(jumped.bufname, paths.modified)
+  local blob_lines = child.lua([[return vim.api.nvim_buf_get_lines(0, 0, -1, false)]])
+  eq(blob_lines, { "" }, "UI still renders (empty) instead of erroring")
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
+end
+
+T["open(): a bogus merge_base notifies WARN once and still renders just the header line"] = function()
+  child.lua([[spec.merge_base = ...]], { BOGUS_SHA })
+  install_notify_capture(child)
+
+  local result = open(paths.modified)
+
+  eq(result.lines, { "diff --git a/" .. paths.modified .. " b/" .. paths.modified })
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
 end
 
 return T

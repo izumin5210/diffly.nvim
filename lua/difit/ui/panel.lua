@@ -10,8 +10,7 @@
 
 local config = require("difit.config")
 local tree = require("difit.tree")
-
-require("difit.ui.hl").setup()
+local scratch = require("difit.ui.scratch")
 
 local M = {}
 
@@ -434,15 +433,16 @@ function M.open(session)
   local cfg = config.get()
 
   local buf = vim.api.nvim_create_buf(false, true)
-  -- Suffixed with the buffer's own (unique) number: since docs/refactor-v1.md R1, more
+  -- Named after the buffer's own (unique) number: since docs/refactor-v1.md R1, more
   -- than one review -- hence more than one panel -- can be open at once, and a bare
-  -- "difit://panel" would collide (E95) on the second `panel.open()` call.
-  vim.api.nvim_buf_set_name(buf, string.format("difit://panel/%d", buf))
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "hide"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].filetype = "difit-panel"
+  -- "difit://panel" would collide (E95) on the second `panel.open()` call. R4 unifies
+  -- this into the same `difit://<kind>/<session_id>` scheme every other owned buffer
+  -- uses (see ui/scratch.lua) -- the panel just supplies its own bufnr as the
+  -- discriminator, since it's already known and already unique.
+  vim.api.nvim_buf_set_name(buf, scratch.name("panel", buf))
+  -- No `filetype`/highlighting: the panel draws its own extmarks and, per
+  -- docs/refactor-v1.md R4, `difit://` buffers must never fire `FileType` autocmds.
+  scratch.configure(buf, { modifiable = false })
 
   -- `win = -1` makes this a top-level split (like `:topleft vsplit`): full tabpage
   -- height, independent of whatever window layout already exists.

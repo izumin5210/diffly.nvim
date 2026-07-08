@@ -45,7 +45,6 @@ T["repo_identity(): no remote falls back to the toplevel path"] = function()
   eq(err, nil)
   eq(realpath(id.toplevel), realpath(repo.dir))
   eq(id.id, id.toplevel)
-  eq(realpath(id.git_dir), realpath(repo.dir .. "/.git"))
 
   repo:destroy()
 end
