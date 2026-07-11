@@ -21,8 +21,23 @@ end
 --- `:command-completion-customlist`-style completion: unlike `:command-completion-custom`,
 -- Neovim does not filter these candidates against `arg_lead` on our behalf.
 ---@param arg_lead string
+---@param cmd_line string
 ---@return string[]
-local function complete(arg_lead)
+local function complete(arg_lead, cmd_line)
+  -- Once the first argument is literally "sweep", every later one is a pattern-group
+  -- name, not a subcommand/branch -- `:Difit sweep <Tab>` should only ever offer
+  -- `require("difit").sweep_group_names()` (see its own doc: empty outside a viewer
+  -- tabpage, never a subcommand/branch name in that position).
+  -- Matches the command name loosely (not hardcoded to "Difit") since Vim allows a
+  -- unique command-name abbreviation (e.g. ":Dif sweep <Tab>") to reach the very same
+  -- completion function with that shorter spelling still in `cmd_line`.
+  if cmd_line:match("^%s*%S+%s+sweep%s") then
+    local candidates = require("difit").sweep_group_names()
+    return vim.tbl_filter(function(candidate)
+      return vim.startswith(candidate, arg_lead)
+    end, candidates)
+  end
+
   local candidates = vim.list_extend(vim.deepcopy(SUBCOMMANDS), local_branches())
   return vim.tbl_filter(function(candidate)
     return vim.startswith(candidate, arg_lead)
@@ -34,7 +49,8 @@ vim.api.nvim_create_user_command("Difit", function(cmd_opts)
 end, {
   nargs = "*",
   complete = complete,
-  desc = "Open/control the difit review UI (subcommands: close, toggle, clean, refresh, focus, sweep)",
+  desc = "Open/control the difit review UI (subcommands: close, toggle, clean, refresh, "
+    .. "focus, sweep [group])",
 })
 
 vim.keymap.set("n", "<Plug>(difit-toggle-viewed)", function()

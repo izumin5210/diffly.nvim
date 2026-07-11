@@ -289,9 +289,56 @@ local function toggle_viewed_batch(child, paths)
 end
 
 ---@param child table
+---@param group_name string?
 ---@return {marked: integer, unmarked: integer, matched: integer}
-local function sweep_patterns(child)
-  return child.lua_get("_G.__session:sweep_patterns()")
+local function sweep_patterns(child, group_name)
+  -- Wrapped in parens: `Session:sweep_patterns` now returns TWO values (result, scope/err
+  -- -- see `sweep_with_scope` below for both of them at once), and `(...)` truncates a
+  -- multi-value expression down to exactly one, the same trick Lua itself uses for
+  -- `(f())`. Keeps every existing call site below (written against the pre-groups
+  -- single-return signature) working unchanged.
+  if group_name == nil then
+    return child.lua_get("(_G.__session:sweep_patterns())")
+  end
+  return child.lua(
+    "local group_name = ...; return (_G.__session:sweep_patterns(group_name))",
+    { group_name }
+  )
+end
+
+--- Both return values of ONE `sweep_patterns(group_name)` call, bundled into a single
+--- table -- needed (rather than two separate single-purpose helpers each making their own
+--- call) because `sweep_patterns` is tri-state: calling it twice to read `result` and
+--- `scope` separately would itself flip un-marked files back to marked (or vice versa)
+--- between the two calls, corrupting exactly the assertion the test is trying to make.
+---@param child table
+---@param group_name string?
+---@return {result: {marked: integer, unmarked: integer, matched: integer}|nil, scope: string}
+local function sweep_with_scope(child, group_name)
+  -- `{ group_name }` would collapse to an empty args list when `group_name` is nil (same
+  -- pitfall `next_unviewed`/`next_file`/`prev_file` above already work around) -- the
+  -- child-side script reads `...` conditionally instead of relying on that collapsing
+  -- back to a real `nil` on this side.
+  if group_name == nil then
+    return child.lua([[
+      local result, scope = _G.__session:sweep_patterns()
+      return { result = result, scope = scope }
+    ]])
+  end
+  return child.lua(
+    [[
+      local group_name = ...
+      local result, scope = _G.__session:sweep_patterns(group_name)
+      return { result = result, scope = scope }
+    ]],
+    { group_name }
+  )
+end
+
+---@param child table
+---@return difit.PatternGroupInfo[]
+local function pattern_groups(child)
+  return child.lua_get("_G.__session:pattern_groups()")
 end
 
 --- Spy on `require('difit.state').save` inside the child, counting calls without changing
@@ -1051,6 +1098,176 @@ T["toggle_viewed_batch(): paths absent from entries are silently ignored"] = fun
     { marked = 0, unmarked = 0, matched = 0 }
   )
   eq(save_count(child), 0)
+
+  child.stop()
+  repo:destroy()
+end
+
+-- 11. pattern_groups() / sweep_patterns(group_name) -- named pattern GROUPS ------------
+
+--- Purpose-built repo for group-level tests: two lockfiles (both matched by a "lock
+--- files" group's "*.lock"), one file under generated/ (matched by a "generated" group's
+--- "generated/**"), and one file matched by neither -- entries sort by path: "a.lock",
+--- "generated/out.txt", "other.txt", "z.lock".
+---@return difit.test.Repo
+local function group_repo()
+  local repo = helpers.new_repo()
+  repo:write("base.txt", "base\n")
+  repo:commit("chore: base")
+  repo:branch("feature")
+  repo:write("a.lock", "1\n")
+  repo:write("z.lock", "2\n")
+  repo:write("generated/out.txt", "3\n")
+  repo:write("other.txt", "4\n")
+  repo:commit("feat: add files")
+  return repo
+end
+
+T["pattern_groups(): resolves config.viewed_patterns' groups against entries, with per-group matched paths and unviewed counts"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, {
+    { name = "lock files", patterns = { "*.lock" } },
+    { name = "generated", patterns = { "generated/**" } },
+  })
+
+  local groups = pattern_groups(child)
+  eq(#groups, 2)
+  eq(groups[1].name, "lock files")
+  eq(groups[1].patterns, { "*.lock" })
+  eq(groups[1].matched, { "a.lock", "z.lock" })
+  eq(groups[1].unviewed, 2)
+  eq(groups[2].name, "generated")
+  eq(groups[2].matched, { "generated/out.txt" })
+  eq(groups[2].unviewed, 1)
+
+  toggle_viewed(child, "a.lock")
+  eq(pattern_groups(child)[1].unviewed, 1, "marking one matched file drops that group's count")
+  eq(pattern_groups(child)[2].unviewed, 1, "an unrelated group's count is unaffected")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["pattern_groups(): flat string viewed_patterns (backward compat) resolve to a single 'default' group"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "*.lock" })
+
+  local groups = pattern_groups(child)
+  eq(#groups, 1)
+  eq(groups[1].name, "default")
+  eq(groups[1].matched, { "a.lock", "z.lock" })
+
+  child.stop()
+  repo:destroy()
+end
+
+T["pattern_groups(): no viewed_patterns configured yields no groups"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  eq(pattern_groups(child), {})
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(name): sweeps only the named group, resolving its own name as the scope"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, {
+    { name = "lock files", patterns = { "*.lock" } },
+    { name = "generated", patterns = { "generated/**" } },
+  })
+
+  local swept = sweep_with_scope(child, "lock files")
+  eq(swept.result, { marked = 2, unmarked = 0, matched = 2 })
+  eq(swept.scope, "lock files")
+  eq(is_viewed(child, "a.lock"), true)
+  eq(is_viewed(child, "z.lock"), true)
+  eq(is_viewed(child, "generated/out.txt"), false, "sweeping one group must not touch another")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(name): tri-state toggles cleanly within just that group, across repeated sweeps"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { { name = "lock files", patterns = { "*.lock" } } })
+
+  eq(sweep_patterns(child, "lock files"), { marked = 2, unmarked = 0, matched = 2 })
+  eq(sweep_patterns(child, "lock files"), { marked = 0, unmarked = 2, matched = 2 })
+  eq(sweep_patterns(child, "lock files"), { marked = 2, unmarked = 0, matched = 2 })
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(unknown name): returns nil plus an error, without touching any state"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { { name = "lock files", patterns = { "*.lock" } } })
+
+  install_save_spy(child)
+
+  local swept = sweep_with_scope(child, "does-not-exist")
+  eq(swept.result, nil)
+  eq(type(swept.scope), "string")
+  eq(swept.scope:find("does%-not%-exist") ~= nil, true)
+  eq(save_count(child), 0, "an unknown group must never touch disk")
+  eq(is_viewed(child, "a.lock"), false)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(nil): sweeps the UNION of every group, de-duplicating a path matched by more than one group"] = function()
+  local repo = group_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, {
+    -- Both groups match "a.lock" -- the union must still only toggle it once.
+    { name = "lock files", patterns = { "*.lock" } },
+    { name = "also lock files", patterns = { "a.lock" } },
+    { name = "generated", patterns = { "generated/**" } },
+  })
+
+  local swept = sweep_with_scope(child, nil)
+  eq(swept.result, { marked = 3, unmarked = 0, matched = 3 }, "a.lock counted once, not twice")
+  eq(swept.scope, "all groups")
+  eq(is_viewed(child, "a.lock"), true)
+  eq(is_viewed(child, "z.lock"), true)
+  eq(is_viewed(child, "generated/out.txt"), true)
+  eq(is_viewed(child, "other.txt"), false)
 
   child.stop()
   repo:destroy()

@@ -6,12 +6,18 @@ M.defaults = {
   include_untracked = true,
   auto_advance = true, -- jump to next un-viewed file after marking
   icons = true, -- use mini.icons / nvim-web-devicons when available
-  -- Bulk-viewed glob patterns (gitignore-inspired), triggered explicitly via the panel's
-  -- `S` key / `:Difit sweep` -- never applied automatically. A pattern with no "/" matches
-  -- an entry's basename (e.g. "*.lock" matches "yarn.lock" anywhere in the tree); a pattern
-  -- containing "/" matches the full toplevel-relative path (e.g. "dist/**" matches only
-  -- "dist/..."). Compiled via `vim.glob.to_lpeg` (LSP glob semantics: "**" crosses
-  -- directories, a single "*" does not). See `Session:sweep_patterns()`.
+  -- Bulk-viewed pattern GROUPS (gitignore-inspired globs), triggered explicitly via the
+  -- panel's `S` key / `:Difit sweep [group]` -- never applied automatically. Each item is
+  -- either a plain string glob (backward compat: every such string collects into one
+  -- implicit group named "default", positioned wherever the FIRST plain string appears --
+  -- see `M.normalize_pattern_groups`) or a table `{ name = "...", patterns = {...} }` for
+  -- an explicitly named group (e.g. splitting lockfiles from generated output so either
+  -- can be swept independently). Within a group, a pattern with no "/" matches an entry's
+  -- basename (e.g. "*.lock" matches "yarn.lock" anywhere in the tree); a pattern containing
+  -- "/" matches the full toplevel-relative path (e.g. "dist/**" matches only "dist/...").
+  -- Compiled via `vim.glob.to_lpeg` (LSP glob semantics: "**" crosses directories, a single
+  -- "*" does not). See `M.normalize_pattern_groups()` and `Session:pattern_groups()`/
+  -- `Session:sweep_patterns()`.
   viewed_patterns = {},
   panel = { width = 35 },
   keymaps = {
@@ -69,6 +75,87 @@ end
 ---@return table
 function M.get()
   return M.options
+end
+
+--- Name every implicit group of plain-string globs collects into (see
+--- `M.normalize_pattern_groups` below) -- also the name an explicit
+--- `{ name = "default", ... }` table collides with, which is deliberately treated as just
+--- another duplicate (merged into the first occurrence, warned once) rather than
+--- special-cased.
+local DEFAULT_GROUP_NAME = "default"
+
+--- "Once per Neovim session" flag for a duplicate group name, keyed by the name itself --
+--- same rationale as `session.lua`'s `bad_pattern_notified`: a duplicate name is a
+--- persistent config mistake, not a one-off, so every caller re-normalizing the same
+--- `viewed_patterns` (every sweep, every menu render that needs group counts, ...) would
+--- otherwise re-warn on every single call.
+local duplicate_group_notified = {}
+
+---@class difit.PatternGroup
+---@field name string
+---@field patterns string[]
+
+--- Normalize `viewed_patterns`' backward-compatible shape into an ordered list of named
+--- groups: a plain string glob collects into one implicit group named "default",
+--- positioned wherever the FIRST such string appears among `patterns`; a table
+--- `{ name = ..., patterns = {...} }` is its own group, positioned where IT appears
+--- instead. An explicitly-named table colliding with an already-existing group (another
+--- table with the same name, or the implicit "default" bucket) merges into that first
+--- occurrence (patterns appended in encounter order) and warns once (see
+--- `duplicate_group_notified`) -- a repeated explicit name is virtually always a config
+--- mistake, not an intentional split. Plain strings joining the "default" bucket are never
+--- treated as a "duplicate", however many of them there are or however that bucket first
+--- came to exist (implicitly or via an explicit `{name="default", ...}` table): collecting
+--- loose strings together is the exact, unremarkable point of that bucket.
+---
+--- Lives here rather than `session.lua` because it is pure shape-interpretation of a
+--- config value -- no git/session/entries involved -- so it is testable (and tested, see
+--- tests/test_config.lua) without spinning up a repo or a `difit.Session` at all;
+--- `session.lua`'s `Session:pattern_groups()` calls this and then does the part that
+--- genuinely needs a session: compiling each group's patterns and matching them against
+--- `self.entries`.
+---@param patterns (string|{name: string, patterns: string[]})[]
+---@return difit.PatternGroup[]
+function M.normalize_pattern_groups(patterns)
+  local groups = {}
+  local index_by_name = {}
+
+  --- @return difit.PatternGroup group
+  --- @return boolean created  -- false when `name` already had a group before this call
+  local function get_or_create(name)
+    local idx = index_by_name[name]
+    if idx then
+      return groups[idx], false
+    end
+    local group = { name = name, patterns = {} }
+    table.insert(groups, group)
+    index_by_name[name] = #groups
+    return group, true
+  end
+
+  for _, item in ipairs(patterns or {}) do
+    if type(item) == "string" then
+      local group = get_or_create(DEFAULT_GROUP_NAME)
+      table.insert(group.patterns, item)
+    elseif type(item) == "table" and type(item.name) == "string" then
+      local group, created = get_or_create(item.name)
+      if not created and not duplicate_group_notified[item.name] then
+        duplicate_group_notified[item.name] = true
+        vim.notify(
+          string.format(
+            "difit: duplicate viewed_patterns group name %q; merging into the first occurrence",
+            item.name
+          ),
+          vim.log.levels.WARN
+        )
+      end
+      for _, pattern in ipairs(item.patterns or {}) do
+        table.insert(group.patterns, pattern)
+      end
+    end
+  end
+
+  return groups
 end
 
 return M

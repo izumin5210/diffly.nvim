@@ -5,9 +5,12 @@
 -- `session` is used ONLY through the documented interface from docs/plan.md (WP-E):
 -- fields `spec`/`entries`/`state`/`mode`/`current_path`, methods `subscribe`/
 -- `open_file`/`toggle_viewed`/`is_viewed`/`next_unviewed`/`progress`/`set_mode`/
--- `refresh`/`close`/`sweep_patterns`/`toggle_viewed_batch`. `lua/difit/session.lua` is
--- intentionally never `require`d here, so this module stays testable against a scripted
--- fake (see tests/test_panel.lua).
+-- `refresh`/`close`/`toggle_viewed_batch`. `lua/difit/session.lua` is intentionally never
+-- `require`d here, so this module stays testable against a scripted fake (see
+-- tests/test_panel.lua). The pattern-GROUP selector behind `S` (`pattern_groups`/
+-- `sweep_patterns`, `vim.ui.select`) lives in `init.lua` instead and is reached through an
+-- injected `opts.sweep` callback (see `M.open`/`on_sweep`) -- not through this interface --
+-- specifically so this module never has to `require("difit")` to get at it.
 
 local config = require("difit.config")
 local tree = require("difit.tree")
@@ -22,6 +25,7 @@ local M = {}
 ---@field folded table<string, boolean>          -- dir path -> folded?
 ---@field row_nodes table<integer, difit.TreeNode> -- 1-indexed buffer line -> node
 ---@field hide_viewed boolean  -- display-only filter (toggle_hide_viewed); never persisted
+---@field sweep_action fun()?  -- see `M.open`'s `opts.sweep`
 local Panel = {}
 Panel.__index = Panel
 
@@ -417,10 +421,12 @@ end
 
 --- Move the cursor to, and open, `session:next_unviewed(after_path)` -- the auto-advance
 --- tail shared by `on_toggle_viewed` (single-file toggle, `after_path` is the just-toggled
---- file) and the batch actions `on_sweep`/`on_toggle_viewed_subtree` below (`after_path =
---- nil`: a batch touches files scattered across the tree, so there is no single "after"
---- file to resume from -- start over from the beginning of `tree.file_order` instead, same
---- as a fresh review's first auto-advance-free open would).
+--- file) and the subtree batch action `on_toggle_viewed_subtree` below (`after_path = nil`:
+--- a batch touches files scattered across the tree, so there is no single "after" file to
+--- resume from -- start over from the beginning of `tree.file_order` instead, same as a
+--- fresh review's first auto-advance-free open would). `S`'s own auto-advance is the
+--- equivalent tail in `init.lua`'s `perform_sweep` instead, via `Panel:set_cursor` -- see
+--- `on_sweep`'s doc for why that flow lives there rather than here.
 ---@param panel difit.Panel
 ---@param after_path string?
 local function advance_to_next_unviewed(panel, after_path)
@@ -455,12 +461,14 @@ local function on_toggle_viewed(panel)
   end
 end
 
---- `result` from `Session:toggle_viewed_batch`/`sweep_patterns`, formatted as the same
---- compact one-line report `init.lua`'s `M.sweep()` gives for `:Difit sweep` -- reimplemented
---- here rather than shared across the two files for the same reason
---- `toggle_viewed_and_advance`/`on_toggle_viewed` are already duplicated between them (see
---- init.lua): this call site has its own panel-local cursor/row bookkeeping to run
---- afterwards, and init.lua has none of that to share it with.
+--- `result` from `Session:toggle_viewed_batch` (used by `V`'s subtree batch below),
+--- formatted the same compact one-line way `init.lua`'s `perform_sweep` reports a
+--- `:Difit sweep`/panel-`S` result -- reimplemented here rather than shared across the two
+--- files for the same reason `toggle_viewed_and_advance`/`on_toggle_viewed` are already
+--- duplicated between them (see init.lua): this call site has its own panel-local
+--- cursor/row bookkeeping to run afterwards, and init.lua has none of that to share it
+--- with. `S` itself no longer calls this (see `on_sweep`): its result is reported by
+--- `init.lua`'s own `perform_sweep`, which knows the swept group's name for the message.
 ---@param result {marked: integer, unmarked: integer, matched: integer}
 local function notify_batch_result(result)
   if result.marked > 0 then
@@ -473,26 +481,21 @@ local function notify_batch_result(result)
   end
 end
 
---- `S`: bulk-toggle every entry matching `config.viewed_patterns` (see
---- `Session:sweep_patterns()`). Distinguishes "the option is unset" from "it's set but
---- nothing in this diff matches it" -- both are all-zero-counts results at the `Session`
---- level, so the two INFO messages are resolved here rather than inferred from the count.
+--- `S`: run the exact same 0/1/N-pattern-group selector flow `:Difit sweep` uses (0
+--- groups -> "not configured" notice; 1 -> sweep it immediately; 2+ -> a `vim.ui.select`
+--- menu -- see `init.lua`'s `run_sweep_selector`). That flow needs the panel/session
+--- registry lookups and `vim.ui.select` plumbing `init.lua` already owns, and `panel.lua`
+--- must never `require("difit")` itself (that would be circular: `init.lua` already
+--- `require`s this module) -- so `M.open`'s caller injects it instead, the same way
+--- `ui/sidebyside.lua`/`ui/unified.lua`'s diff buffers reach init.lua-owned behavior
+--- through their own injected `ctx.actions`, without either direction ever needing to
+--- reach back into this file. A no-op when nothing was injected (e.g. this module driven
+--- standalone against a fake session, see tests/test_panel.lua, which injects its own
+--- fake to assert only that `S` reaches it).
 ---@param panel difit.Panel
 local function on_sweep(panel)
-  if #config.get().viewed_patterns == 0 then
-    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
-    return
-  end
-
-  local result = panel.session:sweep_patterns()
-  if result.matched == 0 then
-    vim.notify("difit: no files matched viewed_patterns", vim.log.levels.INFO)
-    return
-  end
-
-  notify_batch_result(result)
-  if result.marked > 0 and config.get().auto_advance then
-    advance_to_next_unviewed(panel, nil)
+  if panel.sweep_action then
+    panel.sweep_action()
   end
 end
 
@@ -671,8 +674,12 @@ local function set_keymaps(panel)
 end
 
 ---@param session difit.Session
+---@param opts { sweep: fun()? }?  -- `sweep`: injected by `init.lua` so the `S` keymap
+---  runs the exact same group-selector flow `:Difit sweep` uses -- see `on_sweep`'s own
+---  doc for why this is injected rather than implemented locally.
 ---@return difit.Panel
-function M.open(session)
+function M.open(session, opts)
+  opts = opts or {}
   local cfg = config.get()
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -726,6 +733,7 @@ function M.open(session)
     folded = {},
     row_nodes = {},
     hide_viewed = false,
+    sweep_action = opts.sweep,
   }, Panel)
 
   set_keymaps(panel)

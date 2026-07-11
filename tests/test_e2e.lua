@@ -153,6 +153,63 @@ local function is_viewed(child, path)
   return child.lua("return __difit_entry().session:is_viewed(...)", { path })
 end
 
+--- Replace `vim.notify` inside the child with one that records every call -- mirrors
+--- tests/test_session.lua's/tests/test_panel.lua's own `install_notify_capture` helpers
+--- (this file otherwise inlines the same few lines at each of its two pre-existing call
+--- sites; new cases below use this instead of adding a third/fourth copy).
+---@param child table
+local function install_notify_capture(child)
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+end
+
+---@param child table
+---@return table[]
+local function notifications(child)
+  return child.lua_get("_G.__notifications")
+end
+
+--- Stub `vim.ui.select` inside the child to record every call (items formatted via the
+--- caller-supplied `opts.format_item`, plus `opts.prompt`) into `_G.__select_log`, then
+--- invoke `on_choice` with whatever `pick` returns for that call's `items` -- lets tests
+--- assert exactly what `run_sweep_selector` (init.lua) offered, without a real interactive
+--- picker in the loop. `pick` defaults to "always cancel" (`function() return nil end`),
+--- the safest default for tests that only care THAT/whether a menu appeared.
+---@param child table
+---@param pick_body string?  -- Lua source for a `function(items) return <chosen item>|nil end`
+---  expression, evaluated INSIDE the child (a real Lua function can't cross the RPC
+---  boundary) -- defaults to always cancelling.
+local function stub_ui_select(child, pick_body)
+  child.lua(
+    [[
+      local pick_body = ...
+      local pick = pick_body and assert(loadstring("return " .. pick_body))() or function()
+        return nil
+      end
+      _G.__select_log = {}
+      vim.ui.select = function(items, opts, on_choice)
+        local formatted = {}
+        for _, item in ipairs(items) do
+          table.insert(formatted, opts.format_item(item))
+        end
+        table.insert(_G.__select_log, { prompt = opts.prompt, formatted = formatted })
+        on_choice(pick(items))
+      end
+    ]],
+    { pick_body }
+  )
+end
+
+---@param child table
+---@return {prompt: string, formatted: string[]}[]
+local function select_log(child)
+  return child.lua_get("_G.__select_log")
+end
+
 --- Additions count (`+N`) of the first panel row whose text contains `filename_substr`,
 -- used instead of hardcoding absolute git-diff stats (robust to exactly how git's diff
 -- algorithm represents a given edit).
@@ -1089,6 +1146,215 @@ T["`:Difit sweep` notifies when viewed_patterns is not configured, without marki
   eq(#notes, 1)
   eq(notes[1].msg, "difit: viewed_patterns is not configured")
   eq(is_viewed(child, paths.modified), false)
+end
+
+---------------------------------------------------------------------------------------
+-- Named pattern GROUPS (`viewed_patterns` items shaped `{name=, patterns=}`): the shared
+-- 0/1/N-group selector flow behind both `S` and `:Difit sweep [name]` -- see init.lua's
+-- `run_sweep_selector`/`perform_sweep`. `lock_pattern_repo()` above (a single flat string
+-- list, one implicit "default" group) already covers the 1-group "no menu" case for the
+-- pre-groups behavior it was written against; `two_group_repo()` below adds a second,
+-- disjoint group so the 2+-group menu path has something real to pick between.
+---------------------------------------------------------------------------------------
+
+--- main with one commit, `feature` adding a lockfile, a generated-style file, and an
+--- unrelated source file -- entries sort by path: "generated/out.txt" (row 4, under dir
+--- "generated" at row 3), "src/app.lua" (row 6, under dir "src" at row 5), "yarn.lock"
+--- (row 7).
+---@return difit.test.Repo
+local function two_group_repo()
+  local r = helpers.new_repo()
+  r:write("README.md", "base\n")
+  r:commit("chore: base")
+  r:branch("feature")
+  r:write("yarn.lock", "lockfile v1\n")
+  r:write("generated/out.txt", "generated\n")
+  r:write("src/app.lua", "return {}\n")
+  r:commit("feat: add app.lua + generated output + a lockfile")
+  return r
+end
+
+---@param child table
+local function configure_two_groups(child)
+  child.lua([[
+    require("difit.config").setup({
+      viewed_patterns = {
+        { name = "lock files", patterns = { "*.lock" } },
+        { name = "generated", patterns = { "generated/**" } },
+      },
+    })
+  ]])
+end
+
+T["exactly one configured group sweeps immediately on `S`/`:Difit sweep`, without ever calling vim.ui.select"] = function()
+  local lock_repo = lock_pattern_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(lock_repo.dir))
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  stub_ui_select(child)
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep")
+
+  eq(#select_log(child), 0, "a single group must sweep directly, never opening a menu")
+  eq(is_viewed(child, "yarn.lock"), true)
+
+  lock_repo:destroy()
+end
+
+T["2+ configured groups open a vim.ui.select menu: 'all groups' first, then each group, formatted with counts"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  stub_ui_select(child) -- default: cancels
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep")
+
+  local log = select_log(child)
+  eq(#log, 1)
+  eq(log[1].prompt, "Sweep pattern group:")
+  eq(log[1].formatted, {
+    "all groups (2 files, 2 unviewed)",
+    "lock files (1 files, 1 unviewed)",
+    "generated (1 files, 1 unviewed)",
+  })
+
+  -- Cancelling out of the menu must be a complete no-op.
+  eq(is_viewed(child, "yarn.lock"), false)
+  eq(is_viewed(child, "generated/out.txt"), false)
+  eq(panel_lines(child)[2], "0/3 viewed")
+
+  repo:destroy()
+end
+
+T["picking a specific group from the menu sweeps only that group and updates progress"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  -- items[1] is "all groups"; items[2] is the first configured group, "lock files".
+  stub_ui_select(child, "function(items) return items[2] end")
+
+  child.cmd("Difit")
+  eq(panel_lines(child)[2], "0/3 viewed")
+
+  child.cmd("Difit sweep")
+
+  eq(is_viewed(child, "yarn.lock"), true)
+  eq(is_viewed(child, "generated/out.txt"), false, "only the picked group was swept")
+  eq(panel_lines(child)[2], "1/3 viewed")
+
+  repo:destroy()
+end
+
+T["picking 'all groups' from the menu sweeps the union of every group"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  stub_ui_select(child, "function(items) return items[1] end")
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep")
+
+  eq(is_viewed(child, "yarn.lock"), true)
+  eq(is_viewed(child, "generated/out.txt"), true)
+  eq(is_viewed(child, "src/app.lua"), false, "src/app.lua matches neither group")
+  eq(panel_lines(child)[2], "2/3 viewed")
+
+  repo:destroy()
+end
+
+T["`S` in the panel opens the exact same menu as `:Difit sweep`"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  stub_ui_select(child, "function(items) return items[2] end")
+
+  child.cmd("Difit")
+  focus_panel(child)
+  child.type_keys("S")
+
+  local log = select_log(child)
+  eq(#log, 1)
+  eq(log[1].formatted[1]:find("all groups", 1, true) ~= nil, true)
+  eq(is_viewed(child, "yarn.lock"), true)
+
+  repo:destroy()
+end
+
+T["`:Difit sweep {name}` with a multi-word group name sweeps just that group, no menu"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  stub_ui_select(child)
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep lock files")
+
+  eq(#select_log(child), 0, "an explicit name must never open the menu")
+  eq(is_viewed(child, "yarn.lock"), true)
+  eq(is_viewed(child, "generated/out.txt"), false)
+end
+
+T["`:Difit sweep {name}` resolves a unique prefix when no exact match exists"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  stub_ui_select(child)
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep lock")
+
+  eq(is_viewed(child, "yarn.lock"), true, "'lock' is a unique prefix of 'lock files'")
+end
+
+T["`:Difit sweep {unknown}` notifies WARN listing the available groups, without marking anything"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  child.cmd("Difit")
+  install_notify_capture(child)
+
+  child.cmd("Difit sweep nonexistent")
+
+  local notes = notifications(child)
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
+  eq(notes[1].msg:find("nonexistent", 1, true) ~= nil, true)
+  eq(notes[1].msg:find("lock files", 1, true) ~= nil, true)
+  eq(notes[1].msg:find("generated", 1, true) ~= nil, true)
+  eq(is_viewed(child, "yarn.lock"), false)
+end
+
+T["notifications from a sweep include the resolved scope: the group name, or 'all groups' for the union"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  install_notify_capture(child)
+
+  child.cmd("Difit")
+  child.cmd("Difit sweep lock files")
+
+  local notes = notifications(child)
+  eq(#notes, 1)
+  eq(notes[1].msg, "difit: marked 1 files as viewed (lock files)")
+end
+
+T["`:Difit sweep <Tab>` completion offers the live review's group names, spaces backslash-escaped"] = function()
+  local repo = two_group_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(repo.dir))
+  configure_two_groups(child)
+  child.cmd("Difit")
+
+  local candidates = child.lua_get([[vim.fn.getcompletion("Difit sweep ", "cmdline")]])
+  table.sort(candidates)
+  local expected = { "generated", "lock\\ files" }
+  table.sort(expected)
+  eq(candidates, expected)
+end
+
+T["`:Difit sweep <Tab>` completion offers no candidates outside a viewer tabpage"] = function()
+  local candidates = child.lua_get([[vim.fn.getcompletion("Difit sweep ", "cmdline")]])
+  eq(candidates, {})
 end
 
 ---------------------------------------------------------------------------------------

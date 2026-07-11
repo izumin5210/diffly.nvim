@@ -426,6 +426,180 @@ local function build_actions(tab)
   }
 end
 
+--- Every group's own matched-file/un-viewed count, deduplicated across ALL groups by path
+--- (a file matched by more than one group must not be double-counted) -- backs the "all
+--- groups" choice in `run_sweep_selector`'s menu, mirroring the exact union
+--- `Session:sweep_patterns(nil)` itself performs when actually sweeping it (see its own
+--- docs), so the menu's count can never promise something the sweep it triggers doesn't
+--- deliver.
+---@param session difit.Session
+---@param groups difit.PatternGroupInfo[]
+---@return integer matched, integer unviewed
+local function union_counts(session, groups)
+  local seen, matched, unviewed = {}, 0, 0
+  for _, group in ipairs(groups) do
+    for _, path in ipairs(group.matched) do
+      if not seen[path] then
+        seen[path] = true
+        matched = matched + 1
+        if not session:is_viewed(path) then
+          unviewed = unviewed + 1
+        end
+      end
+    end
+  end
+  return matched, unviewed
+end
+
+--- `"<name> (<N> files, <M> unviewed)"` -- deliberately never pluralizes "file(s)" down to
+--- "file" for N==1, matching this plugin's existing sweep-result wording elsewhere (e.g.
+--- `ui/panel.lua`'s own batch notice says "unmarked 1 files"): one predictable format
+--- regardless of count, rather than two subtly different ones.
+---@param name string
+---@param matched integer
+---@param unviewed integer
+---@return string
+local function format_group_choice(name, matched, unviewed)
+  return string.format("%s (%d files, %d unviewed)", name, matched, unviewed)
+end
+
+---@class difit.init.SweepChoice
+---@field group_name string?  -- nil = the "all groups" union
+---@field display string
+
+--- `vim.ui.select` items for `run_sweep_selector`'s menu: "all groups" (the union, see
+--- `union_counts`) always first, then each configured group in `pattern_groups()` order.
+--- Items are small tables rather than pre-formatted strings, with `display` handed to
+--- `vim.ui.select`'s `format_item` (see `run_sweep_selector`) -- so a picker UI (telescope/
+--- fzf-lua/etc., any of which may replace the builtin `vim.ui.select`) gets the real
+--- `group_name` as the selected value and only uses `display` for rendering, instead of
+--- having to parse a group's name back out of a formatted string.
+---@param session difit.Session
+---@param groups difit.PatternGroupInfo[]
+---@return difit.init.SweepChoice[]
+local function sweep_choices(session, groups)
+  local all_matched, all_unviewed = union_counts(session, groups)
+  local choices = {
+    { group_name = nil, display = format_group_choice("all groups", all_matched, all_unviewed) },
+  }
+  for _, group in ipairs(groups) do
+    table.insert(choices, {
+      group_name = group.name,
+      display = format_group_choice(group.name, #group.matched, group.unviewed),
+    })
+  end
+  return choices
+end
+
+--- Sweep `group_name` (nil = every group's union -- see `Session:sweep_patterns`) and
+--- report a compact result scoped to whichever group actually got swept. The shared tail
+--- both `run_sweep_selector` (0/1/N-group picking) and `M.sweep`'s explicit-name path
+--- funnel into once a group is settled on, so the notification wording and auto-advance
+--- policy can never drift apart between the panel's `S` key and `:Difit sweep [name]`.
+---@param entry difit.init.Entry
+---@param group_name string?
+local function perform_sweep(entry, group_name)
+  local result, scope = entry.session:sweep_patterns(group_name)
+  if not result then
+    -- `scope` holds the "unknown group" error message in this branch -- see
+    -- `Session:sweep_patterns`'s own doc for its dual-purpose second return. Unreachable
+    -- from `run_sweep_selector` (every `group_name` it passes came from `pattern_groups()`
+    -- itself); reachable from `M.sweep` only if the review's groups changed between
+    -- `resolve_group_name` resolving the name and this call, e.g. a concurrent `refresh()`
+    -- -- vanishingly rare, but still reported rather than silently dropped.
+    vim.notify(scope, vim.log.levels.WARN)
+    return
+  end
+
+  if result.matched == 0 then
+    vim.notify(
+      string.format("difit: no files matched viewed_patterns (%s)", scope),
+      vim.log.levels.INFO
+    )
+    return
+  end
+
+  if result.marked > 0 then
+    vim.notify(
+      string.format("difit: marked %d files as viewed (%s)", result.marked, scope),
+      vim.log.levels.INFO
+    )
+    -- Auto-advance only after a MARKING batch, mirroring `toggle_viewed_and_advance`'s own
+    -- rule for a single file (design.md: "Marking advances to the next un-viewed file").
+    -- `after_path = nil`: a sweep can touch files scattered across the tree, so there is no
+    -- single "after" file to resume from -- start over from the beginning of file_order.
+    if config.get().auto_advance then
+      open_and_sync_cursor(entry, entry.session:next_unviewed(nil))
+    end
+  else
+    vim.notify(
+      string.format("difit: unmarked %d files (%s)", result.unmarked, scope),
+      vim.log.levels.INFO
+    )
+  end
+end
+
+--- The shared "which group to sweep" flow behind BOTH the panel's `S` key and a bare
+--- `:Difit sweep` (no explicit name) -- `perform_sweep` above is the actual sweep+notify
+--- tail once a group is chosen. 0 groups -> nothing to sweep; exactly 1 -> sweep it
+--- immediately, no menu (the whole point of a picker is choosing among options, and there
+--- is exactly one); 2+ -> `vim.ui.select` (so telescope/fzf-lua/etc. pickers apply when a
+--- user has replaced the builtin one), cancelling out of it is a silent no-op -- same "no
+--- side effect" contract as cancelling any other `vim.ui.select` prompt in this plugin.
+---@param entry difit.init.Entry
+local function run_sweep_selector(entry)
+  local groups = entry.session:pattern_groups()
+
+  if #groups == 0 then
+    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
+    return
+  end
+
+  if #groups == 1 then
+    perform_sweep(entry, groups[1].name)
+    return
+  end
+
+  vim.ui.select(sweep_choices(entry.session, groups), {
+    prompt = "Sweep pattern group:",
+    format_item = function(choice)
+      return choice.display
+    end,
+  }, function(choice)
+    if choice then
+      perform_sweep(entry, choice.group_name)
+    end
+  end)
+end
+
+--- Exact match first, then a UNIQUE prefix match (typical CLI-subcommand resolution) --
+--- backs `:Difit sweep {name}` so e.g. `:Difit sweep lock` works when "lock files" is the
+--- only configured group starting with "lock", without requiring the whole name (or its
+--- backslash-escaped spaces, see `M.sweep_group_names`) to be typed out. Returns nil, not
+--- an error, on anything else (no match, or an ambiguous prefix matching more than one
+--- group) -- `M.sweep` turns that into a message listing what IS available.
+---@param groups difit.PatternGroupInfo[]
+---@param requested string
+---@return string|nil
+local function resolve_group_name(groups, requested)
+  for _, group in ipairs(groups) do
+    if group.name == requested then
+      return group.name
+    end
+  end
+
+  local prefix_matches = {}
+  for _, group in ipairs(groups) do
+    if vim.startswith(group.name, requested) then
+      table.insert(prefix_matches, group.name)
+    end
+  end
+  if #prefix_matches == 1 then
+    return prefix_matches[1]
+  end
+  return nil
+end
+
 --- Build the dedicated review tabpage: a fresh tab (so the origin layout is untouched),
 --- the panel split off to the left, and -- if there is an un-viewed file -- its diff
 --- opened on the right.
@@ -479,7 +653,21 @@ local function open_new(base)
   -- set it twice).
   vim.w[diff_win].difit = true
 
-  local pnl = panel.open(sess)
+  -- Injected into the panel below so its own `S` key runs the EXACT SAME selector flow as
+  -- `:Difit sweep` (`run_sweep_selector`) without `ui/panel.lua` ever `require`ing this
+  -- module -- mirrors `build_actions(tab)`'s closures just above/below, which the diff
+  -- views' `ctx.actions` already reach init.lua-owned behavior through the same way: a
+  -- closure captures `viewer_tab` (not `entry`/`sess` themselves) and re-resolves the LIVE
+  -- registry entry at call time via `resolve_live_entry`, so it degrades to a no-op notify
+  -- instead of erroring if it ever somehow fired after this review closed.
+  local function sweep_action()
+    local live = resolve_live_entry(viewer_tab, "sweep")
+    if live then
+      run_sweep_selector(live)
+    end
+  end
+
+  local pnl = panel.open(sess, { sweep = sweep_action })
 
   -- Now that the tabpage/panel exist, the view factory closure's `ctx` can be filled in:
   -- `ctx.anchor` is the panel window every view splits rightward from; `ctx.claim` is the
@@ -586,46 +774,68 @@ function M.prev_file()
   end
 end
 
---- Backing function for `:Difit sweep`: bulk-toggle every file matching
---- `config.get().viewed_patterns` (see `Session:sweep_patterns()`) and report a compact
---- result. Reimplemented rather than shared with `lua/difit/ui/panel.lua`'s own `S` key
---- handler (`on_sweep`), for the same reason `toggle_viewed_and_advance` above duplicates
---- `on_toggle_viewed` instead of calling it: this call site has no access to the panel's
---- own row/cursor bookkeeping, and `open_and_sync_cursor` already does the equivalent job
---- for a diff/command-driven advance (see its own doc comment).
-function M.sweep()
+--- Backing function for `:Difit sweep [{name}]`: with no name, runs the same 0/1/N-group
+--- selector the panel's `S` key uses (`run_sweep_selector`, wired to it via the injected
+--- `sweep` action -- see `open_new`); with a name (`fargs` joined with spaces -- see
+--- plugin/difit.lua's completion, which offers group names with embedded spaces
+--- backslash-escaped so `nargs="*"` still hands them here as separate fargs tokens,
+--- rejoining with " " undoes exactly that split), resolves it against the live review's
+--- groups (`resolve_group_name`) and sweeps just that one; an unresolved name reports the
+--- groups that ARE available instead of silently doing nothing.
+---@param fargs string[]?  -- args after "sweep" (see `M.open`)
+function M.sweep(fargs)
   local entry = current_entry()
   if not entry then
     vim.notify("difit: no review is open", vim.log.levels.WARN)
     return
   end
 
-  if #config.get().viewed_patterns == 0 then
-    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
+  local requested = fargs and #fargs > 0 and table.concat(fargs, " ") or nil
+  if not requested then
+    run_sweep_selector(entry)
     return
   end
 
-  local result = entry.session:sweep_patterns()
-  if result.matched == 0 then
-    vim.notify("difit: no files matched viewed_patterns", vim.log.levels.INFO)
-    return
-  end
-
-  if result.marked > 0 then
-    vim.notify(
-      string.format("difit: marked %d files as viewed", result.marked),
-      vim.log.levels.INFO
-    )
-    -- Auto-advance only after a MARKING batch, mirroring `toggle_viewed_and_advance`'s own
-    -- rule for a single file (design.md: "Marking advances to the next un-viewed file").
-    -- `after_path = nil`: a sweep can touch files scattered across the tree, so there is no
-    -- single "after" file to resume from -- start over from the beginning of file_order.
-    if config.get().auto_advance then
-      open_and_sync_cursor(entry, entry.session:next_unviewed(nil))
+  local groups = entry.session:pattern_groups()
+  local resolved = resolve_group_name(groups, requested)
+  if not resolved then
+    local names = {}
+    for _, group in ipairs(groups) do
+      table.insert(names, group.name)
     end
-  else
-    vim.notify(string.format("difit: unmarked %d files", result.unmarked), vim.log.levels.INFO)
+    vim.notify(
+      string.format(
+        "difit: unknown pattern group %q; available: %s",
+        requested,
+        #names > 0 and table.concat(names, ", ") or "(none configured)"
+      ),
+      vim.log.levels.WARN
+    )
+    return
   end
+
+  perform_sweep(entry, resolved)
+end
+
+--- `:Difit sweep <Tab>` completion candidates: the live review's pattern-group names (see
+--- `Session:pattern_groups()`), with embedded spaces backslash-escaped so a multi-word
+--- group name round-trips through `nargs="*"`'s space-based arg splitting as ONE token
+--- (mirrors how e.g. `:edit`'s own filename completion escapes spaces -- see `:help
+--- f-args` for the matching unescape-on-parse side that `M.sweep` above relies on). Empty
+--- outside a viewer tabpage -- unlike `M.sweep()` itself, a completion function never
+--- notifies; no candidates is the correct "nothing to offer" UX here (mirrors
+--- plugin/difit.lua's own `local_branches()` degrading to `{}` when `git branch` fails).
+---@return string[]
+function M.sweep_group_names()
+  local entry = current_entry()
+  if not entry then
+    return {}
+  end
+  local names = {}
+  for _, group in ipairs(entry.session:pattern_groups()) do
+    table.insert(names, (group.name:gsub(" ", "\\ ")))
+  end
+  return names
 end
 
 --- Remove persisted viewed-state: `all=true` wipes every review's file, otherwise just
@@ -695,7 +905,7 @@ function M.open(args)
   elseif first == "focus" then
     return M.focus()
   elseif first == "sweep" then
-    return M.sweep()
+    return M.sweep(vim.list_slice(args, 2))
   end
 
   local entry = current_entry()

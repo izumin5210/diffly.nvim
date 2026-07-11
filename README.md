@@ -19,8 +19,9 @@ across viewer sessions for the same pull request.
   sessions, worktrees, and clones of the same repo — but never carried over to a different
   PR. Marks invalidate automatically (GitHub-style) when either side of the diff changes.
 - Bulk viewed marking, still explicit-trigger only: mark/unmark an entire directory
-  subtree (`V`) or every file matching configurable glob patterns (`S` / `:Difit sweep`,
-  `viewed_patterns` — e.g. lockfiles, generated output) in one step.
+  subtree (`V`) or every file matching a configurable glob pattern GROUP (`S` / `:Difit
+  sweep [group]`, `viewed_patterns` — e.g. separate "lock files"/"generated files" groups)
+  in one step, with a `vim.ui.select` prompt when more than one group is configured.
 - Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
   buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
 
@@ -55,18 +56,20 @@ the plugin works with its defaults untouched.
 ## Quickstart
 
 ```vim
-:Difit          " review the current branch against its detected base
-:Difit main     " review against an explicit base branch
-:Difit close    " close the review UI and restore your previous layout
-:Difit toggle   " open, or close if already open
-:Difit refresh  " recompute the diff
-:Difit focus    " focus the panel window from wherever you currently are
-:Difit sweep    " bulk-toggle every file matching `viewed_patterns` (see below)
-:Difit clean    " remove viewed state for the current review (prompts first)
+:Difit                " review the current branch against its detected base
+:Difit main           " review against an explicit base branch
+:Difit close          " close the review UI and restore your previous layout
+:Difit toggle         " open, or close if already open
+:Difit refresh        " recompute the diff
+:Difit focus          " focus the panel window from wherever you currently are
+:Difit sweep          " bulk-toggle a `viewed_patterns` group (prompts if 2+; see below)
+:Difit sweep {name}   " bulk-toggle one specific group by name, no prompt
+:Difit clean          " remove viewed state for the current review (prompts first)
 :Difit clean all
 ```
 
-`:Difit <Tab>` completes both the subcommands above and your repo's local branch names.
+`:Difit <Tab>` completes both the subcommands above and your repo's local branch names;
+`:Difit sweep <Tab>` completes the current review's configured group names instead.
 
 ### Keymaps
 
@@ -111,7 +114,7 @@ what `<leader>v`/`v`'s auto-advance is already for.
 | `q`    | Close the review UI                                             |
 | `za`   | Toggle fold (mirrors native `za`)                                |
 | `H`    | Toggle hiding already-viewed files (display only — see below)   |
-| `S`    | Bulk-toggle every file matching `viewed_patterns` (see below)   |
+| `S`    | Sweep a `viewed_patterns` group (prompts when 2+ are configured; see below) |
 | `V`    | On a directory row: bulk-toggle every file in that subtree. On a file row: same as `v` |
 
 `H` only changes what the tree *shows*: progress counts (`3/12 viewed`) stay global, and
@@ -155,7 +158,7 @@ require("difit").setup({
   include_untracked = true,
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
-  viewed_patterns = {},   -- glob patterns for bulk-viewed marking (`S`/`:Difit sweep`)
+  viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (`S`/`:Difit sweep`)
   panel = { width = 35 },
   keymaps = {
     panel = {
@@ -166,7 +169,7 @@ require("difit").setup({
       close = "q",
       fold = "za",
       toggle_hide_viewed = "H", -- hide/show already-viewed rows (display only)
-      sweep = "S",                  -- bulk-toggle files matching `viewed_patterns`
+      sweep = "S",                  -- sweep a `viewed_patterns` group (prompts if 2+)
       toggle_viewed_subtree = "V",  -- bulk-toggle every file under a dir row
     },
     -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to keymaps.universal
@@ -201,13 +204,21 @@ number of new commits. See `:help difit-viewed-state` for the full details.
 ## Bulk viewed marking
 
 Marking files "viewed" is still manual-trigger-only — nothing is ever marked as a side
-effect of scrolling, opening, or refreshing a diff. `S` (panel) / `:Difit sweep` and `V`
-(panel) are just two more explicit triggers, for when you want to mark (or unmark) several
-files at once instead of one `v` press per file — e.g. lockfiles and generated output you
-never intend to read line-by-line.
+effect of scrolling, opening, or refreshing a diff. `S` (panel) / `:Difit sweep [group]` and
+`V` (panel) are just two more explicit triggers, for when you want to mark (or unmark)
+several files at once instead of one `v` press per file — e.g. lockfiles and generated
+output you never intend to read line-by-line.
 
-**`viewed_patterns`** — a list of glob patterns (gitignore-inspired), matched against every
-file in the current diff:
+**`viewed_patterns`** — an ordered list of pattern **groups**, matched against every file in
+the current diff. Each item is either:
+
+- a plain glob **string** — every such string collects into one implicit group named
+  `"default"`, positioned wherever the first string appears in the list (this is the
+  pre-groups shape, kept working exactly as before); or
+- a **table** `{ name = "...", patterns = {...} }` for an explicitly named group, so
+  unrelated batches (e.g. lockfiles vs. generated output) can be swept independently.
+
+Within a group, glob semantics are unchanged from before groups existed:
 
 - A pattern with **no `/`** matches the entry's **basename**, anywhere in the tree —
   `"*.lock"` matches both `yarn.lock` and `packages/api/Gemfile.lock`.
@@ -219,29 +230,56 @@ file in the current diff:
 ```lua
 require("difit").setup({
   viewed_patterns = {
-    "*.lock",             -- yarn.lock, pnpm-lock.yaml, Gemfile.lock, anywhere in the tree
-    "*.snap",              -- generated test snapshots, anywhere in the tree
-    "dist/**",             -- everything under a top-level generated output dir
-    "**/generated/**",     -- everything under any "generated" dir, at any depth
+    {
+      name = "lock files",
+      patterns = { "*.lock", "*.sum" }, -- yarn.lock, pnpm-lock.yaml, go.sum, ...
+    },
+    {
+      name = "generated files",
+      patterns = { "*.snap", "dist/**", "**/generated/**" },
+    },
   },
 })
 ```
 
-An invalid pattern is skipped (never raises) and warned about once per Neovim session, not
-once per sweep.
+Backward compatible: a flat list of strings still works exactly as before —
+`viewed_patterns = { "*.lock", "dist/**" }` collapses into one implicit `"default"` group,
+so existing configs need no changes.
 
-**`S`** (panel key) / **`:Difit sweep`** bulk-toggle every file matching `viewed_patterns`.
+An invalid pattern is skipped (never raises) and warned about once per Neovim session, not
+once per sweep. Two groups sharing the same name merge into the first occurrence the same
+way, also warned once.
+
+**`S`** (panel key) / **`:Difit sweep [{name}]`** sweep a pattern group:
+
+- **0 groups configured** — notifies that `viewed_patterns` isn't set; nothing happens.
+- **exactly 1 group configured** — sweeps it immediately, no prompt.
+- **2+ groups configured, no `{name}`** — prompts via `vim.ui.select` (`prompt = "Sweep
+  pattern group:"`), so telescope/fzf-lua/dressing.nvim/etc. pickers apply automatically if
+  you've replaced Neovim's builtin `vim.ui.select`. The first entry is always `all groups
+  (N files, M unviewed)` — the union of every group, with a file matched by more than one
+  group counted only once — followed by each configured group as `<name> (N files, M
+  unviewed)`. Cancelling out of the prompt changes nothing.
+- **`:Difit sweep {name}`** sweeps that one group directly, skipping the prompt entirely —
+  matches an exact name first, then falls back to a unique prefix (so `:Difit sweep lock`
+  works when `"lock files"` is the only configured group starting with `"lock"`). A name
+  containing spaces works either typed by hand (`:Difit sweep lock files`) or via `<Tab>`
+  completion, which offers the live review's group names with embedded spaces
+  backslash-escaped. An unresolved name reports which groups ARE configured instead of
+  silently doing nothing.
+
 **`V`** (panel key), pressed on a directory row, bulk-toggles every file in that subtree
 instead — no configuration needed; pressed on a file row, it behaves exactly like `v`.
 
-Both are **tri-state**: if at least one matching/subtree file is currently un-viewed, the
-whole batch is marked viewed; only once *every* file in the batch is already viewed does
-pressing it again unmark them all. That makes repeating the same key a clean toggle rather
-than a one-way ratchet. Each batch persists with a single save and reports a compact
-result, e.g. `difit: marked 5 files as viewed` / `difit: unmarked 5 files`. Progress
-(`3/12 viewed`) updates exactly like any other mark. `V` on a directory sees the subtree's
-full file list regardless of the panel's `H` filter or folds — those are display concerns
-only, same as everywhere else in the panel.
+Both a pattern-group sweep and `V` are **tri-state**: if at least one file in the swept
+scope is currently un-viewed, the whole batch is marked viewed; only once *every* file in
+scope is already viewed does sweeping it again unmark them all. That makes repeating the
+same action a clean toggle rather than a one-way ratchet. Each batch persists with a single
+save and reports a compact result scoped to what was actually swept, e.g. `difit: marked 5
+files as viewed (lock files)` / `difit: unmarked 5 files (all groups)`. Progress (`3/12
+viewed`) updates exactly like any other mark. `V` on a directory sees the subtree's full
+file list regardless of the panel's `H` filter or folds — those are display concerns only,
+same as everywhere else in the panel.
 
 `config.auto_advance` applies after a batch exactly like `v`: a batch that **marked** files
 jumps to the next un-viewed file afterward; a batch that **unmarked** files never does.

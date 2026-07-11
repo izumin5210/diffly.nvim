@@ -67,9 +67,13 @@ Call it only to override them: >lua
                         in |difit-keymaps|). A no-op with a notice when no
                         review is open.
 
-:Difit sweep            Bulk-toggle every file matching `viewed_patterns`
-                        (same as the panel's `S` key). See
-                        |difit-bulk-viewed|.
+:Difit sweep [{name}]   Sweep a `viewed_patterns` group (same as the panel's
+                        `S` key): with no {name}, 0 configured groups notify
+                        that none are set, exactly 1 sweeps immediately, and
+                        2+ prompt via |vim.ui.select()|; {name} (which may
+                        contain spaces) sweeps that one group directly,
+                        matching an exact name first then a unique prefix.
+                        See |difit-bulk-viewed|.
 
 :Difit clean            Prompt to delete the *current* review's persisted
                         viewed state (the key the currently open review uses,
@@ -80,7 +84,10 @@ Call it only to override them: >lua
 
 Completion offers the subcommands above plus the repo's local branch names,
 so `:Difit <Tab>` can be used either to pick a subcommand or to jump straight
-to reviewing against a specific base branch.
+to reviewing against a specific base branch. `:Difit sweep <Tab>` completes
+differently: it offers the current review's configured `viewed_patterns`
+group names instead (spaces backslash-escaped), and only when a review is
+open on the current tabpage.
 
 ==============================================================================
 3. Configuration                                                *difit-config*
@@ -94,7 +101,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
     include_untracked = true,
     auto_advance = true,    -- jump to next un-viewed file after marking
     icons = true,           -- use mini.icons / nvim-web-devicons when present
-    viewed_patterns = {},   -- glob patterns for bulk-viewed marking (S/sweep)
+    viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (S/sweep)
     panel = { width = 35 },
     keymaps = {
       panel = {
@@ -105,7 +112,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
         close = "q",
         fold = "za",
         toggle_hide_viewed = "H", -- hide/show already-viewed rows (display)
-        sweep = "S",             -- bulk-toggle files matching viewed_patterns
+        sweep = "S",             -- sweep a viewed_patterns group (prompts if 2+)
         toggle_viewed_subtree = "V", -- bulk-toggle every file under a dir row
       },
       -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to
@@ -134,9 +141,9 @@ Notes:
 - `include_untracked`: whether untracked files show up as added ("A") files.
 - `icons`: silently does nothing when neither `mini.icons` nor
   `nvim-web-devicons` is installed.
-- `viewed_patterns`: glob patterns for `S`/`:Difit sweep`'s bulk-toggle; see
-  |difit-bulk-viewed|. Empty by default -- `S`/`:Difit sweep` are no-ops
-  until this is configured.
+- `viewed_patterns`: glob pattern GROUPS for `S`/`:Difit sweep`'s bulk-toggle;
+  see |difit-bulk-viewed|. Empty by default -- `S`/`:Difit sweep` notify that
+  nothing is configured until this is set.
 - Setting any keymap value to `false` disables that mapping.
 
 ==============================================================================
@@ -194,7 +201,8 @@ File panel ~
           line gains a `(hidden)` suffix, e.g. `3/12 viewed (hidden)`.
           Directories left with no un-viewed files disappear along with
           their contents.
-  S       Bulk-toggle every file matching `viewed_patterns` (tri-state; see
+  S       Sweep a `viewed_patterns` group (tri-state; prompts via
+          |vim.ui.select()| when 2+ groups are configured; see
           |difit-bulk-viewed|). Same effect as `:Difit sweep`.
   V       On a directory row: bulk-toggle every file in that subtree
           (tri-state; see |difit-bulk-viewed|). On a file row: identical to
@@ -271,14 +279,22 @@ garbage-collection.
 
 Marking files "viewed" stays manual-trigger-only (see |difit-viewed-state|
 above) -- nothing is ever marked as a side effect of scrolling, opening, or
-refreshing a diff. `S`/`:Difit sweep` and `V` are simply two more explicit
-triggers, for marking (or unmarking) several files in one step instead of one
-`v` press per file -- e.g. lockfiles and generated output nobody reads
-line-by-line.
+refreshing a diff. `S`/`:Difit sweep [{name}]` and `V` are simply two more
+explicit triggers, for marking (or unmarking) several files in one step
+instead of one `v` press per file -- e.g. lockfiles and generated output
+nobody reads line-by-line.
 
 viewed_patterns ~
-A list of glob patterns (gitignore-inspired), matched against every file
-currently in the diff:
+An ORDERED list of pattern GROUPS, matched against every file currently in
+the diff. Each item is either:
+- a plain glob STRING -- every such string collects into one implicit group
+  named `"default"`, positioned wherever the FIRST string appears in the
+  list (this is the pre-groups shape, still fully supported); or
+- a TABLE `{ name = "...", patterns = {...} }` for an explicitly named
+  group, so unrelated batches (e.g. lockfiles vs. generated output) can be
+  swept independently.
+
+Within a group, glob semantics are unchanged from before groups existed:
 - A pattern with NO "/" matches the entry's BASENAME, anywhere in the tree --
   `"*.lock"` matches `yarn.lock`, `packages/api/Gemfile.lock`, etc.
 - A pattern CONTAINING "/" matches the full toplevel-relative path instead --
@@ -291,28 +307,60 @@ currently in the diff:
 Example: >lua
   require("difit").setup({
     viewed_patterns = {
-      "*.lock",           -- yarn.lock, pnpm-lock.yaml, Gemfile.lock, ...
-      "*.snap",            -- generated test snapshots, anywhere in the tree
-      "dist/**",          -- everything under a top-level generated output dir
-      "**/generated/**",   -- everything under any "generated" dir, any depth
+      {
+        name = "lock files",
+        patterns = { "*.lock", "*.sum" }, -- yarn.lock, go.sum, ...
+      },
+      {
+        name = "generated files",
+        patterns = { "*.snap", "dist/**", "**/generated/**" },
+      },
     },
   })
 <
+Backward compatible: a flat list of strings still works exactly as before --
+`viewed_patterns = { "*.lock", "dist/**" }` -- collapsing into one implicit
+`"default"` group, so existing configs need no changes.
+
 An invalid pattern never raises: it is skipped, and warned about once per
-Neovim session (not once per sweep).
+Neovim session (not once per sweep). Two groups sharing the same name merge
+into the first occurrence's group the same way, also warned once.
+
+Choosing a group ~
+`S` / `:Difit sweep` (with no {name}):
+- 0 groups configured -- notifies that `viewed_patterns` isn't set; nothing
+  happens.
+- exactly 1 group configured -- sweeps it immediately, no prompt.
+- 2+ groups configured -- prompts via |vim.ui.select()| (`prompt = "Sweep
+  pattern group:"`), so a picker plugin that has replaced Neovim's builtin
+  `vim.ui.select` (telescope, fzf-lua, dressing.nvim, ...) applies
+  automatically. The first entry is always `all groups (N files, M
+  unviewed)` -- the union of every group, a file matched by more than one
+  group counted only once -- followed by each configured group as `<name>
+  (N files, M unviewed)`. Cancelling out of the prompt changes nothing.
+
+`:Difit sweep {name}` sweeps that one group directly, skipping the prompt
+entirely: it matches an exact name first, then falls back to a UNIQUE
+prefix (so `:Difit sweep lock` works when `"lock files"` is the only
+configured group starting with `"lock"`). A name containing spaces works
+either typed by hand (`:Difit sweep lock files`) or via `<Tab>` completion,
+which offers the live review's group names with embedded spaces
+backslash-escaped (see |difit-commands|). An unresolved name reports which
+groups ARE configured instead of silently doing nothing.
 
 Tri-state toggle ~
-`S`/`:Difit sweep` (every file matching `viewed_patterns`) and `V` on a
-directory row (every file in that subtree) share the same tri-state rule: if
-at least one matching/subtree file is currently un-viewed, the WHOLE BATCH is
-marked viewed; only once EVERY file in the batch is already viewed does
-pressing it again unmark them all. Repeating the same key is therefore a
+A pattern-group sweep (`S`/`:Difit sweep [{name}]`) and `V` on a directory
+row (every file in that subtree) share the same tri-state rule: if at least
+one file in the swept scope is currently un-viewed, the WHOLE BATCH is
+marked viewed; only once EVERY file in scope is already viewed does
+sweeping it again unmark them all. Repeating the same action is therefore a
 clean toggle, not a one-way ratchet. `V` on a file row is not a batch at all
 -- it behaves exactly like `v`.
 
 Each batch persists with a single save (not one write per file) and reports a
-compact result, e.g. `difit: marked 5 files as viewed` / `difit: unmarked 5
-files`. Progress (`3/12 viewed`) updates exactly like any other mark.
+compact result scoped to what was actually swept, e.g. `difit: marked 5
+files as viewed (lock files)` / `difit: unmarked 5 files (all groups)`.
+Progress (`3/12 viewed`) updates exactly like any other mark.
 
 `V` on a directory sees that subtree's FULL file list regardless of the
 panel's `H` filter or any folds -- both are display concerns only, same as

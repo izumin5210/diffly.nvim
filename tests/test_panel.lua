@@ -29,7 +29,7 @@ local FAKE_SESSION_SETUP = [[
     open_file = {},
     toggle_viewed = {},
     toggle_viewed_batch = {},
-    sweep_patterns = 0,
+    sweep = 0,
     next_unviewed = {},
     -- `table.insert(list, nil)` is invisible to `#list` (Lua can't distinguish "absent"
     -- from "present but nil" in the array part), which the batch actions below rely on:
@@ -85,7 +85,6 @@ local FAKE_SESSION_SETUP = [[
     current_path = nil,
     _progress = { viewed = 1, total = 6 },
     _next_unviewed_answer = nil,
-    _sweep_paths = {}, -- what sweep_patterns() below "matches"; tests set this directly
   }
 
   function _G.session:subscribe(fn)
@@ -142,14 +141,6 @@ local FAKE_SESSION_SETUP = [[
     end
 
     return { marked = marked, unmarked = unmarked, matched = #paths }
-  end
-
-  -- `_sweep_paths` stands in for real `viewed_patterns` matching (tested against the real
-  -- glob semantics in tests/test_session.lua) -- this fake only needs to prove panel.lua
-  -- calls `sweep_patterns()` and reacts to its result correctly.
-  function _G.session:sweep_patterns()
-    _G.calls.sweep_patterns = _G.calls.sweep_patterns + 1
-    return self:toggle_viewed_batch(self._sweep_paths)
   end
 
   function _G.session:is_viewed(path)
@@ -229,7 +220,16 @@ local FAKE_SESSION_SETUP = [[
     _G.calls.close = _G.calls.close + 1
   end
 
-  _G.panel = require("difit.ui.panel").open(_G.session)
+  -- The real `sweep` action (`init.lua`'s `run_sweep_selector`, using `vim.ui.select` and
+  -- the real `Session:pattern_groups()`/`sweep_patterns()`) is exercised end-to-end in
+  -- tests/test_e2e.lua -- panel.lua itself only needs to prove `S` reaches WHATEVER was
+  -- injected as `opts.sweep` (see ui/panel.lua's `M.open`/`on_sweep` docs for why the flow
+  -- lives in init.lua, not here), so this fake just counts calls.
+  _G.__sweep_action = function()
+    _G.calls.sweep = _G.calls.sweep + 1
+  end
+
+  _G.panel = require("difit.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
 ]]
 
 local EXPECTED_LINES = {
@@ -299,13 +299,6 @@ end
 ---@return table[]
 local function notifications()
   return child.lua_get("_G.__notifications")
-end
-
---- What the fake session's `sweep_patterns()` "matches" -- stands in for real
---- `viewed_patterns` glob matching (tested for real in tests/test_session.lua).
----@param paths string[]
-local function set_sweep_paths(paths)
-  child.lua("_G.session._sweep_paths = ...", { paths })
 end
 
 local T = MiniTest.new_set({
@@ -752,98 +745,35 @@ T["keymaps.panel.toggle_viewed_subtree = false disables the V mapping"] = functi
 end
 
 ---------------------------------------------------------------------------------------
--- S (keymaps.panel.sweep): routes to `session:sweep_patterns()` and reports a compact
--- result. `_G.session._sweep_paths` stands in for real `viewed_patterns` glob matching
--- (see tests/test_session.lua for that).
+-- S (keymaps.panel.sweep): reaches whatever was injected as `M.open`'s `opts.sweep`
+-- (`init.lua`'s `run_sweep_selector` in the real plugin -- see ui/panel.lua's `on_sweep`
+-- doc for why that flow is injected rather than implemented in this module). The actual
+-- 0/1/N-pattern-group selector behavior (menu items, `vim.ui.select`, notifications,
+-- auto-advance) is exercised end-to-end against the real session/init.lua in
+-- tests/test_e2e.lua; this file only needs to prove the keymap wiring itself.
 ---------------------------------------------------------------------------------------
 
-T["S calls session:sweep_patterns() and marks the matched files, notifying a compact result"] = function()
-  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
-  set_sweep_paths({ "lua/difit/new.lua", "lua/difit/gone.lua" })
-  install_notify_capture()
+T["S calls the injected sweep action exactly once per press"] = function()
+  eq(child.lua_get("_G.calls.sweep"), 0)
 
   child.type_keys("S")
-
-  eq(child.lua_get("_G.calls.sweep_patterns"), 1)
-  eq(
-    child.lua_get("_G.calls.toggle_viewed_batch"),
-    { { "lua/difit/new.lua", "lua/difit/gone.lua" } }
-  )
-  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), true)
-  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), true)
-
-  local notes = notifications()
-  eq(#notes, 1)
-  eq(notes[1].msg, "difit: marked 2 files as viewed")
-  eq(notes[1].level, vim.log.levels.INFO)
-end
-
-T["S again unmarks once every matched file is already viewed"] = function()
-  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
-  set_sweep_paths({ "lua/difit/new.lua" })
-  install_notify_capture()
-
-  child.type_keys("S") -- marks
-  child.type_keys("S") -- unmarks
-
-  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), false)
-  local notes = notifications()
-  eq(#notes, 2)
-  eq(notes[2].msg, "difit: unmarked 1 files")
-end
-
-T["S with viewed_patterns unset notifies that it's not configured, without calling sweep_patterns()"] = function()
-  install_notify_capture()
+  eq(child.lua_get("_G.calls.sweep"), 1)
 
   child.type_keys("S")
-
-  eq(child.lua_get("_G.calls.sweep_patterns"), 0, "no point resolving matches for an empty option")
-  local notes = notifications()
-  eq(#notes, 1)
-  eq(notes[1].msg, "difit: viewed_patterns is not configured")
-  eq(notes[1].level, vim.log.levels.INFO)
+  eq(child.lua_get("_G.calls.sweep"), 2)
 end
 
-T["S with viewed_patterns configured but nothing matched notifies 'no files matched'"] = function()
-  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
-  set_sweep_paths({})
-  install_notify_capture()
+T["S is a harmless no-op when M.open() was never given a sweep action"] = function()
+  child.lua([[_G.panel = require("difit.ui.panel").open(_G.session)]])
 
-  child.type_keys("S")
-
-  eq(child.lua_get("_G.calls.sweep_patterns"), 1)
-  local notes = notifications()
-  eq(#notes, 1)
-  eq(notes[1].msg, "difit: no files matched viewed_patterns")
-end
-
-T["S auto-advances to the next un-viewed file after a marking sweep"] = function()
-  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
-  set_sweep_paths({ "lua/difit/new.lua" })
-  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
-
-  child.type_keys("S")
-
-  eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
-  eq(child.lua_get("_G.calls.open_file"), { "docs/guide.md" })
-  eq(cursor(), { 4, 0 })
-end
-
-T["S again (an unmark sweep) does not auto-advance"] = function()
-  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
-  set_sweep_paths({ "lua/difit/new.lua" })
-  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
-
-  child.type_keys("S") -- marks; advances
-  child.type_keys("S") -- unmarks; must not advance again
-
-  eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
+  eq(pcall(child.type_keys, "S"), true)
+  eq(child.lua_get("_G.calls.sweep"), 0)
 end
 
 T["keymaps.panel.sweep = false disables the S mapping"] = function()
   child.lua([[
     require("difit.config").setup({ keymaps = { panel = { sweep = false } } })
-    _G.panel = require("difit.ui.panel").open(_G.session)
+    _G.panel = require("difit.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
   ]])
 
   eq(mapped(buf_maparg("S")), false, "keymaps.panel.sweep")

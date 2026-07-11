@@ -369,37 +369,92 @@ function Session:toggle_viewed_batch(paths)
   return { marked = marked, unmarked = unmarked, matched = #entries }
 end
 
---- Resolve `config.get().viewed_patterns` against `self.entries` and apply the same
---- tri-state batch toggle as `toggle_viewed_batch` (which this delegates to for the actual
---- mark/unmark/save/notify work -- see its docs). An entry matches when ANY configured
---- pattern matches it (see `compile_pattern`). Invalid patterns are skipped (warned once,
---- see `bad_pattern_notified`); an empty `viewed_patterns`, or one where nothing currently
---- in the diff matches, both fall out of `toggle_viewed_batch({})` as all-zero counts --
---- callers distinguish "not configured" from "no matches" by checking
---- `config.get().viewed_patterns` themselves before/after calling this.
----@return {marked: integer, unmarked: integer, matched: integer}
-function Session:sweep_patterns()
-  local patterns = config.get().viewed_patterns or {}
+---@class difit.PatternGroupInfo : difit.PatternGroup
+---@field matched string[]  -- self.entries' paths matching this group, in entries order
+---@field unviewed integer  -- how many of `matched` are currently un-viewed
 
-  local matchers = {}
-  for _, pattern in ipairs(patterns) do
-    local matcher = compile_pattern(pattern)
-    if matcher then
-      table.insert(matchers, matcher)
-    end
-  end
+--- `config.get().viewed_patterns`, normalized into named groups (see
+--- `config.normalize_pattern_groups`) and resolved against `self.entries` -- the single
+--- source both a group-picking menu (which group, and how many files/how many un-viewed,
+--- to show per choice) and `sweep_patterns` (actually sweeping one) read from, so a menu's
+--- counts and the batch a sweep performs can never drift apart. An entry matches a group
+--- when ANY of that group's patterns matches it (see `compile_pattern`); invalid patterns
+--- are skipped within their group (warned once, see `bad_pattern_notified`) rather than
+--- failing the whole group.
+---@return difit.PatternGroupInfo[]
+function Session:pattern_groups()
+  local groups = config.normalize_pattern_groups(config.get().viewed_patterns or {})
 
-  local paths = {}
-  for _, entry in ipairs(self.entries) do
-    for _, matcher in ipairs(matchers) do
-      if matcher(entry.path) then
-        table.insert(paths, entry.path)
-        break
+  local result = {}
+  for _, group in ipairs(groups) do
+    local matchers = {}
+    for _, pattern in ipairs(group.patterns) do
+      local matcher = compile_pattern(pattern)
+      if matcher then
+        table.insert(matchers, matcher)
       end
     end
+
+    local matched = {}
+    local unviewed = 0
+    for _, entry in ipairs(self.entries) do
+      for _, matcher in ipairs(matchers) do
+        if matcher(entry.path) then
+          table.insert(matched, entry.path)
+          if not state.is_viewed(self.state, entry) then
+            unviewed = unviewed + 1
+          end
+          break
+        end
+      end
+    end
+
+    table.insert(
+      result,
+      { name = group.name, patterns = group.patterns, matched = matched, unviewed = unviewed }
+    )
   end
 
-  return self:toggle_viewed_batch(paths)
+  return result
+end
+
+--- Sweep either ONE named group (`group_name` matched EXACTLY against a
+--- `pattern_groups()` entry's `name` -- prefix resolution, if any, is a UI-level concern;
+--- see `init.lua`'s `:Difit sweep {name}` handling) or, when `group_name` is nil, the
+--- UNION of every group's matched paths (a file matched by more than one group is only
+--- toggled once) -- the pre-groups `sweep_patterns()` behavior, preserved as the
+--- no-argument case so existing single-list `viewed_patterns` configs keep working
+--- unchanged. Either way, delegates the actual mark/unmark/save/notify work to
+--- `toggle_viewed_batch` (see its own docs for the tri-state rule and the single-save/
+--- single-notify guarantee).
+---@param group_name string?
+---@return {marked: integer, unmarked: integer, matched: integer}|nil result
+---@return string scope_or_err  -- on success: the resolved scope name ("all groups", or
+---  `group_name` itself) for callers' notifications; on failure (unknown `group_name`,
+---  `result` is nil): a ready-to-notify error message
+function Session:sweep_patterns(group_name)
+  local groups = self:pattern_groups()
+
+  if group_name == nil then
+    local paths, seen = {}, {}
+    for _, group in ipairs(groups) do
+      for _, path in ipairs(group.matched) do
+        if not seen[path] then
+          seen[path] = true
+          table.insert(paths, path)
+        end
+      end
+    end
+    return self:toggle_viewed_batch(paths), "all groups"
+  end
+
+  for _, group in ipairs(groups) do
+    if group.name == group_name then
+      return self:toggle_viewed_batch(group.matched), group.name
+    end
+  end
+
+  return nil, string.format("difit: unknown pattern group %q", group_name)
 end
 
 --- `tree.file_order(tree.build(self.entries))`, the single source every navigation
