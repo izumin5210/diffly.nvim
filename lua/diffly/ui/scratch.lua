@@ -1,11 +1,11 @@
--- Shared `difit://` scratch-buffer helper. Replaces the find-or-create/configure logic
+-- Shared `diffly://` scratch-buffer helper. Replaces the find-or-create/configure logic
 -- that used to be triplicated across ui/panel.lua, ui/sidebyside.lua (`owned_buffer`) and
 -- ui/unified.lua (`get_or_create_buf`). See docs/architecture.md's "Rendering" section.
 --
 -- Two responsibilities live here:
 --
--- 1. Naming: every owned buffer name is `difit://<kind>/<session_id>/<rest>` (or, when
---    there is no further path, `difit://<kind>/<session_id>`). `session_id` is a
+-- 1. Naming: every owned buffer name is `diffly://<kind>/<session_id>/<rest>` (or, when
+--    there is no further path, `diffly://<kind>/<session_id>`). `session_id` is a
 --    per-session discriminator the caller supplies -- e.g. `ctx.anchor` (the panel
 --    window id, stable and unique for a session's whole lifetime) for the diff views, or
 --    a buffer's own number for the panel. Without it, two concurrent reviews whose
@@ -14,10 +14,10 @@
 --    second session would then silently repoint the FIRST session's buffer, and that
 --    view's own `close()` would tear down windows the other session still owns. Putting
 --    `kind` before `session_id` (rather than the other way around, as the design doc's
---    example shows) means the well-known "difit://panel/" and "difit://unified/" name
+--    example shows) means the well-known "diffly://panel/" and "diffly://unified/" name
 --    prefixes existing code already keys off of keep working unchanged.
 --
--- 2. LSP-safe syntax highlighting: `difit://` buffers must never get `'filetype'` set.
+-- 2. LSP-safe syntax highlighting: `diffly://` buffers must never get `'filetype'` set.
 --    Setting it fires `FileType` autocmds, which is how LSP clients typically attach and
 --    send `didOpen` -- on a URI a server was never meant to see, some servers crash
 --    outright (a codediff.nvim finding this project inherited by not knowing about it
@@ -38,7 +38,7 @@ function M.short_sha(sha)
   return sha and sha:sub(1, 7) or nil
 end
 
----@class difit.ui.scratch.Opts
+---@class diffly.ui.scratch.Opts
 ---@field lines string[]?     -- content to write; applied ONLY when this call creates a
 -- fresh buffer, never re-applied when an existing one with
 -- the same name is reused -- every caller of `opts.lines`
@@ -53,7 +53,7 @@ end
 ---@field filename string?    -- resolve a highlight language via `vim.filetype.match`
 ---@field lang string?        -- explicit highlight language; wins over `filename`
 
---- Build a `difit://` buffer name embedding `session_id` as a collision-proof
+--- Build a `diffly://` buffer name embedding `session_id` as a collision-proof
 --- discriminator (see the module doc above).
 ---@param kind string             -- e.g. "panel", "unified", "empty", "deleted", "binary", or a blob sha
 ---@param session_id integer|string
@@ -61,9 +61,9 @@ end
 ---@return string
 function M.name(kind, session_id, rest)
   if rest then
-    return string.format("difit://%s/%s/%s", kind, tostring(session_id), rest)
+    return string.format("diffly://%s/%s/%s", kind, tostring(session_id), rest)
   end
-  return string.format("difit://%s/%s", kind, tostring(session_id))
+  return string.format("diffly://%s/%s", kind, tostring(session_id))
 end
 
 --- Apply LSP-safe highlighting to `buf`: treesitter when a parser is available for the
@@ -92,7 +92,7 @@ end
 --- their own buffer up front (the panel names itself after its own, not-yet-known-until-
 --- created bufnr) can still share the option-setting logic.
 ---@param buf integer
----@param opts difit.ui.scratch.Opts?
+---@param opts diffly.ui.scratch.Opts?
 function M.configure(buf, opts)
   opts = opts or {}
   vim.bo[buf].buftype = "nofile"
@@ -110,11 +110,11 @@ function M.configure(buf, opts)
   M.highlight(buf, opts)
 end
 
---- Get-or-create a difit-owned scratch buffer named `name`. Reuses an existing buffer
+--- Get-or-create a diffly-owned scratch buffer named `name`. Reuses an existing buffer
 --- with the exact same name instead of recreating it -- `opts.lines`/highlighting are
 --- only ever applied on the creating call, per `Opts.lines`'s doc above.
 ---@param name string
----@param opts difit.ui.scratch.Opts?
+---@param opts diffly.ui.scratch.Opts?
 ---@return integer bufnr
 ---@return boolean created  -- true iff this call just created (rather than reused) the buffer
 function M.find_or_create(name, opts)

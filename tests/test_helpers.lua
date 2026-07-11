@@ -54,7 +54,7 @@ T["fixture_branch_repo() sets up the expected branches, paths and statuses"] = f
   eq(#main_log, 2)
 
   -- A single `-M` diff between the branches must report each fixture path with the
-  -- status difit.FileEntry expects, and the rename must be detected (not seen as a
+  -- status diffly.FileEntry expects, and the rename must be detected (not seen as a
   -- delete+add pair).
   local diff = vim.split(
     repo:git({ "diff", "--name-status", "-M", "main", "feature" }),
@@ -100,25 +100,25 @@ T["path_shim() makes a fake executable win over PATH"] = function()
   -- actually exercises "wins over PATH" rather than just "is found somewhere on PATH".
   local loser_dir = vim.fn.tempname()
   vim.fn.mkdir(loser_dir, "p")
-  local loser_path = loser_dir .. "/difit-test-shim"
+  local loser_path = loser_dir .. "/diffly-test-shim"
   vim.fn.writefile({ "#!/bin/sh", 'echo "loser"' }, loser_path, "b")
   vim.fn.setfperm(loser_path, "rwxr-xr-x")
 
   local old_path = vim.env.PATH
   vim.env.PATH = loser_dir .. ":" .. old_path
 
-  local before = vim.system({ "difit-test-shim" }, { text = true }):wait()
+  local before = vim.system({ "diffly-test-shim" }, { text = true }):wait()
   eq(vim.trim(before.stdout), "loser")
 
-  local restore = helpers.path_shim("difit-test-shim", 'echo "winner"')
-  local res = vim.system({ "difit-test-shim" }, { text = true }):wait()
+  local restore = helpers.path_shim("diffly-test-shim", 'echo "winner"')
+  local res = vim.system({ "diffly-test-shim" }, { text = true }):wait()
   eq(res.code, 0)
   eq(vim.trim(res.stdout), "winner")
 
   restore()
 
   -- Restoring removes only the shim's own dir; the pre-existing "loser" stays on PATH.
-  local after = vim.system({ "difit-test-shim" }, { text = true }):wait()
+  local after = vim.system({ "diffly-test-shim" }, { text = true }):wait()
   eq(vim.trim(after.stdout), "loser")
 
   vim.env.PATH = old_path

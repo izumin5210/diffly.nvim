@@ -1,5 +1,5 @@
 -- Synchronous git plumbing wrapper. This is the only module that shells out to `git`;
--- every other WP consumes difit.FileEntry / difit.Hunk shapes produced here instead of
+-- every other WP consumes diffly.FileEntry / diffly.Hunk shapes produced here instead of
 -- parsing git output itself. Every git invocation is `-C <toplevel>`-scoped so callers
 -- never depend on Neovim's cwd.
 
@@ -174,12 +174,12 @@ local function parse_raw_numstat_tokens(tokens)
   return raw, numstat
 end
 
---- Turn correlated raw/numstat records into difit.FileEntry-shaped tables. Entries
+--- Turn correlated raw/numstat records into diffly.FileEntry-shaped tables. Entries
 --- whose right-hand blob sha is all-zero (unstaged worktree changes) get a `_needs_hash`
 --- marker for the caller to resolve via a single batched `hash-object` call.
 ---@param raw table[]
 ---@param numstat table[]
----@return difit.FileEntry[]
+---@return diffly.FileEntry[]
 local function build_entries(raw, numstat)
   local entries = {}
   for i, r in ipairs(raw) do
@@ -221,7 +221,7 @@ end
 
 --- Parse a `@@ -old_start,old_count +new_start,new_count @@ ...` header. Git omits the
 --- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@"). Only `new_start`/
---- `new_count` are kept on `difit.Hunk` (`old_start`/`old_count` were dropped: the
+--- `new_count` are kept on `diffly.Hunk` (`old_start`/`old_count` were dropped: the
 --- inline overlay anchors on new-side positions only; deleted text comes from the hunk's
 --- own "-" lines, not from these old-side numbers) -- the
 --- old-side numbers are still parsed here, just to recognize a header line at all and to
@@ -238,7 +238,7 @@ local function match_hunk_header(line)
 end
 
 ---@param diff_text string
----@return difit.Hunk[]
+---@return diffly.Hunk[]
 local function parse_hunks(diff_text)
   local hunks = {}
   local current
@@ -264,7 +264,7 @@ end
 
 --- Resolve repo identity from any path inside a git worktree.
 ---@param cwd string @any path inside the repo
----@return difit.RepoIdentity|nil, string|nil err
+---@return diffly.RepoIdentity|nil, string|nil err
 function M.repo_identity(cwd)
   local toplevel, err = run(cwd, { "rev-parse", "--show-toplevel" })
   if not toplevel then
@@ -286,7 +286,7 @@ end
 --- List configured remote names (e.g. {"origin", "upstream"}). Used by `resolve_ref`/
 --- `default_branch` to fall back to a non-"origin" remote when that's the only one that
 --- actually has the ref being looked for (e.g. an "upstream"-only clone).
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@return string[]|nil names
 ---@return string|nil err
 function M.remotes(repo)
@@ -299,7 +299,7 @@ end
 
 --- Resolve the remote's default branch, falling back to the first existing well-known
 --- local/remote branch name.
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@return string|nil name @e.g. "origin/main"
 function M.default_branch(repo)
   local out = run(repo.toplevel, { "symbolic-ref", "--short", "refs/remotes/origin/HEAD" })
@@ -333,7 +333,7 @@ function M.default_branch(repo)
   return nil
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param rev string
 ---@return string|nil sha
 ---@return string|nil err
@@ -345,7 +345,7 @@ function M.rev_parse(repo, rev)
   return vim.trim(out)
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param a string
 ---@param b string
 ---@return string|nil sha
@@ -358,7 +358,7 @@ function M.merge_base(repo, a, b)
   return vim.trim(out)
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@return string|nil name @current branch, nil when detached
 ---@return string|nil err
 function M.current_branch(repo)
@@ -373,11 +373,11 @@ function M.current_branch(repo)
   return out
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param base_sha string
 ---@param right "worktree"|"head"
 ---@param opts {include_untracked: boolean}?
----@return difit.FileEntry[]|nil, string|nil err
+---@return diffly.FileEntry[]|nil, string|nil err
 function M.diff_files(repo, base_sha, right, opts)
   opts = opts or {}
 
@@ -458,7 +458,7 @@ function M.diff_files(repo, base_sha, right, opts)
   return entries
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param paths string[] @relative to toplevel
 ---@return table<string,string>|nil @path -> blob sha
 ---@return string|nil err
@@ -500,7 +500,7 @@ end
 --- printed: "set" (`attr` alone in `.gitattributes`), "unset" (`-attr`), or any other
 --- string git accepts as an explicit value (e.g. "false" for `attr=false`, or an arbitrary
 --- custom string) -- callers map those to booleans themselves (see `ui/guard.lua`).
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param attr string
 ---@param paths string[] @relative to toplevel
 ---@return table<string,string>|nil @path -> raw check-attr value; absent key == "unspecified"
@@ -535,7 +535,7 @@ function M.check_attrs(repo, attr, paths)
   return result
 end
 
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param locator {sha: string}|{path: string}
 ---@return string[]|nil lines
 ---@return string|nil err
@@ -566,7 +566,7 @@ end
 --- reading it. Callers only ever invoke this for the one entry actually being opened, at
 --- `open()` time -- never for the whole diff list -- so it adds no subprocess calls for
 --- files nobody opens.
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param sha string
 ---@return integer|nil size
 function M.blob_size(repo, sha)
@@ -577,11 +577,11 @@ function M.blob_size(repo, sha)
   return tonumber(vim.trim(out))
 end
 
----@param repo difit.RepoIdentity
----@param entry difit.FileEntry
+---@param repo diffly.RepoIdentity
+---@param entry diffly.FileEntry
 ---@param base_sha string
 ---@param right "worktree"|"head"
----@return difit.Hunk[]|nil, string|nil err
+---@return diffly.Hunk[]|nil, string|nil err
 function M.hunks(repo, entry, base_sha, right)
   local cmd = { "git", "-C", repo.toplevel, "diff" }
   local ok_codes

@@ -1,11 +1,11 @@
--- Tests for lua/difit/config.lua's `M.normalize_pattern_groups` (the pure shape-
+-- Tests for lua/diffly/config.lua's `M.normalize_pattern_groups` (the pure shape-
 -- interpretation of `viewed_patterns` -- see its own doc comment for why it lives here
 -- rather than session.lua). No child Neovim needed: MiniTest itself already runs inside a
 -- real Neovim process capable of calling `vim.notify`/`require` (mirrors
 -- tests/test_scratch.lua's/tests/test_tree.lua's own "no child" rationale) -- there is no
--- git repo or `difit.Session` involved anywhere in this module.
+-- git repo or `diffly.Session` involved anywhere in this module.
 
-local config = require("difit.config")
+local config = require("diffly.config")
 
 local eq = MiniTest.expect.equality
 

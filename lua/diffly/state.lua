@@ -1,5 +1,5 @@
 -- Viewed-state persistence (design.md "Viewed state"). One JSON file per review key
--- under `vim.fn.stdpath('data')/difit`, keyed by a hash of the review key so state is
+-- under `vim.fn.stdpath('data')/diffly`, keyed by a hash of the review key so state is
 -- shared across worktrees/clones of the same repo but never carried over to a different
 -- PR or branch pair. Marking a file viewed records the (base blob sha, head blob sha)
 -- pair at mark time; `is_viewed` re-checks that pair against the current entry so new
@@ -8,17 +8,57 @@
 local M = {}
 
 --- Test seam: overrides the state directory (normally
---- `vim.fn.stdpath('data') .. '/difit'`) when set. Only ever assigned by tests; this is
+--- `vim.fn.stdpath('data') .. '/diffly'`) when set. Only ever assigned by tests; this is
 --- filesystem location, not behavior, so it is safe to poke from outside.
 ---@type string?
 M._dir = nil
 
+--- Test seam: overrides the pre-rename (difit.nvim) state directory that the one-time
+--- migration below looks for. Only ever assigned by tests, same rationale as `M._dir`.
+---@type string?
+M._legacy_dir = nil
+
+--- Test seam: whether the legacy-dir migration has already run. Tests reset this
+--- alongside `M._dir`/`M._legacy_dir` so each case gets its own migration attempt instead
+--- of sharing the real run from module load.
+---@type boolean
+M._migrated = false
+
 ---@return string
-local function state_dir()
-  return M._dir or (vim.fn.stdpath("data") .. "/difit")
+local function legacy_dir()
+  return M._legacy_dir or (vim.fn.stdpath("data") .. "/difit")
 end
 
----@param key difit.ReviewKey
+--- One-time migration from the plugin's pre-rename (difit.nvim) state directory: moves it
+--- wholesale to the new location so existing `viewed` marks survive the rename instead of
+--- silently resetting. Only fires when the new directory doesn't exist yet -- an existing
+--- new directory means either migration already happened or the user is already on
+--- diffly.nvim -- and never raises: a failed rename (cross-device, permissions, ...) just
+--- falls through to the (now-empty) new directory. Runs at most once per session, gated
+--- lazily behind `state_dir()` rather than at require time, so the test seams above can
+--- redirect both paths before it ever runs.
+---@param new string
+local function migrate_legacy_dir_once(new)
+  if M._migrated then
+    return
+  end
+  M._migrated = true
+
+  local old = legacy_dir()
+  if old == new or not vim.uv.fs_stat(old) or vim.uv.fs_stat(new) then
+    return
+  end
+  pcall(vim.uv.fs_rename, old, new)
+end
+
+---@return string
+local function state_dir()
+  local dir = M._dir or (vim.fn.stdpath("data") .. "/diffly")
+  migrate_legacy_dir_once(dir)
+  return dir
+end
+
+---@param key diffly.ReviewKey
 ---@return string @absolute path of the state file for this review key
 function M.file_path(key)
   local suffix
@@ -31,8 +71,8 @@ function M.file_path(key)
   return state_dir() .. "/" .. hash .. ".json"
 end
 
----@param key difit.ReviewKey
----@return difit.ReviewState
+---@param key diffly.ReviewKey
+---@return diffly.ReviewState
 function M.load(key)
   local path = M.file_path(key)
   local fresh = { version = 1, key = key, viewed = {} }
@@ -50,7 +90,7 @@ function M.load(key)
   local ok, decoded = pcall(vim.json.decode, content, { luanil = { object = true } })
   if not ok or type(decoded) ~= "table" then
     vim.notify(
-      string.format("difit: ignoring corrupt state file %s (%s)", path, decoded),
+      string.format("diffly: ignoring corrupt state file %s (%s)", path, decoded),
       vim.log.levels.WARN
     )
     return fresh
@@ -62,7 +102,7 @@ function M.load(key)
   return decoded
 end
 
----@param st difit.ReviewState
+---@param st diffly.ReviewState
 function M.save(st)
   st.last_opened = os.date("!%Y-%m-%dT%H:%M:%SZ")
 
@@ -82,12 +122,12 @@ function M.save(st)
   -- everywhere.
   local ok, err = vim.uv.fs_rename(tmp_path, path)
   if not ok then
-    error(string.format("difit: failed to save state to %s: %s", path, err or "unknown error"))
+    error(string.format("diffly: failed to save state to %s: %s", path, err or "unknown error"))
   end
 end
 
----@param st difit.ReviewState
----@param entry difit.FileEntry
+---@param st diffly.ReviewState
+---@param entry diffly.FileEntry
 function M.mark(st, entry)
   st.viewed[entry.path] = {
     base_sha = entry.base_sha,
@@ -96,14 +136,14 @@ function M.mark(st, entry)
   }
 end
 
----@param st difit.ReviewState
+---@param st diffly.ReviewState
 ---@param path string
 function M.unmark(st, path)
   st.viewed[path] = nil
 end
 
----@param st difit.ReviewState
----@param entry difit.FileEntry
+---@param st diffly.ReviewState
+---@param entry diffly.FileEntry
 ---@return boolean
 function M.is_viewed(st, entry)
   local record = st.viewed[entry.path]
@@ -115,7 +155,7 @@ function M.is_viewed(st, entry)
   return record.base_sha == entry.base_sha and record.head_sha == entry.head_sha
 end
 
----@param opts {all: boolean?, key: difit.ReviewKey?}
+---@param opts {all: boolean?, key: diffly.ReviewKey?}
 ---@return integer removed
 function M.clean(opts)
   opts = opts or {}

@@ -1,29 +1,29 @@
--- Left-hand file tree panel (WP-H). Renders a `difit.Session`'s entries as a folding
+-- Left-hand file tree panel (WP-H). Renders a `diffly.Session`'s entries as a folding
 -- tree with per-file viewed marks, status letters, and +/- counts, and wires the
 -- buffer-local panel keymaps to the session.
 --
 -- `session` is used ONLY through the documented interface from docs/architecture.md:
 -- fields `spec`/`entries`/`state`/`mode`/`current_path`, methods `subscribe`/
 -- `open_file`/`toggle_viewed`/`is_viewed`/`next_unviewed`/`progress`/`set_mode`/
--- `refresh`/`close`/`toggle_viewed_batch`. `lua/difit/session.lua` is intentionally never
+-- `refresh`/`close`/`toggle_viewed_batch`. `lua/diffly/session.lua` is intentionally never
 -- `require`d here, so this module stays testable against a scripted fake (see
 -- tests/test_panel.lua). The pattern-GROUP selector behind `S` (`pattern_groups`/
 -- `sweep_patterns`, `vim.ui.select`) lives in `init.lua` instead and is reached through an
 -- injected `opts.sweep` callback (see `M.open`/`on_sweep`) -- not through this interface --
--- specifically so this module never has to `require("difit")` to get at it.
+-- specifically so this module never has to `require("diffly")` to get at it.
 
-local config = require("difit.config")
-local tree = require("difit.tree")
-local scratch = require("difit.ui.scratch")
+local config = require("diffly.config")
+local tree = require("diffly.tree")
+local scratch = require("diffly.ui.scratch")
 
 local M = {}
 
----@class difit.Panel
+---@class diffly.Panel
 ---@field buf integer
 ---@field win integer
----@field session difit.Session
+---@field session diffly.Session
 ---@field folded table<string, boolean>          -- dir path -> folded?
----@field row_nodes table<integer, difit.TreeNode> -- 1-indexed buffer line -> node
+---@field row_nodes table<integer, diffly.TreeNode> -- 1-indexed buffer line -> node
 ---@field hide_viewed boolean  -- display-only filter (toggle_hide_viewed); never persisted
 ---@field sweep_action fun()?  -- see `M.open`'s `opts.sweep`
 local Panel = {}
@@ -31,7 +31,7 @@ Panel.__index = Panel
 
 -- Dedicated namespace for every highlight this module draws, so `render()` can clear
 -- exactly its own extmarks each time without disturbing anything else in the buffer.
-local ns = vim.api.nvim_create_namespace("difit_panel")
+local ns = vim.api.nvim_create_namespace("diffly_panel")
 
 local GLYPH = {
   dir_open = "▾",
@@ -44,19 +44,19 @@ local MINUS = "−"
 local ELLIPSIS = "…"
 local ARROW = "→"
 
--- Extmark priority for the current-file row background (`DifitCurrentFile`, see
+-- Extmark priority for the current-file row background (`DifflyCurrentFile`, see
 -- `Panel:render`'s row loop below): deliberately BELOW Neovim's default extmark priority
 -- (4096, unspecified on every other highlight this module sets), so it composes as a
 -- background layer UNDER the segment/viewed foreground groups -- those still show their
 -- own colors on top of it, exactly like the checkbox/status/counts highlights already do
--- over a viewed row's `DifitViewed` styling.
+-- over a viewed row's `DifflyViewed` styling.
 local CURRENT_FILE_PRIORITY = 100
 
 local STATUS_HL = {
-  A = "DifitStatusAdded",
-  M = "DifitStatusModified",
-  D = "DifitStatusDeleted",
-  R = "DifitStatusRenamed",
+  A = "DifflyStatusAdded",
+  M = "DifflyStatusModified",
+  D = "DifflyStatusDeleted",
+  R = "DifflyStatusRenamed",
 }
 
 --- Review keys/UI only ever show the short branch name ("main"), never a resolved
@@ -88,38 +88,38 @@ local function resolve_icon(filename)
   return nil
 end
 
---- `difit  <base>…<head>` for a branch-pair review; `review_key` carries no `head` for
---- a PR review (see difit.ReviewKey), so that case reads `difit  <base ref> (PR #N)`
+--- `diffly  <base>…<head>` for a branch-pair review; `review_key` carries no `head` for
+--- a PR review (see diffly.ReviewKey), so that case reads `diffly  <base ref> (PR #N)`
 --- instead -- the closest faithful rendering given the documented interface.
----@param session difit.Session
+---@param session diffly.Session
 ---@return string
 local function header_text(session)
   local key = session.spec.review_key
   if key.kind == "pr" then
-    return string.format("difit  %s (PR #%d)", short_name(session.spec.base_ref), key.pr_number)
+    return string.format("diffly  %s (PR #%d)", short_name(session.spec.base_ref), key.pr_number)
   end
-  return string.format("difit  %s%s%s", key.base, ELLIPSIS, key.head)
+  return string.format("diffly  %s%s%s", key.base, ELLIPSIS, key.head)
 end
 
----@class difit.panel.Highlight
+---@class diffly.panel.Highlight
 ---@field col_start integer -- byte offset, start col of the extmark
 ---@field col_end integer   -- byte offset, end col of the extmark
 ---@field hl_group string
 
----@class difit.panel.Row
+---@class diffly.panel.Row
 ---@field text string
----@field highlights difit.panel.Highlight[]
+---@field highlights diffly.panel.Highlight[]
 
----@param row difit.TreeRow
+---@param row diffly.TreeRow
 ---@param folded table<string, boolean>
----@return difit.panel.Row
+---@return diffly.panel.Row
 local function render_dir_row(row, folded)
   local marker = folded[row.node.path] and GLYPH.dir_closed or GLYPH.dir_open
   local indent = string.rep(" ", row.depth * 2)
   local text = indent .. marker .. " " .. row.node.name
   return {
     text = text,
-    highlights = { { col_start = #indent, col_end = #text, hl_group = "DifitPanelDir" } },
+    highlights = { { col_start = #indent, col_end = #text, hl_group = "DifflyPanelDir" } },
   }
 end
 
@@ -127,12 +127,12 @@ end
 --- `old → new` (full relative paths) in place of `name`. Spacing is a single
 --- space-separated layout (one space after the checkbox, one after the status letter,
 --- two before the counts) -- there is no column-alignment requirement to satisfy.
---- Viewed files highlight the *whole row* `DifitViewed` instead of the per-segment
+--- Viewed files highlight the *whole row* `DifflyViewed` instead of the per-segment
 --- groups (design.md: viewed files are "greyed out" as a unit).
----@param row difit.TreeRow
----@param session difit.Session
+---@param row diffly.TreeRow
+---@param session diffly.Session
 ---@param icons_enabled boolean
----@return difit.panel.Row
+---@return diffly.panel.Row
 local function render_file_row(row, session, icons_enabled)
   local node = row.node
   local entry = node.entry
@@ -165,16 +165,16 @@ local function render_file_row(row, session, icons_enabled)
   if viewed then
     return {
       text = text,
-      highlights = { { col_start = 0, col_end = #text, hl_group = "DifitViewed" } },
+      highlights = { { col_start = 0, col_end = #text, hl_group = "DifflyViewed" } },
     }
   end
 
   return {
     text = text,
     highlights = {
-      { col_start = checkbox_start, col_end = checkbox_end, hl_group = "DifitCheckbox" },
+      { col_start = checkbox_start, col_end = checkbox_end, hl_group = "DifflyCheckbox" },
       { col_start = status_start, col_end = status_end, hl_group = STATUS_HL[entry.status] },
-      { col_start = #text - #counts, col_end = #text, hl_group = "DifitCounts" },
+      { col_start = #text - #counts, col_end = #text, hl_group = "DifflyCounts" },
     },
   }
 end
@@ -188,7 +188,7 @@ end
 --- back to clamping onto the nearest still-valid row when the exact node is gone (e.g.
 --- the file left the diff, or fold-compression restructured the tree), rather than
 --- leaving the cursor on a stale/out-of-range line.
----@param panel difit.Panel
+---@param panel diffly.Panel
 ---@param path string?
 ---@param total_lines integer
 local function restore_cursor(panel, path, total_lines)
@@ -217,8 +217,8 @@ end
 --- tree afterwards) is what makes now-empty directories vanish on their own: `tree.build`
 --- never creates a directory node with no file underneath it, so there is nothing extra to
 --- prune here.
----@param panel difit.Panel
----@return difit.FileEntry[]
+---@param panel diffly.Panel
+---@return diffly.FileEntry[]
 local function visible_entries(panel)
   if not panel.hide_viewed then
     return panel.session.entries
@@ -232,7 +232,7 @@ end
 --- Progress counts are always GLOBAL (every file in the review), never just the rows
 --- currently on screen -- the filter is a display concern only, per design.md's
 --- "Interaction" note that navigation/progress must stay filter-independent.
----@param session difit.Session
+---@param session diffly.Session
 ---@param hide_viewed boolean
 ---@return string
 local function progress_text(session, hide_viewed)
@@ -274,7 +274,7 @@ function Panel:render()
   lines[2] = progress_text(session, self.hide_viewed)
 
   local extmarks = {
-    { line = 0, col_start = 0, col_end = #lines[1], hl_group = "DifitPanelHeader" },
+    { line = 0, col_start = 0, col_end = #lines[1], hl_group = "DifflyPanelHeader" },
   }
 
   local root = tree.build(visible_entries(self))
@@ -299,7 +299,8 @@ function Panel:render()
     -- case); a file filtered out by `hide_viewed` never reaches this loop at all (see
     -- `visible_entries`), so it naturally never gets marked either.
     if row.node.type == "file" and row.node.entry.path == session.current_path then
-      extmarks[#extmarks + 1] = { line = lnum - 1, whole_row = true, hl_group = "DifitCurrentFile" }
+      extmarks[#extmarks + 1] =
+        { line = lnum - 1, whole_row = true, hl_group = "DifflyCurrentFile" }
     end
   end
 
@@ -369,13 +370,13 @@ function Panel:focus()
   end
 end
 
----@return difit.TreeNode|nil
+---@return diffly.TreeNode|nil
 local function current_node(panel)
   local lnum = vim.api.nvim_win_get_cursor(panel.win)[1]
   return panel.row_nodes[lnum]
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 ---@param path string
 ---@return integer|nil
 local function row_for_path(panel, path)
@@ -402,7 +403,7 @@ function Panel:set_cursor(path)
   end
 end
 
----@param node difit.TreeNode
+---@param node diffly.TreeNode
 ---@return string|nil
 local function parent_dir_path(node)
   local parent = node.path:match("^(.*)/[^/]+$")
@@ -412,7 +413,7 @@ local function parent_dir_path(node)
   return nil
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 ---@param dir_path string
 local function toggle_fold(panel, dir_path)
   panel.folded[dir_path] = not panel.folded[dir_path]
@@ -420,7 +421,7 @@ local function toggle_fold(panel, dir_path)
 end
 
 --- open: file row -> `session:open_file`; dir row -> toggle its own fold.
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_open(panel)
   local node = current_node(panel)
   if not node then
@@ -436,7 +437,7 @@ end
 --- fold ("za"): dir row -> toggle it, same as `open`. File row -> toggle its *parent*
 --- directory, mirroring native `za` (closing the fold enclosing the cursor); a
 --- root-level file has no enclosing directory row, so it is a no-op there.
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_fold(panel)
   local node = current_node(panel)
   if not node then
@@ -460,7 +461,7 @@ end
 --- fresh review's first auto-advance-free open would). `S`'s own auto-advance is the
 --- equivalent tail in `init.lua`'s `perform_sweep` instead, via `Panel:set_cursor` -- see
 --- `on_sweep`'s doc for why that flow lives there rather than here.
----@param panel difit.Panel
+---@param panel diffly.Panel
 ---@param after_path string?
 local function advance_to_next_unviewed(panel, after_path)
   local nxt = panel.session:next_unviewed(after_path)
@@ -473,7 +474,7 @@ local function advance_to_next_unviewed(panel, after_path)
   end
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_toggle_viewed(panel)
   local node = current_node(panel)
   if not node or node.type ~= "file" then
@@ -496,7 +497,7 @@ end
 
 --- `result` from `Session:toggle_viewed_batch` (used by `V`'s subtree batch below),
 --- formatted the same compact one-line way `init.lua`'s `perform_sweep` reports a
---- `:Difit sweep`/panel-`S` result -- reimplemented here rather than shared across the two
+--- `:Diffly sweep`/panel-`S` result -- reimplemented here rather than shared across the two
 --- files for the same reason `toggle_viewed_and_advance`/`on_toggle_viewed` are already
 --- duplicated between them (see init.lua): this call site has its own panel-local
 --- cursor/row bookkeeping to run afterwards, and init.lua has none of that to share it
@@ -506,26 +507,26 @@ end
 local function notify_batch_result(result)
   if result.marked > 0 then
     vim.notify(
-      string.format("difit: marked %d files as viewed", result.marked),
+      string.format("diffly: marked %d files as viewed", result.marked),
       vim.log.levels.INFO
     )
   else
-    vim.notify(string.format("difit: unmarked %d files", result.unmarked), vim.log.levels.INFO)
+    vim.notify(string.format("diffly: unmarked %d files", result.unmarked), vim.log.levels.INFO)
   end
 end
 
---- `S`: run the exact same 0/1/N-pattern-group selector flow `:Difit sweep` uses (0
+--- `S`: run the exact same 0/1/N-pattern-group selector flow `:Diffly sweep` uses (0
 --- groups -> "not configured" notice; 1 -> sweep it immediately; 2+ -> a `vim.ui.select`
 --- menu -- see `init.lua`'s `run_sweep_selector`). That flow needs the panel/session
 --- registry lookups and `vim.ui.select` plumbing `init.lua` already owns, and `panel.lua`
---- must never `require("difit")` itself (that would be circular: `init.lua` already
+--- must never `require("diffly")` itself (that would be circular: `init.lua` already
 --- `require`s this module) -- so `M.open`'s caller injects it instead, the same way
 --- `ui/sidebyside.lua`/`ui/unified.lua`'s diff buffers reach init.lua-owned behavior
 --- through their own injected `ctx.actions`, without either direction ever needing to
 --- reach back into this file. A no-op when nothing was injected (e.g. this module driven
 --- standalone against a fake session, see tests/test_panel.lua, which injects its own
 --- fake to assert only that `S` reaches it).
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_sweep(panel)
   if panel.sweep_action then
     panel.sweep_action()
@@ -545,7 +546,7 @@ end
 --- child directory's files never even get a row). Matching directly against `node.path` --
 --- always the real, uncompressed directory path even after `tree.build`'s single-child-chain
 --- compression, see `tree.lua`'s `collapse_chains` -- sidesteps both filters at once.
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_toggle_viewed_subtree(panel)
   local node = current_node(panel)
   if not node then
@@ -575,18 +576,18 @@ local function on_toggle_viewed_subtree(panel)
   end
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_refresh(panel)
   panel.session:refresh()
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_toggle_mode(panel)
   local next_mode = panel.session.mode == "sidebyside" and "unified" or "sidebyside"
   panel.session:set_mode(next_mode)
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_close(panel)
   panel.session:close()
   panel:close()
@@ -597,7 +598,7 @@ end
 --- falling back to `session.current_path` only when the cursor isn't parked on a file row
 --- at all (the header/progress lines, a dir row, or an empty tree), so the keys still do
 --- something sensible instead of silently no-op-ing there.
----@param panel difit.Panel
+---@param panel diffly.Panel
 ---@return string|nil
 local function reference_path(panel)
   local node = current_node(panel)
@@ -615,7 +616,7 @@ end
 --- fold -- or, with the filter on, simply may not be about to become a row at all until
 --- `hide_viewed` is turned back off, in which case `set_cursor` is already documented to
 --- no-op rather than error.
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_next_file(panel)
   local target = panel.session:next_file(reference_path(panel))
   if target then
@@ -624,7 +625,7 @@ local function on_next_file(panel)
   end
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_prev_file(panel)
   local target = panel.session:prev_file(reference_path(panel))
   if target then
@@ -634,17 +635,17 @@ local function on_prev_file(panel)
 end
 
 --- `H`: toggle whether already-viewed files are hidden from the tree, then re-render.
---- Display-only -- `hide_viewed` lives only on this `difit.Panel` instance, is never
+--- Display-only -- `hide_viewed` lives only on this `diffly.Panel` instance, is never
 --- persisted, and never affects navigation (`next_unviewed`/`next_file`/`prev_file` all
 --- read `session` state, never panel rows) or the header's progress counts (always global,
 --- see `progress_text`).
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function on_toggle_hide_viewed(panel)
   panel.hide_viewed = not panel.hide_viewed
   panel:render()
 end
 
----@param panel difit.Panel
+---@param panel diffly.Panel
 local function set_keymaps(panel)
   local actions = {
     open = on_open,
@@ -664,11 +665,11 @@ local function set_keymaps(panel)
     if lhs then -- `false` (or unset) disables the mapping
       vim.keymap.set("n", lhs, function()
         fn(panel)
-      end, { buffer = panel.buf, nowait = true, silent = true, desc = "difit: " .. name })
+      end, { buffer = panel.buf, nowait = true, silent = true, desc = "diffly: " .. name })
     end
   end
 
-  -- `keymaps.universal`: the same leader-prefixed keys that work in every other difit
+  -- `keymaps.universal`: the same leader-prefixed keys that work in every other diffly
   -- context (owned diff buffers, real file buffers -- see ui/sidebyside.lua/ui/unified.lua)
   -- must also work on the panel, so a user doesn't have to remember a different key just
   -- because the cursor happens to be here. toggle_viewed/toggle_mode reuse the EXACT same
@@ -700,17 +701,17 @@ local function set_keymaps(panel)
         buffer = panel.buf,
         nowait = true,
         silent = true,
-        desc = "difit: universal " .. name,
+        desc = "diffly: universal " .. name,
       })
     end
   end
 end
 
----@param session difit.Session
+---@param session diffly.Session
 ---@param opts { sweep: fun()? }?  -- `sweep`: injected by `init.lua` so the `S` keymap
----  runs the exact same group-selector flow `:Difit sweep` uses -- see `on_sweep`'s own
+---  runs the exact same group-selector flow `:Diffly sweep` uses -- see `on_sweep`'s own
 ---  doc for why this is injected rather than implemented locally.
----@return difit.Panel
+---@return diffly.Panel
 function M.open(session, opts)
   opts = opts or {}
   local cfg = config.get()
@@ -718,13 +719,13 @@ function M.open(session, opts)
   local buf = vim.api.nvim_create_buf(false, true)
   -- Named after the buffer's own (unique) number: since docs/architecture.md "Session lifecycle", more
   -- than one review -- hence more than one panel -- can be open at once, and a bare
-  -- "difit://panel" would collide (E95) on the second `panel.open()` call. R4 unifies
-  -- this into the same `difit://<kind>/<session_id>` scheme every other owned buffer
+  -- "diffly://panel" would collide (E95) on the second `panel.open()` call. R4 unifies
+  -- this into the same `diffly://<kind>/<session_id>` scheme every other owned buffer
   -- uses (see ui/scratch.lua) -- the panel just supplies its own bufnr as the
   -- discriminator, since it's already known and already unique.
   vim.api.nvim_buf_set_name(buf, scratch.name("panel", buf))
   -- No `filetype`/highlighting: the panel draws its own extmarks and, per
-  -- docs/architecture.md "Rendering", `difit://` buffers must never fire `FileType` autocmds.
+  -- docs/architecture.md "Rendering", `diffly://` buffers must never fire `FileType` autocmds.
   scratch.configure(buf, { modifiable = false })
 
   -- `win = -1` makes this a top-level split (like `:topleft vsplit`): full tabpage
@@ -750,8 +751,8 @@ function M.open(session, opts)
   -- Sentinel for init.lua's `WinClosed` teardown funnel (docs/architecture.md "Session lifecycle"): the
   -- panel window is the sole navigational anchor of a review, so its own closure is what
   -- that autocmd watches for. Harmless when this module is driven standalone (see
-  -- tests/test_panel.lua) -- nothing reads `vim.w[win].difit` outside init.lua.
-  vim.w[win].difit = true
+  -- tests/test_panel.lua) -- nothing reads `vim.w[win].diffly` outside init.lua.
+  vim.w[win].diffly = true
   -- Defense in depth (Neovim 0.12+): both diff views already build their own windows via
   -- explicit `ctx.anchor`/`ctx.claim` handles and never touch "the current window" (docs/architecture.md "View contract"), so nothing should ever `:edit`/`:buffer` a real file straight into
   -- this one -- but 'winfixbuf' makes Neovim itself refuse that outright, so a future code

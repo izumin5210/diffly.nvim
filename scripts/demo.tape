@@ -1,6 +1,6 @@
 # README demo recording. Regenerate with: make demo (needs vhs from aqua.yaml plus ttyd
 # and ffmpeg via brew). Records the USER'S real Neovim config (no --clean) with the local
-# difit checkout injected on top (scripts/demo_attach.lua), against a throwaway Go repo
+# diffly checkout injected on top (scripts/demo_attach.lua), against a throwaway Go repo
 # (scripts/demo_repo.sh) so gopls attaches and LSP hover works inside the diff views.
 # NOTE: assumes mapleader = <Space> (this machine's config); adjust the leader keys below
 # if yours differs.
@@ -27,7 +27,7 @@ Sleep 4s
 Show
 
 # Open the viewer: tree panel + side-by-side diff of feature/tokenizer vs main.
-Type ":Difit"
+Type ":Diffly"
 Sleep 500ms
 Enter
 Sleep 3s
@@ -60,7 +60,7 @@ Type " v"
 Sleep 1.5s
 
 # Sweep the generated-files pattern group, then close from the panel.
-Type ":Difit sweep generated"
+Type ":Diffly sweep generated"
 Sleep 500ms
 Enter
 Sleep 2s

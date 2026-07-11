@@ -5,7 +5,7 @@
 -- "+" lines get a line-level highlight, and each contiguous run of "-" lines becomes ONE
 -- `virt_lines` extmark anchored where the text used to sit. Context lines get no marks.
 --
--- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `diffly.ui.ViewCtx` in
 -- `ui/keymaps.lua`) -- this view never reads "the current window". Its one window is
 -- always created by splitting rightward from `ctx.anchor` (the panel window), or by
 -- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
@@ -14,18 +14,18 @@
 -- patterns (via the shared helpers in `ui/keymaps.lua` and `ui/scratch.lua`) rather than
 -- re-deriving them.
 
-local git = require("difit.git")
-local ui_keymaps = require("difit.ui.keymaps")
-local scratch = require("difit.ui.scratch")
-local guard = require("difit.ui.guard")
+local git = require("diffly.git")
+local ui_keymaps = require("diffly.ui.keymaps")
+local scratch = require("diffly.ui.scratch")
+local guard = require("diffly.ui.guard")
 
 local M = {}
 
----@class difit.ui.UnifiedView : difit.View
----@field ctx difit.ui.ViewCtx
+---@class diffly.ui.UnifiedView : diffly.View
+---@field ctx diffly.ui.ViewCtx
 ---@field win integer?                          -- the one window this view owns
 ---@field owned_wins integer[]                  -- same window as `win`; destroyed by close()
----@field owned_bufs table<integer, boolean>     -- difit-owned scratch buffers, wiped by close()
+---@field owned_bufs table<integer, boolean>     -- diffly-owned scratch buffers, wiped by close()
 ---@field ns integer               -- this view's own overlay namespace (one ns per concern)
 ---@field universal_buf integer?   -- real bufnr currently carrying the overlay + `keymaps.universal`
 ---@field universal_keys string[]? -- keys applied to `universal_buf` (see `ui_keymaps.detach_universal`)
@@ -44,7 +44,7 @@ View.__index = View
 --- (docs/architecture.md "View contract"). `ctx.anchor` itself is never claimed or touched, so this
 --- view's window can never collide with whatever the anchor currently shows. Subsequent
 --- opens reuse `self.win`.
----@param self difit.ui.UnifiedView
+---@param self diffly.ui.UnifiedView
 local function ensure_window(self)
   if self.win and vim.api.nvim_win_is_valid(self.win) then
     return
@@ -61,7 +61,7 @@ local function ensure_window(self)
       { split = "right", win = ctx.anchor }
     )
   end
-  vim.w[self.win].difit = true
+  vim.w[self.win].diffly = true
   self.owned_wins = { self.win }
 end
 
@@ -69,7 +69,7 @@ end
 --- (docs/architecture.md "Rendering") rather than silently degrading to the same empty buffer a
 --- legitimate absence would produce -- mirrors `ui/sidebyside.lua`'s `set_left`/
 --- `set_right_head`.
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param sha string
 ---@param path string
 ---@param what string  -- "base"|"head", folded into the notify message
@@ -80,17 +80,17 @@ local function load_blob(repo, sha, path, what)
     return content
   end
   vim.notify(
-    string.format("difit: failed to load %s blob for %s: %s", what, path, err or "unknown error"),
+    string.format("diffly: failed to load %s blob for %s: %s", what, path, err or "unknown error"),
     vim.log.levels.WARN
   )
   return {}
 end
 
---- Get-or-create a difit-owned scratch buffer, tracking it in `self.owned_bufs` so
+--- Get-or-create a diffly-owned scratch buffer, tracking it in `self.owned_bufs` so
 --- `close()` can wipe it later, and applying the full `keymaps.diff` + `keymaps.universal`
---- action sets (every difit-owned buffer this view creates gets both -- mirrors
+--- action sets (every diffly-owned buffer this view creates gets both -- mirrors
 --- `ui/sidebyside.lua`'s `View:owned_buffer`).
----@param self difit.ui.UnifiedView
+---@param self diffly.ui.UnifiedView
 ---@param name string
 ---@param lines string[]
 ---@param path string
@@ -107,8 +107,8 @@ end
 --- them, unless `keep` names that exact buffer (re-opening the very same file reuses it).
 --- Mirrors `ui/sidebyside.lua`'s `clear_universal_keymaps`, extended with this view's own
 --- extra responsibility: a real buffer must retain no trace of the overlay either, the
---- moment the view stops showing it (a different file, a difit-owned buffer, or close()).
----@param self difit.ui.UnifiedView
+--- moment the view stops showing it (a different file, a diffly-owned buffer, or close()).
+---@param self diffly.ui.UnifiedView
 ---@param keep integer?
 local function release_real_buf(self, keep)
   if not self.universal_buf or self.universal_buf == keep then
@@ -120,7 +120,7 @@ local function release_real_buf(self, keep)
   ui_keymaps.detach_universal(self)
 end
 
---- Compute this hunk set's overlay as plain data: 0-based rows to paint `DifitOverlayAdd`
+--- Compute this hunk set's overlay as plain data: 0-based rows to paint `DifflyOverlayAdd`
 --- on, plus one virt_lines run per contiguous "-" block. Kept separate from the extmark
 --- calls themselves so the anchoring math (the empirically-verified part) is easy to
 --- reason about on its own.
@@ -139,7 +139,7 @@ end
 ---     where the following line simply doesn't exist) -- clamp to the last line instead,
 ---     with `virt_lines_above = false` so the run renders BELOW it rather than overlapping.
 --- "\ No newline at end of file" markers are skipped (neither a real line nor a deletion).
----@param hunks difit.Hunk[]
+---@param hunks diffly.Hunk[]
 ---@param line_count integer  -- `nvim_buf_line_count` of the buffer this overlay targets
 ---@return integer[] add_rows
 ---@return { row: integer, above: boolean, lines: string[] }[] delete_runs
@@ -193,9 +193,9 @@ end
 --- Full clear-and-redraw of `self.ns` on `buf` from `hunks` -- never incremental, so a
 --- stale mark from a previous render (different hunks, a different file reusing this
 --- buffer, ...) can never linger.
----@param self difit.ui.UnifiedView
+---@param self diffly.ui.UnifiedView
 ---@param buf integer
----@param hunks difit.Hunk[]
+---@param hunks diffly.Hunk[]
 local function render_overlay(self, buf, hunks)
   vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
   local line_count = vim.api.nvim_buf_line_count(buf)
@@ -216,7 +216,7 @@ local function render_overlay(self, buf, hunks)
         self.ns,
         row,
         0,
-        { end_row = row + 1, end_col = 0, hl_group = "DifitOverlayAdd", hl_eol = true }
+        { end_row = row + 1, end_col = 0, hl_group = "DifflyOverlayAdd", hl_eol = true }
       )
     end
   end
@@ -224,7 +224,7 @@ local function render_overlay(self, buf, hunks)
   for _, run in ipairs(delete_runs) do
     local chunks = {}
     for _, line in ipairs(run.lines) do
-      table.insert(chunks, { { line, "DifitOverlayDelete" } })
+      table.insert(chunks, { { line, "DifflyOverlayDelete" } })
     end
     vim.api.nvim_buf_set_extmark(buf, self.ns, run.row, 0, {
       virt_lines = chunks,
@@ -234,10 +234,10 @@ local function render_overlay(self, buf, hunks)
 end
 
 --- Deleted-file rendering: the buffer already IS the removed content in full (the base
---- blob), so every line just gets a line-level `DifitOverlayDelete` highlight -- no
+--- blob), so every line just gets a line-level `DifflyOverlayDelete` highlight -- no
 --- `virt_lines` needed, unlike the mixed add/delete overlay `render_overlay` draws for a
 --- file that still exists on the new side.
----@param self difit.ui.UnifiedView
+---@param self diffly.ui.UnifiedView
 ---@param buf integer
 local function render_all_deleted(self, buf)
   vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
@@ -247,16 +247,16 @@ local function render_all_deleted(self, buf)
     vim.api.nvim_buf_set_extmark(buf, self.ns, row, 0, {
       end_row = math.min(row + 1, line_count),
       end_col = 0,
-      hl_group = "DifitOverlayDelete",
+      hl_group = "DifflyOverlayDelete",
       hl_eol = true,
     })
   end
 end
 
---- Binary entries: a shared one-line placeholder, difit-owned (gets `keymaps.diff` +
+--- Binary entries: a shared one-line placeholder, diffly-owned (gets `keymaps.diff` +
 --- `keymaps.universal` like every other owned buffer), no overlay.
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
 local function show_binary(self, entry)
   release_real_buf(self, nil)
   local buf = owned_buffer(
@@ -269,7 +269,7 @@ local function show_binary(self, entry)
 end
 
 --- Oversized entries (`config.max_file_size` -- see `ui/guard.lua`): the same
---- shared-placeholder shape as `show_binary` (difit-owned, `keymaps.diff` +
+--- shared-placeholder shape as `show_binary` (diffly-owned, `keymaps.diff` +
 --- `keymaps.universal`), styled identically, but with the actual/limit sizes in the
 --- message and a buffer-local `L` key that force-loads this exact path for the rest of
 --- this view instance's lifetime (`self.force_loaded`) rather than being unconditional
@@ -278,9 +278,9 @@ end
 --- oversized gets a FRESH buffer instead of reusing stale message text -- mirrors every
 --- other owned buffer here relying on a content-addressed name for reuse-safety (see
 --- `show_deleted`/`show_head_blob` below).
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@param actual integer  -- bytes, the largest oversized side
 ---@param limit integer   -- bytes, config.max_file_size
 local function show_oversized(self, entry, spec, actual, limit)
@@ -293,13 +293,13 @@ local function show_oversized(self, entry, spec, actual, limit)
 end
 
 --- Generated entries (`config.collapse_generated` -- see `ui/guard.lua`/
---- `lua/difit/generated.lua`): the same shared-placeholder shape as `show_oversized`
---- (difit-owned, `keymaps.diff` + `keymaps.universal`, a force-load `L` key), but with a
+--- `lua/diffly/generated.lua`): the same shared-placeholder shape as `show_oversized`
+--- (diffly-owned, `keymaps.diff` + `keymaps.universal`, a force-load `L` key), but with a
 --- fixed message (no size to report) -- so, unlike `show_oversized`'s buffer name, this one
 --- needs no content-addressed suffix.
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 local function show_generated(self, entry, spec)
   release_real_buf(self, nil)
   local name = scratch.name("generated", self.ctx.anchor, entry.path)
@@ -312,9 +312,9 @@ end
 --- entirely painted as deleted (see `render_all_deleted`). Content-addressed buffer name
 --- (mirrors `ui/sidebyside.lua`'s left/head blob naming): reuse across opens is always
 --- content-safe, since the name embeds the exact sha being shown.
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 local function show_deleted(self, entry, spec)
   release_real_buf(self, nil)
   local lines = entry.base_sha and load_blob(spec.repo, entry.base_sha, entry.path, "base") or {}
@@ -330,9 +330,9 @@ end
 --- `ui/sidebyside.lua`'s right-hand worktree window. Only `keymaps.universal` is applied
 --- (design.md: real file buffers never get the single-key `keymaps.diff` shortcuts),
 --- attached/detached via the same lifecycle `ui/sidebyside.lua` uses.
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return integer buf
 local function show_worktree_file(self, entry, spec)
   local abs_path = vim.fs.joinpath(spec.repo.toplevel, entry.path)
@@ -345,11 +345,11 @@ local function show_worktree_file(self, entry, spec)
   return buf
 end
 
---- `spec.right == "head"`: a read-only blob of `entry.head_sha` (difit-owned, gets
+--- `spec.right == "head"`: a read-only blob of `entry.head_sha` (diffly-owned, gets
 --- `keymaps.diff` + `keymaps.universal`) -- mirrors `ui/sidebyside.lua`'s `set_right_head`.
----@param self difit.ui.UnifiedView
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param self diffly.ui.UnifiedView
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return integer buf
 local function show_head_blob(self, entry, spec)
   release_real_buf(self, nil)
@@ -368,8 +368,8 @@ end
 --- heuristics (which need to read that content) never get a chance to run for it -- an
 --- accepted divergence from a hypothetical "check generated first" ordering, since running
 --- heuristics would defeat the size guard's entire point.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:open(entry, spec)
   ensure_window(self)
 
@@ -413,7 +413,7 @@ function View:open(entry, spec)
     if not hunks then
       vim.notify(
         string.format(
-          "difit: failed to compute hunks for %s: %s",
+          "diffly: failed to compute hunks for %s: %s",
           entry.path,
           err or "unknown error"
         ),
@@ -467,8 +467,8 @@ function View:close()
   self.owned_bufs = {}
 end
 
----@param ctx difit.ui.ViewCtx
----@return difit.View
+---@param ctx diffly.ui.ViewCtx
+---@return diffly.View
 function M.new(ctx)
   return setmetatable({
     ctx = ctx,

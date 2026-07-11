@@ -1,4 +1,4 @@
-# difit.nvim — Design
+# diffly.nvim — Design
 
 A [difit](https://github.com/yoshiko-pg/difit)-inspired diff viewer for Neovim: a file-tree
 diff viewer (like diffview.nvim) with per-file `viewed` marks that persist across viewer
@@ -48,7 +48,7 @@ flat list toggle in the panel, fs-watch based refresh.
   head blob SHA)` pair. If the pair no longer matches at render time, the file counts as
   un-viewed again. Unchanged files survive new commits. Working-tree/untracked SHAs come
   from `git hash-object`.
-- **Persistence**: JSON under `stdpath('data')/difit/`, one file per review, filename =
+- **Persistence**: JSON under `stdpath('data')/diffly/`, one file per review, filename =
   hash of the key. Repo identity = normalized remote URL (fallback: toplevel path), so
   state is shared across worktrees and clones.
 - **Schema** (extensible; `comments` may be added later):
@@ -68,7 +68,7 @@ flat list toggle in the panel, fs-watch based refresh.
   panel and from the diff. Marking advances to the next un-viewed file (config to
   disable). Viewed files are greyed out in the tree; the panel header shows progress
   (e.g. `viewed 3/12`).
-- Cleanup is explicit via `:Difit clean`; no automatic GC.
+- Cleanup is explicit via `:Diffly clean`; no automatic GC.
 
 ### UI
 
@@ -77,9 +77,9 @@ flat list toggle in the panel, fs-watch based refresh.
 - **Tree**: directory hierarchy with folds and single-child directory compression
   (GitHub-style `a/b/c` collapsing). Status letter (A/M/D/R), +/- counts, viewed mark per
   row. Icons via mini.icons / nvim-web-devicons when installed. The row for whichever file
-  is currently open in the diff view is highlighted (`DifitCurrentFile`) so its position in
+  is currently open in the diff view is highlighted (`DifflyCurrentFile`) so its position in
   the tree is always visible.
-- **Side-by-side**: native diff mode. Left = read-only git blob buffer (`difit://`
+- **Side-by-side**: native diff mode. Left = read-only git blob buffer (`diffly://`
   namespace), right = the real file buffer (edits and `:w` work as usual). Deleted files
   show an empty right side; untracked files an empty left side.
 - **Unified**: inline overlay on the real buffer (worktree file, HEAD blob, or
@@ -100,28 +100,28 @@ flat list toggle in the panel, fs-watch based refresh.
   treatment as large files, ranked just after the size guard (an oversized file's content
   is never loaded, so the heuristics never run against it). `config.collapse_generated`
   disables both the heuristics and the `.gitattributes` override; there is no separate
-  difit-specific pattern list -- `.gitattributes` is the only per-file override, same as
+  diffly-specific pattern list -- `.gitattributes` is the only per-file override, same as
   on github.com.
 
 ### Interface
 
-- Single `:Difit` command with subcommands: `:Difit [base]` (open/focus), `:Difit close`,
-  `:Difit toggle`, `:Difit clean`, with completion.
+- Single `:Diffly` command with subcommands: `:Diffly [base]` (open/focus), `:Diffly close`,
+  `:Diffly toggle`, `:Diffly clean`, with completion.
 - `setup()` is optional — the plugin works with defaults; `setup()` only overrides them.
 - No global keymaps. Buffer-local keymaps follow a two-layer model, modeled on
   diffview.nvim: a **universal** layer (`keymaps.universal`, leader-prefixed) of
   real-buffer-safe keys — toggle viewed, toggle side-by-side/unified, focus the panel; no
-  `close` — that works identically in every difit context: the panel, difit-owned diff
+  `close` — that works identically in every diffly context: the panel, diffly-owned diff
   buffers (blob/unified), and real file buffers shown in the viewer (the side-by-side
   worktree right buffer) alike. On top of that, **local single-key shortcuts** apply only
-  where the buffer is difit-owned: the panel gets its own set (`keymaps.panel`: open,
-  toggle viewed, refresh, toggle mode, close, fold) and difit-owned diff buffers get the
+  where the buffer is diffly-owned: the panel gets its own set (`keymaps.panel`: open,
+  toggle viewed, refresh, toggle mode, close, fold) and diffly-owned diff buffers get the
   full `keymaps.diff` set (toggle viewed, toggle side-by-side/unified, focus the panel,
   close the review) in addition to `keymaps.universal` — real file buffers never get
   single-key shortcuts, since those could collide with the buffer's own, unrelated
   keymaps. On a real file buffer, `keymaps.universal` is mapped only while that buffer is
   the one currently open in the view, and removed again once the view moves on to a
-  different file or closes, so a real file buffer never keeps difit's keymaps after the
+  different file or closes, so a real file buffer never keeps diffly's keymaps after the
   viewer stops showing it.
 
 ### Tech
@@ -132,7 +132,7 @@ flat list toggle in the panel, fs-watch based refresh.
 - **Neovim 0.12+.**
 - **Modules**: `git.lua` (diff/blob access), `github.lua` (gh wrapper, stubbable),
   `state.lua` (viewed persistence), `tree.lua` (file tree model), `ui/panel.lua`,
-  `ui/sidebyside.lua`, `ui/unified.lua`, `ui/scratch.lua` (shared `difit://` scratch-buffer
+  `ui/sidebyside.lua`, `ui/unified.lua`, `ui/scratch.lua` (shared `diffly://` scratch-buffer
   find-or-create + LSP-safe highlighting), `config.lua`.
 
 ### Development
@@ -141,5 +141,5 @@ flat list toggle in the panel, fs-watch based refresh.
   tests); git is never mocked — tests create real repositories in temp dirs. Only the
   `gh` layer is stubbable.
 - CI: GitHub Actions on Neovim 0.12 stable + nightly.
-- English README + vimdoc (`doc/difit.txt`). Feature branches, Conventional Commits,
+- English README + vimdoc (`doc/diffly.txt`). Feature branches, Conventional Commits,
   draft PRs.

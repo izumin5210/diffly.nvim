@@ -1,4 +1,4 @@
--- Tests for lua/difit/github.lua (WP-D). Uses a child Neovim (never the test-runner
+-- Tests for lua/diffly/github.lua (WP-D). Uses a child Neovim (never the test-runner
 -- process itself) so that faking/stripping `gh` on PATH per test case can't leak into
 -- other test files sharing the same `make test` run.
 
@@ -15,7 +15,7 @@ local function strip_path(child)
   child.lua("vim.env.PATH = ...", { dir })
 end
 
---- Call difit.github.detect_pr(repo) inside the child, returning a plain table instead
+--- Call diffly.github.detect_pr(repo) inside the child, returning a plain table instead
 --- of raw multi-values (sparse {info, nil} arrays don't survive the msgpack round-trip
 --- predictably).
 ---@param child table
@@ -24,7 +24,7 @@ local function detect_pr(child, toplevel)
   return child.lua(
     [[
       local repo = ...
-      local info, err = require("difit.github").detect_pr(repo)
+      local info, err = require("diffly.github").detect_pr(repo)
       return { info = info, err = err }
     ]],
     { { toplevel = toplevel } }
@@ -32,7 +32,7 @@ local function detect_pr(child, toplevel)
 end
 
 local available = function(child)
-  return child.lua_get([[require("difit.github").available()]])
+  return child.lua_get([[require("diffly.github").available()]])
 end
 
 local repo, child

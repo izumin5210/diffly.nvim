@@ -1,10 +1,10 @@
--- Tests for lua/difit/generated.lua: the pure classifier ported from github-linguist's
+-- Tests for lua/diffly/generated.lua: the pure classifier ported from github-linguist's
 -- `lib/linguist/generated.rb`. No child Neovim, no git, no repo -- `M.generated(path,
 -- lines)` is pure, so every case here is table-driven path/content fixtures straight
 -- against the module. Table-driven per rule (positive + negative pairs where cheap),
 -- mirroring the ported rule's own doc comment in generated.lua.
 
-local generated = require("difit.generated")
+local generated = require("diffly.generated")
 
 local eq = MiniTest.expect.equality
 
@@ -69,7 +69,7 @@ T["path rules: lockfiles across ecosystems"] = function()
     { path = "mise.lock", want = true, label = "mise bare" },
     { path = "mise.python.lock", want = true, label = "mise named" },
     -- Deliberate omissions (documented in generated.lua/README): linguist does NOT treat
-    -- these as generated, so difit doesn't either.
+    -- these as generated, so diffly doesn't either.
     { path = "yarn.lock", want = false, label = "yarn.lock is deliberately NOT generated" },
     { path = "Gemfile.lock", want = false, label = "Gemfile.lock is deliberately NOT generated" },
     { path = "go.sum", want = false, label = "go.sum is deliberately NOT generated" },

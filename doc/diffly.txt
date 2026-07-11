@@ -1,23 +1,23 @@
-*difit.txt*   A difit-inspired diff viewer for Neovim
+*diffly.txt*   A difit-inspired diff viewer for Neovim
 
 ==============================================================================
-CONTENTS                                                      *difit-contents*
+CONTENTS                                                      *diffly-contents*
 
-  1. Introduction .......................... |difit-introduction|
-  2. Commands ............................... |difit-commands|
-  3. Configuration ........................... |difit-config|
-  4. Keymaps ................................. |difit-keymaps|
-  5. Large files .............................. |difit-large-files|
-  6. Generated files .......................... |difit-generated-files|
-  7. Viewed-state semantics .................. |difit-viewed-state|
-  8. Bulk viewed marking ..................... |difit-bulk-viewed|
-  9. GitHub integration ...................... |difit-github|
+  1. Introduction .......................... |diffly-introduction|
+  2. Commands ............................... |diffly-commands|
+  3. Configuration ........................... |diffly-config|
+  4. Keymaps ................................. |diffly-keymaps|
+  5. Large files .............................. |diffly-large-files|
+  6. Generated files .......................... |diffly-generated-files|
+  7. Viewed-state semantics .................. |diffly-viewed-state|
+  8. Bulk viewed marking ..................... |diffly-bulk-viewed|
+  9. GitHub integration ...................... |diffly-github|
 
 ==============================================================================
-1. Introduction                                           *difit-introduction*
+1. Introduction                                           *diffly-introduction*
 
-                                                                       *difit*
-difit.nvim is a `difit <https://github.com/yoshiko-pg/difit>`-inspired diff
+                                                                       *diffly*
+diffly.nvim is a `difit <https://github.com/yoshiko-pg/difit>`-inspired diff
 viewer: a file-tree diff viewer (like diffview.nvim) with per-file "viewed"
 marks that persist across viewer sessions for the same pull request.
 
@@ -29,7 +29,7 @@ someone else's PR still means checking it out first (e.g. `gh pr checkout`).
 
 Diffs display either side-by-side (native Neovim diff mode) or unified
 (single column, `<leader>s`/`s` toggles between them -- see
-|difit-keymaps|). Both show the real file -- not a synthetic patch buffer --
+|diffly-keymaps|). Both show the real file -- not a synthetic patch buffer --
 so either mode gets the file's own syntax highlighting and LSP; unified
 overlays the diff on top of it with extmarks, and deleted lines render as
 read-only virtual lines rather than real ones. The buffer is editable in
@@ -37,66 +37,66 @@ worktree mode (the default), in both modes alike.
 
 `setup()` is entirely optional; the plugin works with its defaults untouched.
 Call it only to override them: >lua
-  require("difit").setup({
+  require("diffly").setup({
     right = "worktree",
     panel = { width = 40 },
   })
 <
 
 ==============================================================================
-2. Commands                                                   *difit-commands*
+2. Commands                                                   *diffly-commands*
 
-                                                                      *:Difit*
-:Difit [{base}]         Open the review UI in a dedicated tabpage, comparing
+                                                                      *:Diffly*
+:Diffly [{base}]         Open the review UI in a dedicated tabpage, comparing
                         the current branch against {base} (or the resolved
-                        default base branch; see |difit-viewed-state| for how
+                        default base branch; see |diffly-viewed-state| for how
                         the base is picked). If the UI is already open,
                         focuses its tabpage instead of opening a second one.
 
-:Difit close            Close the review UI: saves viewed state, closes the
-                        dedicated tabpage, and returns to the tabpage `:Difit`
+:Diffly close            Close the review UI: saves viewed state, closes the
+                        dedicated tabpage, and returns to the tabpage `:Diffly`
                         was originally invoked from.
 
-:Difit toggle           `:Difit close` if open, otherwise the same as a bare
-                        `:Difit`.
+:Diffly toggle           `:Diffly close` if open, otherwise the same as a bare
+                        `:Diffly`.
 
-:Difit refresh          Recompute the diff (same as pressing the panel's
-                        `refresh` key, see |difit-keymaps|). Also runs
+:Diffly refresh          Recompute the diff (same as pressing the panel's
+                        `refresh` key, see |diffly-keymaps|). Also runs
                         automatically on `BufWritePost`/`FocusGained`.
 
-:Difit focus            Focus the panel window (same as
-                        |<Plug>(difit-focus-panel)|, or the `focus_panel` key
-                        in |difit-keymaps|). A no-op with a notice when no
+:Diffly focus            Focus the panel window (same as
+                        |<Plug>(diffly-focus-panel)|, or the `focus_panel` key
+                        in |diffly-keymaps|). A no-op with a notice when no
                         review is open.
 
-:Difit sweep [{name}]   Sweep a `viewed_patterns` group (same as the panel's
+:Diffly sweep [{name}]   Sweep a `viewed_patterns` group (same as the panel's
                         `S` key): with no {name}, 0 configured groups notify
                         that none are set, exactly 1 sweeps immediately, and
                         2+ prompt via |vim.ui.select()|; {name} (which may
                         contain spaces) sweeps that one group directly,
                         matching an exact name first then a unique prefix.
-                        See |difit-bulk-viewed|.
+                        See |diffly-bulk-viewed|.
 
-:Difit clean            Prompt to delete the *current* review's persisted
+:Diffly clean            Prompt to delete the *current* review's persisted
                         viewed state (the key the currently open review uses,
                         or the key that would be resolved if none is open).
 
-:Difit clean all        Prompt to delete every persisted viewed-state file
+:Diffly clean all        Prompt to delete every persisted viewed-state file
                         for every review, across all repos.
 
 Completion offers the subcommands above plus the repo's local branch names,
-so `:Difit <Tab>` can be used either to pick a subcommand or to jump straight
-to reviewing against a specific base branch. `:Difit sweep <Tab>` completes
+so `:Diffly <Tab>` can be used either to pick a subcommand or to jump straight
+to reviewing against a specific base branch. `:Diffly sweep <Tab>` completes
 differently: it offers the current review's configured `viewed_patterns`
 group names instead (spaces backslash-escaped), and only when a review is
 open on the current tabpage.
 
 ==============================================================================
-3. Configuration                                                *difit-config*
+3. Configuration                                                *diffly-config*
 
-Pass any subset of these to |difit.setup()| (called as
-`require("difit").setup({...})`); unset fields keep their default. Full
-defaults, exactly as declared in `lua/difit/config.lua`: >lua
+Pass any subset of these to |diffly.setup()| (called as
+`require("diffly").setup({...})`); unset fields keep their default. Full
+defaults, exactly as declared in `lua/diffly/config.lua`: >lua
   {
     base = nil,             -- string|nil: base branch override
     right = "worktree",     -- "worktree"|"head"
@@ -119,7 +119,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
         sweep = "S",             -- sweep a viewed_patterns group (prompts if 2+)
         toggle_viewed_subtree = "V", -- bulk-toggle every file under a dir row
       },
-      -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to
+      -- applied ONLY in diffly-owned buffers (blob/unified), IN ADDITION to
       -- keymaps.universal
       diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
       -- the universal layer: works everywhere (panel, owned diff buffers, AND
@@ -136,7 +136,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
   }
 <
 Notes:
-- `base`: overridden per-invocation by `:Difit {base}`; when both are unset,
+- `base`: overridden per-invocation by `:Diffly {base}`; when both are unset,
   the base is auto-detected (a GitHub PR's base branch when one exists for
   the current branch, otherwise `origin/HEAD`/`main`/`master`).
 - `right`: which side of the diff the right-hand pane shows. `"worktree"`
@@ -144,39 +144,39 @@ Notes:
   straight from the diff; `"head"` compares against the last commit instead.
 - `include_untracked`: whether untracked files show up as added ("A") files.
 - `max_file_size`: guards against loading a huge text file's full content into
-  a diff view; see |difit-large-files|.
+  a diff view; see |diffly-large-files|.
 - `collapse_generated`: collapses vendored/lockfile/codegen output behind a
-  placeholder, GitHub-parity; see |difit-generated-files|.
+  placeholder, GitHub-parity; see |diffly-generated-files|.
 - `icons`: silently does nothing when neither `mini.icons` nor
   `nvim-web-devicons` is installed.
-- `viewed_patterns`: glob pattern GROUPS for `S`/`:Difit sweep`'s bulk-toggle;
-  see |difit-bulk-viewed|. Empty by default -- `S`/`:Difit sweep` notify that
+- `viewed_patterns`: glob pattern GROUPS for `S`/`:Diffly sweep`'s bulk-toggle;
+  see |diffly-bulk-viewed|. Empty by default -- `S`/`:Diffly sweep` notify that
   nothing is configured until this is set.
 - Setting any keymap value to `false` disables that mapping.
 
 ==============================================================================
-4. Keymaps                                                     *difit-keymaps*
+4. Keymaps                                                     *diffly-keymaps*
 
 No global keymaps are defined. All of the following are buffer-local and
 configurable via `keymaps.universal`/`keymaps.panel`/`keymaps.diff` (see
-|difit-config|).
+|diffly-config|).
 
-difit.nvim uses a two-layer keymap model, modeled on diffview.nvim: a
-UNIVERSAL layer of leader-prefixed keys that work identically in every difit
-context -- the panel, difit-owned diff buffers, and real file buffers shown
+diffly.nvim uses a two-layer keymap model, modeled on diffview.nvim: a
+UNIVERSAL layer of leader-prefixed keys that work identically in every diffly
+context -- the panel, diffly-owned diff buffers, and real file buffers shown
 in the viewer alike -- plus LOCAL single-key shortcuts that only apply where
-the buffer is difit-owned (so they can never collide with a real file's own,
+the buffer is diffly-owned (so they can never collide with a real file's own,
 unrelated keymaps).
 
-Universal (all difit windows) ~
+Universal (all diffly windows) ~
   <leader>v    Toggle the current file as viewed/un-viewed (auto-advances to
                the next un-viewed file when `auto_advance` is enabled).
   <leader>s    Toggle between side-by-side and unified diff modes.
-  <leader>e    Focus the panel (same as `:Difit focus`).
+  <leader>e    Focus the panel (same as `:Diffly focus`).
   ]f           Open the next file (ALL files, not just un-viewed ones).
   [f           Open the previous file (ditto).
 
-  Works everywhere: the panel, difit-owned blob buffers, and real file
+  Works everywhere: the panel, diffly-owned blob buffers, and real file
   buffers currently shown in the viewer -- worktree-mode side-by-side's
   right-hand window, and worktree-mode unified's single window alike -- the
   one place these keys matter most, since real buffers get no local
@@ -184,7 +184,7 @@ Universal (all difit windows) ~
   buffer isn't "closing the review". On a real file buffer these maps are
   applied only while it is the one currently open in the view, and are
   removed again the moment the view opens a different file or the review
-  closes -- a real file buffer never keeps difit's keymaps once the viewer
+  closes -- a real file buffer never keeps diffly's keymaps once the viewer
   stops showing it.
 
   `]f`/`[f` always cycle through every file in the review, regardless of
@@ -195,8 +195,8 @@ Universal (all difit windows) ~
 
 File panel ~
 The row for whichever file is currently open in the diff view is highlighted with the
-`DifitCurrentFile` highlight group (linked to `QuickFixLine` by default; override it like
-any other difit highlight group, e.g. `:hi link DifitCurrentFile Visual`).
+`DifflyCurrentFile` highlight group (linked to `QuickFixLine` by default; override it like
+any other diffly highlight group, e.g. `:hi link DifflyCurrentFile Visual`).
 
   <CR>    Open the file under the cursor (or toggle a directory's fold).
   v       Toggle the file under the cursor as viewed/un-viewed. When
@@ -204,7 +204,7 @@ any other difit highlight group, e.g. `:hi link DifitCurrentFile Visual`).
           to the next un-viewed file.
   R       Refresh: recompute the diff against the same base.
   s       Toggle between side-by-side and unified diff modes.
-  q       Close the review UI (same as `:Difit close`).
+  q       Close the review UI (same as `:Diffly close`).
   za      Toggle the fold of the directory under the cursor (or its parent,
           when the cursor is on a file row) -- mirrors native `za`.
   H       Toggle hiding already-viewed files. Display only: progress counts
@@ -215,56 +215,56 @@ any other difit highlight group, e.g. `:hi link DifitCurrentFile Visual`).
           their contents.
   S       Sweep a `viewed_patterns` group (tri-state; prompts via
           |vim.ui.select()| when 2+ groups are configured; see
-          |difit-bulk-viewed|). Same effect as `:Difit sweep`.
+          |diffly-bulk-viewed|). Same effect as `:Diffly sweep`.
   V       On a directory row: bulk-toggle every file in that subtree
-          (tri-state; see |difit-bulk-viewed|). On a file row: identical to
+          (tri-state; see |diffly-bulk-viewed|). On a file row: identical to
           `v`.
 
-difit diff buffers ~
-Difit-owned buffers only -- the side-by-side blob windows, and unified's own
+diffly diff buffers ~
+Diffly-owned buffers only -- the side-by-side blob windows, and unified's own
 blob buffers (HEAD mode, or a deleted file's read-only content) -- never
 real file buffers, which get only the universal layer above.
   v            Toggle the current file as viewed/un-viewed (same key and
                semantics as the panel's `v`).
   s            Toggle between side-by-side and unified diff modes.
-  q            Close the review UI (same as `:Difit close`/the panel's `q`).
+  q            Close the review UI (same as `:Diffly close`/the panel's `q`).
 
-                                                 *<Plug>(difit-toggle-viewed)*
-                                                    *<Plug>(difit-toggle-mode)*
-                                                   *<Plug>(difit-focus-panel)*
-                                                     *<Plug>(difit-next-file)*
-                                                     *<Plug>(difit-prev-file)*
+                                                 *<Plug>(diffly-toggle-viewed)*
+                                                    *<Plug>(diffly-toggle-mode)*
+                                                   *<Plug>(diffly-focus-panel)*
+                                                     *<Plug>(diffly-next-file)*
+                                                     *<Plug>(diffly-prev-file)*
 Five `<Plug>` mappings are available for binding your own keys, e.g. to
-reach these actions from buffers difit doesn't map by default:
-  <Plug>(difit-toggle-viewed)    Toggle the viewed mark for the file backing
+reach these actions from buffers diffly doesn't map by default:
+  <Plug>(diffly-toggle-viewed)    Toggle the viewed mark for the file backing
                                  the current buffer, when that buffer belongs
                                  to the currently open review.
-  <Plug>(difit-toggle-mode)      Toggle between side-by-side and unified.
-  <Plug>(difit-focus-panel)      Focus the panel (same as `:Difit focus`).
-  <Plug>(difit-next-file)        Open the next file (same as `]f`).
-  <Plug>(difit-prev-file)        Open the previous file (same as `[f`).
+  <Plug>(diffly-toggle-mode)      Toggle between side-by-side and unified.
+  <Plug>(diffly-focus-panel)      Focus the panel (same as `:Diffly focus`).
+  <Plug>(diffly-next-file)        Open the next file (same as `]f`).
+  <Plug>(diffly-prev-file)        Open the previous file (same as `[f`).
 
 None has a default binding; map them yourself if wanted: >lua
-  vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
-  vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
-  vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
-  vim.keymap.set("n", "]f", "<Plug>(difit-next-file)")
-  vim.keymap.set("n", "[f", "<Plug>(difit-prev-file)")
+  vim.keymap.set("n", "<leader>gv", "<Plug>(diffly-toggle-viewed)")
+  vim.keymap.set("n", "<leader>gs", "<Plug>(diffly-toggle-mode)")
+  vim.keymap.set("n", "<leader>gp", "<Plug>(diffly-focus-panel)")
+  vim.keymap.set("n", "]f", "<Plug>(diffly-next-file)")
+  vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
 <
 
 ==============================================================================
-5. Large files                                             *difit-large-files*
+5. Large files                                             *diffly-large-files*
 
 Images and other binary files never load their content -- both diff modes
 always render a placeholder for them, regardless of size. `max_file_size`
-(|difit-config|, 1 MiB by default) extends the same idea to huge TEXT files:
+(|diffly-config|, 1 MiB by default) extends the same idea to huge TEXT files:
 opening one shows a placeholder instead of loading it into a buffer, styled
 like the binary one -- >
   file too large (2.3 MiB > 1.0 MiB) -- press L to load
 <
 with a buffer-local `L` key to load it anyway, for the rest of that view
 (side-by-side and unified each track this separately; switching modes or
-`:Difit close` resets it -- it is never persisted).
+`:Diffly close` resets it -- it is never persisted).
 
 Only actually loading a file's content into a diff view is guarded:
 - Panel counts (status letter, `+`/`-`) come from `git diff --numstat`, which
@@ -278,7 +278,7 @@ Only actually loading a file's content into a diff view is guarded:
 Set `max_file_size = false` to disable the guard entirely.
 
 ==============================================================================
-6. Generated files                                     *difit-generated-files*
+6. Generated files                                     *diffly-generated-files*
 
 Mirrors GitHub's own "Generated files are not rendered by default" PR-diff
 behavior: a file recognized as vendored/lockfile/compiler output keeps its
@@ -287,7 +287,7 @@ body is replaced by a placeholder -- >
   Generated files are not rendered by default -- press L to load
 <
 with the same buffer-local `L`/per-view force-load mechanics as
-|difit-large-files| above.
+|diffly-large-files| above.
 
 Detection ~
 Two sources, evaluated lazily when a file is opened:
@@ -296,7 +296,7 @@ Two sources, evaluated lazily when a file is opened:
   (`package-lock.json`, `Cargo.lock`, `pnpm-lock.yaml`, ...), and
   compiler/codegen markers (Go's `// Code generated ...`, protobuf/gRPC/
   Thrift headers, minified JS/CSS, source maps, and many more -- see
-  `lua/difit/generated.lua` for the full ported list).
+  `lua/diffly/generated.lua` for the full ported list).
 - `.gitattributes` `linguist-generated`, as an override in BOTH directions,
   exactly like on github.com: `path linguist-generated` (or `=true`/any
   non-`false` value) forces collapsing even for a file the heuristics would
@@ -304,10 +304,10 @@ Two sources, evaluated lazily when a file is opened:
   normal rendering even for a heuristic match, skipping the heuristics
   entirely. A working-tree (uncommitted) `.gitattributes` edit takes effect
   immediately -- it need not be staged or committed. This is the only way to
-  configure individual files; there is no separate difit-specific pattern
+  configure individual files; there is no separate diffly-specific pattern
   list.
 
-Two rules linguist itself doesn't have, so difit doesn't add them either: no
+Two rules linguist itself doesn't have, so diffly doesn't add them either: no
 generic `@generated`-marker rule, no generic "DO NOT EDIT" rule. `yarn.lock`,
 `Gemfile.lock`, and `go.sum` are deliberately NOT treated as generated
 (linguist doesn't either) -- opt them in via `.gitattributes` if you want them
@@ -315,7 +315,7 @@ collapsed.
 
 Precedence ~
 - Binary detection always wins outright (nothing further to load).
-- The large-file guard (|difit-large-files|) runs next: an oversized file's
+- The large-file guard (|diffly-large-files|) runs next: an oversized file's
   content is never loaded, so the generated-file heuristics -- which need to
   read that content -- never get a chance to run for it. A `.gitattributes`
   override never reaches this case either, since the size guard already
@@ -327,13 +327,13 @@ Set `collapse_generated = false` to disable heuristic AND
 `.gitattributes`-override collapsing entirely.
 
 ==============================================================================
-7. Viewed-state semantics                                 *difit-viewed-state*
+7. Viewed-state semantics                                 *diffly-viewed-state*
 
 Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
 and is shared between the panel, the diff buffers, and real file buffers: `v`
 (panel/diff buffers), `<leader>v` (the universal layer, `keymaps.universal`,
 which also works on the panel and diff buffers), and
-`<Plug>(difit-toggle-viewed)` all record the same mark.
+`<Plug>(diffly-toggle-viewed)` all record the same mark.
 
 Key ~
 Viewed marks are persisted keyed by:
@@ -355,17 +355,17 @@ GitHub-style. Files nobody touched keep their mark across any number of new
 commits on either side.
 
 Persistence ~
-State lives under `stdpath('data') .. '/difit'`, one JSON file per review key
-(named after a hash of the key, see `lua/difit/state.lua`). Use `:Difit
-clean` / `:Difit clean all` to remove it; there is no automatic
+State lives under `stdpath('data') .. '/diffly'`, one JSON file per review key
+(named after a hash of the key, see `lua/diffly/state.lua`). Use `:Diffly
+clean` / `:Diffly clean all` to remove it; there is no automatic
 garbage-collection.
 
 ==============================================================================
-8. Bulk viewed marking                                     *difit-bulk-viewed*
+8. Bulk viewed marking                                     *diffly-bulk-viewed*
 
-Marking files "viewed" stays manual-trigger-only (see |difit-viewed-state|
+Marking files "viewed" stays manual-trigger-only (see |diffly-viewed-state|
 above) -- nothing is ever marked as a side effect of scrolling, opening, or
-refreshing a diff. `S`/`:Difit sweep [{name}]` and `V` are simply two more
+refreshing a diff. `S`/`:Diffly sweep [{name}]` and `V` are simply two more
 explicit triggers, for marking (or unmarking) several files in one step
 instead of one `v` press per file -- e.g. lockfiles and generated output
 nobody reads line-by-line.
@@ -391,7 +391,7 @@ Within a group, glob semantics are unchanged from before groups existed:
   does not.
 
 Example: >lua
-  require("difit").setup({
+  require("diffly").setup({
     viewed_patterns = {
       {
         name = "lock files",
@@ -413,7 +413,7 @@ Neovim session (not once per sweep). Two groups sharing the same name merge
 into the first occurrence's group the same way, also warned once.
 
 Choosing a group ~
-`S` / `:Difit sweep` (with no {name}):
+`S` / `:Diffly sweep` (with no {name}):
 - 0 groups configured -- notifies that `viewed_patterns` isn't set; nothing
   happens.
 - exactly 1 group configured -- sweeps it immediately, no prompt.
@@ -425,17 +425,17 @@ Choosing a group ~
   group counted only once -- followed by each configured group as `<name>
   (N files, M unviewed)`. Cancelling out of the prompt changes nothing.
 
-`:Difit sweep {name}` sweeps that one group directly, skipping the prompt
+`:Diffly sweep {name}` sweeps that one group directly, skipping the prompt
 entirely: it matches an exact name first, then falls back to a UNIQUE
-prefix (so `:Difit sweep lock` works when `"lock files"` is the only
+prefix (so `:Diffly sweep lock` works when `"lock files"` is the only
 configured group starting with `"lock"`). A name containing spaces works
-either typed by hand (`:Difit sweep lock files`) or via `<Tab>` completion,
+either typed by hand (`:Diffly sweep lock files`) or via `<Tab>` completion,
 which offers the live review's group names with embedded spaces
-backslash-escaped (see |difit-commands|). An unresolved name reports which
+backslash-escaped (see |diffly-commands|). An unresolved name reports which
 groups ARE configured instead of silently doing nothing.
 
 Tri-state toggle ~
-A pattern-group sweep (`S`/`:Difit sweep [{name}]`) and `V` on a directory
+A pattern-group sweep (`S`/`:Diffly sweep [{name}]`) and `V` on a directory
 row (every file in that subtree) share the same tri-state rule: if at least
 one file in the swept scope is currently un-viewed, the WHOLE BATCH is
 marked viewed; only once EVERY file in scope is already viewed does
@@ -444,13 +444,13 @@ clean toggle, not a one-way ratchet. `V` on a file row is not a batch at all
 -- it behaves exactly like `v`.
 
 Each batch persists with a single save (not one write per file) and reports a
-compact result scoped to what was actually swept, e.g. `difit: marked 5
-files as viewed (lock files)` / `difit: unmarked 5 files (all groups)`.
+compact result scoped to what was actually swept, e.g. `diffly: marked 5
+files as viewed (lock files)` / `diffly: unmarked 5 files (all groups)`.
 Progress (`3/12 viewed`) updates exactly like any other mark.
 
 `V` on a directory sees that subtree's FULL file list regardless of the
 panel's `H` filter or any folds -- both are display concerns only, same as
-everywhere else in the panel (see |difit-keymaps|).
+everywhere else in the panel (see |diffly-keymaps|).
 
 `config.auto_advance` applies to a batch exactly like `v`: a batch that
 MARKED files jumps to the next un-viewed file afterward (`]f`-style,
@@ -458,15 +458,15 @@ resolved from the start of file order, since a batch has no single "current"
 file to resume from); a batch that UNMARKED files never advances.
 
 ==============================================================================
-9. GitHub integration                                           *difit-github*
+9. GitHub integration                                           *diffly-github*
 
 The `gh` CLI is entirely optional. When it is missing, not authenticated, or
-the current branch has no associated pull request, difit.nvim silently falls
-back to the branch-pair key described in |difit-viewed-state| -- nothing
+the current branch has no associated pull request, diffly.nvim silently falls
+back to the branch-pair key described in |diffly-viewed-state| -- nothing
 about opening or reviewing a diff depends on `gh` being present.
 
 When `gh` *is* available and a PR is detected, it is used for two independent
-things: as a fallback source for the base branch (still beaten by `:Difit
+things: as a fallback source for the base branch (still beaten by `:Diffly
 {base}` or `config.base`), and as the viewed-state key. The diff itself is
 always generated from local git against your current worktree/HEAD --
 reviewing someone else's PR still requires checking it out locally first

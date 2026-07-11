@@ -12,22 +12,22 @@ M.defaults = {
   -- --numstat`, which is cheap regardless of file size, so panel rows are unaffected. An
   -- oversized entry renders a placeholder (styled like the binary one) with a
   -- buffer-local `L` key to force-load it for the rest of that view (side-by-side/unified
-  -- track this independently; a mode switch or `:Difit close` resets it).
+  -- track this independently; a mode switch or `:Diffly close` resets it).
   max_file_size = 1024 * 1024,
   -- GitHub-parity collapsing of generated files (docs/architecture.md "Rendering",
-  -- lua/difit/generated.lua): a file's diff body renders as a placeholder (same `L`-key
+  -- lua/diffly/generated.lua): a file's diff body renders as a placeholder (same `L`-key
   -- force-load mechanics as `max_file_size` above, see `ui/guard.lua`) instead of its real
   -- content when it's recognized as vendored/lockfile/codegen output, by linguist's own
   -- rules, OR carries an explicit `.gitattributes` `linguist-generated` override. `false`
   -- disables BOTH the heuristics and the `.gitattributes` override -- every file always
-  -- renders normally. There is no difit-specific pattern list to configure here: GitHub's
+  -- renders normally. There is no diffly-specific pattern list to configure here: GitHub's
   -- own extension point, `.gitattributes` `linguist-generated`/`-linguist-generated`, is
   -- how a user opts a specific file in or out, same as on github.com.
   collapse_generated = true,
   auto_advance = true, -- jump to next un-viewed file after marking
   icons = true, -- use mini.icons / nvim-web-devicons when available
   -- Bulk-viewed pattern GROUPS (gitignore-inspired globs), triggered explicitly via the
-  -- panel's `S` key / `:Difit sweep [group]` -- never applied automatically. Each item is
+  -- panel's `S` key / `:Diffly sweep [group]` -- never applied automatically. Each item is
   -- either a plain string glob (backward compat: every such string collects into one
   -- implicit group named "default", positioned wherever the FIRST plain string appears --
   -- see `M.normalize_pattern_groups`) or a table `{ name = "...", patterns = {...} }` for
@@ -52,18 +52,18 @@ M.defaults = {
       sweep = "S", -- tri-state bulk toggle for files matching `viewed_patterns`
       toggle_viewed_subtree = "V", -- tri-state bulk toggle for every file under a dir row
     },
-    -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to `keymaps.universal`
+    -- applied ONLY in diffly-owned buffers (blob/unified), IN ADDITION to `keymaps.universal`
     -- below -- never in real file buffers. See ui/sidebyside.lua's `View:owned_buffer` /
     -- ui/unified.lua's `setup_keymaps` for the deterministic apply order (diff first,
     -- universal second) that decides which one wins if a user configures the same lhs in
     -- both groups.
     diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
     -- The two-layer model's universal layer (docs/design.md "Interface"): leader-prefixed,
-    -- real-buffer-safe keys that work in EVERY difit context -- difit-owned buffers (panel,
+    -- real-buffer-safe keys that work in EVERY diffly context -- diffly-owned buffers (panel,
     -- blob/unified; applied alongside `keymaps.panel`/`keymaps.diff` above) AND real file
     -- buffers currently shown in the viewer (the side-by-side worktree right buffer, which
     -- gets ONLY this group, never `keymaps.diff`). Leader-prefixed so they never collide
-    -- with a real buffer's own, non-difit keymaps. No `close` here -- closing a real file
+    -- with a real buffer's own, non-diffly keymaps. No `close` here -- closing a real file
     -- buffer isn't "closing the review", unlike in an owned diff buffer.
     --
     -- Renamed from `keymaps.file` (pre-v1): the old name only made sense for the
@@ -111,7 +111,7 @@ local DEFAULT_GROUP_NAME = "default"
 --- otherwise re-warn on every single call.
 local duplicate_group_notified = {}
 
----@class difit.PatternGroup
+---@class diffly.PatternGroup
 ---@field name string
 ---@field patterns string[]
 
@@ -130,17 +130,17 @@ local duplicate_group_notified = {}
 ---
 --- Lives here rather than `session.lua` because it is pure shape-interpretation of a
 --- config value -- no git/session/entries involved -- so it is testable (and tested, see
---- tests/test_config.lua) without spinning up a repo or a `difit.Session` at all;
+--- tests/test_config.lua) without spinning up a repo or a `diffly.Session` at all;
 --- `session.lua`'s `Session:pattern_groups()` calls this and then does the part that
 --- genuinely needs a session: compiling each group's patterns and matching them against
 --- `self.entries`.
 ---@param patterns (string|{name: string, patterns: string[]})[]
----@return difit.PatternGroup[]
+---@return diffly.PatternGroup[]
 function M.normalize_pattern_groups(patterns)
   local groups = {}
   local index_by_name = {}
 
-  --- @return difit.PatternGroup group
+  --- @return diffly.PatternGroup group
   --- @return boolean created  -- false when `name` already had a group before this call
   local function get_or_create(name)
     local idx = index_by_name[name]
@@ -163,7 +163,7 @@ function M.normalize_pattern_groups(patterns)
         duplicate_group_notified[item.name] = true
         vim.notify(
           string.format(
-            "difit: duplicate viewed_patterns group name %q; merging into the first occurrence",
+            "diffly: duplicate viewed_patterns group name %q; merging into the first occurrence",
             item.name
           ),
           vim.log.levels.WARN

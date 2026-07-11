@@ -1,5 +1,5 @@
--- Builds a directory/file tree out of a flat list of difit.FileEntry (see
--- lua/difit/types.lua) and turns it into flat rows for panel rendering. Pure data
+-- Builds a directory/file tree out of a flat list of diffly.FileEntry (see
+-- lua/diffly/types.lua) and turns it into flat rows for panel rendering. Pure data
 -- structure: no vim UI dependency, so it is unit-testable without a child Neovim process.
 
 local M = {}
@@ -19,7 +19,7 @@ end
 --- soon as a directory has more than one child, or its only child is a file: a directory
 --- with exactly one file child stays a real directory row, it must not vanish into the
 --- file.
----@param node difit.TreeNode
+---@param node diffly.TreeNode
 local function collapse_chains(node)
   while #node.children == 1 and node.children[1].type == "dir" do
     local child = node.children[1]
@@ -36,7 +36,7 @@ end
 
 --- Directories first, then files, each group alphabetical by (possibly compressed) name.
 --- Run after collapsing so compressed names are what gets compared.
----@param node difit.TreeNode
+---@param node diffly.TreeNode
 local function sort_children(node)
   if node.type ~= "dir" then
     return
@@ -54,8 +54,8 @@ end
 
 --- Build the tree. Chains of single-child directories are collapsed into one node; a
 --- directory with a single *file* child is left alone.
----@param entries difit.FileEntry[]
----@return difit.TreeNode root @root node (type="dir", path="", name="")
+---@param entries diffly.FileEntry[]
+---@return diffly.TreeNode root @root node (type="dir", path="", name="")
 function M.build(entries)
   local root = { type = "dir", name = "", path = "", children = {} }
   -- Directory path -> node, so repeated prefixes across entries reuse the same node
@@ -97,9 +97,9 @@ end
 
 --- Flatten the tree into rows in pre-order. A folded directory still emits its own row
 --- but none of its descendants.
----@param root difit.TreeNode
+---@param root diffly.TreeNode
 ---@param folded table<string, boolean> @dir path -> folded?
----@return difit.TreeRow[]
+---@return diffly.TreeRow[]
 function M.flatten(root, folded)
   folded = folded or {}
   local rows = {}
@@ -121,7 +121,7 @@ function M.flatten(root, folded)
 end
 
 --- Paths of all file nodes in flatten order, ignoring folds (always walks the full tree).
----@param root difit.TreeNode
+---@param root diffly.TreeNode
 ---@return string[]
 function M.file_order(root)
   local paths = {}

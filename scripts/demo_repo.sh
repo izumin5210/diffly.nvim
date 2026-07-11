@@ -4,10 +4,10 @@
 # working inside the diff views. Prints the repo path on stdout.
 set -euo pipefail
 
-dir="$(mktemp -d "${TMPDIR:-/tmp}/difit-demo.XXXXXX")"
+dir="$(mktemp -d "${TMPDIR:-/tmp}/diffly-demo.XXXXXX")"
 cd "$dir"
 git init -q -b main
-git config user.name "difit demo"
+git config user.name "diffly demo"
 git config user.email "demo@example.com"
 git config commit.gpgsign false
 

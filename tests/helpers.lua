@@ -5,7 +5,7 @@
 
 local helpers = {}
 
----@class difit.test.Repo
+---@class diffly.test.Repo
 ---@field dir string  -- toplevel
 local Repo = {}
 Repo.__index = Repo
@@ -61,21 +61,21 @@ end
 
 --- Fresh repo in a new temp dir, configured so commits work unattended in CI
 --- (deterministic local identity, no GPG signing prompts).
----@return difit.test.Repo
+---@return diffly.test.Repo
 function helpers.new_repo()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
 
   local repo = setmetatable({ dir = dir }, Repo)
   repo:git({ "init", "-q", "-b", "main" })
-  repo:git({ "config", "user.name", "difit test" })
-  repo:git({ "config", "user.email", "difit-test@example.com" })
+  repo:git({ "config", "user.name", "diffly test" })
+  repo:git({ "config", "user.email", "diffly-test@example.com" })
   repo:git({ "config", "commit.gpgsign", "false" })
   repo:git({ "config", "tag.gpgsign", "false" })
   return repo
 end
 
----@class difit.test.FixturePaths
+---@class diffly.test.FixturePaths
 ---@field new string           -- added on `feature`, absent on `main`
 ---@field modified string      -- present on both, edited on `feature`
 ---@field deleted string       -- present on `main`, removed on `feature`
@@ -85,11 +85,11 @@ end
 --- Standard fixture reused across WPs: `main` with two commits, and a `feature` branch
 --- forked from `main`'s tip with one more commit that adds, modifies, deletes, and
 --- renames a file each -- enough for a single `git diff -M <merge-base> feature` to
---- exercise every `difit.FileEntry.status` value. The rename keeps most of the original
+--- exercise every `diffly.FileEntry.status` value. The rename keeps most of the original
 --- lines untouched (only appends a function) so its similarity is well above the 50%
 --- default threshold and `-M` reports it as a rename rather than an add+delete pair.
----@return difit.test.Repo repo
----@return difit.test.FixturePaths paths
+---@return diffly.test.Repo repo
+---@return diffly.test.FixturePaths paths
 function helpers.fixture_branch_repo()
   local repo = helpers.new_repo()
 
@@ -214,7 +214,7 @@ end
 --- Like `helpers.path_shim`, but writes the fake executable to disk from the
 --- test-runner process (fine: it's just a filesystem operation) and then points *the
 --- child's* `PATH` at it -- since the child, not this process, is what actually runs the
---- code under test (`require("difit.github")`/`require("difit")` inside `child.lua`
+--- code under test (`require("diffly.github")`/`require("diffly")` inside `child.lua`
 --- calls). Promoted from tests/test_github.lua and tests/test_e2e.lua, which had it
 --- duplicated identically.
 ---@param child table

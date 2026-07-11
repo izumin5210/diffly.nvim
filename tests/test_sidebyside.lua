@@ -1,27 +1,27 @@
--- Tests for lua/difit/ui/sidebyside.lua (WP-F): the two-window vertical diff pair.
+-- Tests for lua/diffly/ui/sidebyside.lua (WP-F): the two-window vertical diff pair.
 -- Runs entirely inside a child Neovim (real windows/buffers are required, not fakeable),
 -- driven from the test-runner process via `child.lua`. Entry/spec tables are built from
--- real git plumbing (`difit.git`) against `helpers.fixture_branch_repo()` -- no mocks.
+-- real git plumbing (`diffly.git`) against `helpers.fixture_branch_repo()` -- no mocks.
 
 local helpers = dofile("tests/helpers.lua")
 
 local eq = MiniTest.expect.equality
 
---- Build a difit.DiffSpec + difit.FileEntry[] pair for the fixture repo (main...feature)
+--- Build a diffly.DiffSpec + diffly.FileEntry[] pair for the fixture repo (main...feature)
 --- entirely inside the child, using the same git plumbing the real session would use.
 --- `spec.generated_attrs` is populated exactly the way `session.lua`'s `load_generated_attrs`
 --- does (a batched `git check-attr linguist-generated` over every entry), since this
---- helper bypasses `difit.Session` entirely -- tests exercising `.gitattributes`
+--- helper bypasses `diffly.Session` entirely -- tests exercising `.gitattributes`
 --- overrides need it present, same as production.
 ---@param child table
 ---@param right "worktree"|"head"
----@return table @{ spec = difit.DiffSpec, entries = difit.FileEntry[] }
+---@return table @{ spec = diffly.DiffSpec, entries = diffly.FileEntry[] }
 local function build(child, right)
   return child.lua(
     [[
       local right = ...
-      local git = require("difit.git")
-      local config = require("difit.config")
+      local git = require("diffly.git")
+      local config = require("diffly.config")
       local repo = git.repo_identity(vim.fn.getcwd())
       local merge_base = git.merge_base(repo, "main", "feature")
       local entries = git.diff_files(repo, merge_base, right, { include_untracked = true })
@@ -47,9 +47,9 @@ local function build(child, right)
   )
 end
 
----@param entries difit.FileEntry[]
+---@param entries diffly.FileEntry[]
 ---@param path string
----@return difit.FileEntry
+---@return diffly.FileEntry
 local function entry_by_path(entries, path)
   for _, e in ipairs(entries) do
     if e.path == path then
@@ -59,7 +59,7 @@ local function entry_by_path(entries, path)
   error("no entry for path " .. path)
 end
 
---- Build a `difit.ui.ViewCtx` (docs/architecture.md "View contract") in the child: `anchor` is
+--- Build a `diffly.ui.ViewCtx` (docs/architecture.md "View contract") in the child: `anchor` is
 --- whatever window is current at the time this runs (views must split rightward from it
 --- and never touch it -- see the `ensure_windows` regression test below); `actions`
 --- records every call into `_G.__actions_log` instead of driving a real session, so
@@ -97,7 +97,7 @@ end
 ---@param child table
 local function new_view(child)
   new_ctx(child)
-  child.lua([[ _G.__view = require("difit.ui.sidebyside").new(_G.__ctx) ]])
+  child.lua([[ _G.__view = require("diffly.ui.sidebyside").new(_G.__ctx) ]])
 end
 
 ---@param child table
@@ -173,7 +173,7 @@ end
 --- The per-session discriminator (docs/architecture.md "Rendering") every owned buffer name
 --- embeds -- `ctx.anchor`, the window `new_ctx` captured as the split point. Buffer-name
 --- assertions below build the exact expected name around this instead of hardcoding the
---- pre-R4 `difit://<kind>/<path>` shape.
+--- pre-R4 `diffly://<kind>/<path>` shape.
 ---@param child table
 ---@return integer
 local function ctx_anchor(child)
@@ -213,9 +213,9 @@ local function mapped(m)
   return m ~= nil and next(m) ~= nil and m.buffer == 1
 end
 
---- Independent cross-check for committed content (bypasses difit.git.file_content, which
+--- Independent cross-check for committed content (bypasses diffly.git.file_content, which
 --- is what the module under test uses internally).
----@param repo difit.test.Repo
+---@param repo diffly.test.Repo
 ---@param rev string
 ---@param path string
 ---@return string[]
@@ -230,7 +230,7 @@ end
 --- Write raw bytes bypassing Repo:write (which round-trips through `writefile()` and
 --- can't carry an embedded NUL byte); mirrors tests/test_git.lua's helper of the same
 --- purpose.
----@param repo difit.test.Repo
+---@param repo diffly.test.Repo
 ---@param path string
 ---@param bytes string
 local function write_bytes(repo, path, bytes)
@@ -271,13 +271,13 @@ T["modified file: two &diff windows, left is an owned non-modifiable buffer, rig
   eq(win_diff(child, "right_win"), true)
 
   local left_name = win_bufname(child, "left_win")
-  eq(vim.startswith(left_name, "difit://"), true)
+  eq(vim.startswith(left_name, "diffly://"), true)
   eq(win_bufopt(child, "left_win", "modifiable"), false)
   eq(win_bufopt(child, "left_win", "buftype"), "nofile")
 
   local right_name = win_bufname(child, "right_win")
   eq(vim.endswith(right_name, "/" .. paths.modified), true)
-  eq(vim.startswith(right_name, "difit://"), false)
+  eq(vim.startswith(right_name, "diffly://"), false)
   eq(win_bufopt(child, "right_win", "modifiable"), true)
 end
 
@@ -289,7 +289,7 @@ T["added file: left window is an empty scratch buffer"] = function()
   new_view(child)
   view_open(child, built.spec, entry)
 
-  eq(win_bufname(child, "left_win"), "difit://empty/" .. ctx_anchor(child) .. "/" .. paths.new)
+  eq(win_bufname(child, "left_win"), "diffly://empty/" .. ctx_anchor(child) .. "/" .. paths.new)
   eq(win_bufopt(child, "left_win", "modifiable"), false)
   eq(win_buflines(child, "left_win"), { "" })
 end
@@ -304,7 +304,7 @@ T["deleted file: right window is an empty scratch buffer"] = function()
 
   eq(
     win_bufname(child, "right_win"),
-    "difit://deleted/" .. ctx_anchor(child) .. "/" .. paths.deleted
+    "diffly://deleted/" .. ctx_anchor(child) .. "/" .. paths.deleted
   )
   eq(win_bufopt(child, "right_win", "modifiable"), false)
   eq(win_buflines(child, "right_win"), { "" })
@@ -323,7 +323,7 @@ T["head mode: right window is a read-only blob matching the committed content"] 
   view_open(child, built.spec, entry)
 
   local right_name = win_bufname(child, "right_win")
-  eq(vim.startswith(right_name, "difit://"), true)
+  eq(vim.startswith(right_name, "diffly://"), true)
   eq(win_bufopt(child, "right_win", "modifiable"), false)
   eq(win_buflines(child, "right_win"), git_show_lines(repo, "feature", paths.modified))
 end
@@ -357,10 +357,10 @@ end
 
 T["ensure_windows: ctx.anchor is never claimed or modified, whatever it shows; two fresh windows are created to its right"] = function()
   child.lua([[
-    -- Mirrors what used to require special-casing (winfixbuf, a difit://-named buffer):
+    -- Mirrors what used to require special-casing (winfixbuf, a diffly://-named buffer):
     -- neither matters anymore, since ctx.anchor is never even inspected, only split from.
     local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(buf, "difit://some-owned-scratch")
+    vim.api.nvim_buf_set_name(buf, "diffly://some-owned-scratch")
     _G.__anchor_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(_G.__anchor_win, buf)
     vim.wo[_G.__anchor_win].winfixbuf = true
@@ -410,7 +410,7 @@ T["ensure_windows: an offered ctx.claim is absorbed as left_win instead of split
   )
 end
 
-T["close(): no difit:// buffers remain and both owned windows are closed"] = function()
+T["close(): no diffly:// buffers remain and both owned windows are closed"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -421,18 +421,18 @@ T["close(): no difit:// buffers remain and both owned windows are closed"] = fun
 
   view_close(child)
 
-  local remaining_difit_bufs = child.lua_get([[
+  local remaining_diffly_bufs = child.lua_get([[
     (function()
       local n = 0
       for _, b in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.api.nvim_buf_get_name(b):match("^difit://") then
+        if vim.api.nvim_buf_get_name(b):match("^diffly://") then
           n = n + 1
         end
       end
       return n
     end)()
   ]])
-  eq(remaining_difit_bufs, 0)
+  eq(remaining_diffly_bufs, 0)
 
   -- docs/architecture.md "View contract": close() destroys every window this view owns...
   eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", left_win)), false)
@@ -508,7 +508,7 @@ T["regression: an outgoing unified view's close() must not steal sidebyside's wi
   new_ctx(child)
   child.lua(
     [[
-      local unified = require("difit.ui.unified")
+      local unified = require("diffly.ui.unified")
       local spec, entry = ...
       -- Mirrors Session:set_mode's order: the outgoing view opens first...
       _G.__old_view = unified.new(_G.__ctx)
@@ -519,7 +519,7 @@ T["regression: an outgoing unified view's close() must not steal sidebyside's wi
 
   -- ...then the incoming view (sidebyside, this file's own `_G.__view`) opens the SAME
   -- entry BEFORE the outgoing one closes.
-  child.lua([[ _G.__view = require("difit.ui.sidebyside").new(_G.__ctx) ]])
+  child.lua([[ _G.__view = require("diffly.ui.sidebyside").new(_G.__ctx) ]])
   view_open(child, built.spec, entry)
   local right_win_before_close = win_id(child, "right_win")
 
@@ -543,7 +543,7 @@ end
 ---@param child table
 ---@param max integer|false
 local function set_max_file_size(child, max)
-  child.lua("require('difit.config').setup({ max_file_size = ... })", { max })
+  child.lua("require('diffly.config').setup({ max_file_size = ... })", { max })
 end
 
 T["oversized file: both windows share a placeholder with the size text instead of the real content"] = function()
@@ -619,7 +619,7 @@ T["binary entries take precedence over the size guard -- no size text, no L key"
 end
 
 ---------------------------------------------------------------------------------------
--- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/difit/generated.lua):
+-- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/diffly/generated.lua):
 -- GitHub-parity collapsing of vendored/lockfile/codegen output. Shares the exact same
 -- placeholder/`L`-key mechanics as the large-file guard above; only the message and the
 -- detection source (a `.gitattributes linguist-generated` override, else content
@@ -629,7 +629,7 @@ end
 ---@param child table
 ---@param enabled boolean
 local function set_collapse_generated(child, enabled)
-  child.lua("require('difit.config').setup({ collapse_generated = ... })", { enabled })
+  child.lua("require('diffly.config').setup({ collapse_generated = ... })", { enabled })
 end
 
 T["generated file (heuristic match): both windows share a placeholder with the generated text instead of the real content"] = function()
@@ -747,7 +747,7 @@ end
 
 ---------------------------------------------------------------------------------------
 -- keymaps.diff / keymaps.universal (the two-layer model, docs/design.md "Interface"):
--- difit-owned buffers (the left blob, and the right blob in head mode) get BOTH groups;
+-- diffly-owned buffers (the left blob, and the right blob in head mode) get BOTH groups;
 -- the real worktree right buffer gets ONLY keymaps.universal, never keymaps.diff.
 ---------------------------------------------------------------------------------------
 
@@ -780,7 +780,7 @@ T["worktree mode: real right buffer gets keymaps.universal (leader-v/s/e), never
   for _, key in ipairs({ "<leader>v", "<leader>s", "<leader>e" }) do
     eq(mapped(buf_maparg(child, real_buf, key)), true, key .. " missing on the real file buffer")
   end
-  -- keymaps.diff's own keys must not leak onto the real buffer (it isn't difit-owned).
+  -- keymaps.diff's own keys must not leak onto the real buffer (it isn't diffly-owned).
   eq(mapped(buf_maparg(child, real_buf, "v")), false)
   eq(mapped(buf_maparg(child, real_buf, "q")), false)
 end
@@ -855,7 +855,7 @@ end
 
 T["keymaps.universal.toggle_mode = false disables only that key on the real buffer"] = function()
   child.lua(
-    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+    [[require("diffly.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
   )
 
   local built = build(child, "worktree")
@@ -872,7 +872,7 @@ end
 
 T["keymaps.universal.toggle_mode = false disables only that key on an owned buffer too, leaving keymaps.diff's own toggle_mode intact"] = function()
   child.lua(
-    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+    [[require("diffly.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
   )
 
   local built = build(child, "worktree")
@@ -930,7 +930,7 @@ T["regression: buffer-local keymaps.universal.toggle_viewed fires immediately de
 
   child.type_keys([[\v]]) -- the literal keys `<leader>v` sends with the default mapleader
 
-  eq(child.is_blocked(), false, "difit's mapping must fire immediately, never wait on ambiguity")
+  eq(child.is_blocked(), false, "diffly's mapping must fire immediately, never wait on ambiguity")
   eq(child.lua_get("_G.__seam_fired"), true, "the buffer-local toggle_viewed callback fired")
   eq(
     child.lua_get("_G.__global_fired"),

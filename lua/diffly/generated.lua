@@ -14,7 +14,7 @@
 -- them): no generic `@generated` marker rule, no generic "DO NOT EDIT" rule, and
 -- `yarn.lock`/`Gemfile.lock`/`go.sum` are NOT treated as generated (linguist doesn't
 -- either). Users get GitHub's own extension point instead: `.gitattributes`
--- `linguist-generated` (see `ui/guard.lua`), not a difit-specific pattern list.
+-- `linguist-generated` (see `ui/guard.lua`), not a diffly-specific pattern list.
 --
 -- Ruby/Lua semantic gap this file works around once, centrally, rather than per rule:
 -- Ruby's `data.split("\n", -1)` (what `generated.rb`'s own `lines` method computes) keeps

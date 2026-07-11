@@ -1,7 +1,7 @@
--- Tests for lua/difit/ui/unified.lua: the inline-overlay unified diff view (the inline-overlay design, now implemented (docs/architecture.md "Rendering")).
+-- Tests for lua/diffly/ui/unified.lua: the inline-overlay unified diff view (the inline-overlay design, now implemented (docs/architecture.md "Rendering")).
 -- Runs in a child Neovim (real buffers/windows) against the standard fixture repo plus a
 -- handful of purpose-built ones for overlay-anchoring edge cases; git is never mocked --
--- entry/spec data comes from real `difit.git` calls, and the anchoring math below was
+-- entry/spec data comes from real `diffly.git` calls, and the anchoring math below was
 -- confirmed against REAL `git diff -U3` output (see the comments on each edge-case test).
 
 local helpers = dofile("tests/helpers.lua")
@@ -45,7 +45,7 @@ local function mapped(m)
 end
 
 --- 0-based rows carrying a line-level `hl_group == group` extmark (i.e. `hl_eol`
---- highlights -- `DifitOverlayAdd`/`DifitOverlayDelete`'s "every line" case), sorted.
+--- highlights -- `DifflyOverlayAdd`/`DifflyOverlayDelete`'s "every line" case), sorted.
 ---@param marks table[]  -- from `nvim_buf_get_extmarks(..., { details = true })`
 ---@param group string
 ---@return integer[]
@@ -74,12 +74,12 @@ end
 ---@param marks table[]
 ---@return integer[]
 local function add_rows(marks)
-  return hl_rows(marks, "DifitOverlayAdd")
+  return hl_rows(marks, "DifflyOverlayAdd")
 end
 
 --- Every `virt_lines` extmark (one per contiguous "-" run), as `{ row, above, lines }`
 --- with `lines` flattened back to plain strings (each chunk list has exactly one
---- `{text, "DifitOverlayDelete"}` pair per rendered virtual line).
+--- `{text, "DifflyOverlayDelete"}` pair per rendered virtual line).
 ---@param marks table[]
 ---@return { row: integer, above: boolean, lines: string[] }[]
 local function delete_runs(marks)
@@ -99,20 +99,20 @@ end
 
 local repo, paths, child
 
---- Build a real difit.RepoIdentity + entries map (keyed by path) + a difit.DiffSpec
+--- Build a real diffly.RepoIdentity + entries map (keyed by path) + a diffly.DiffSpec
 --- (`right = "worktree"`, matching config.lua's own default) for the fixture's
 --- `main`...`feature` comparison, and stash them as globals in the child so later
 --- `child.lua(...)` calls (one per assertion) can all see the same view instance.
 --
---- `_G.ctx` (docs/architecture.md "View contract") is the `difit.ui.ViewCtx` the view is built with:
+--- `_G.ctx` (docs/architecture.md "View contract") is the `diffly.ui.ViewCtx` the view is built with:
 --- `anchor` is whatever window is current when this runs (never touched -- this view only
 --- ever splits rightward from it); `actions` records every call into `_G.__actions_log`
 --- instead of driving a real session.
 local function setup_child()
   child.lua([[
-    _G.git = require("difit.git")
-    _G.config = require("difit.config")
-    _G.unified = require("difit.ui.unified")
+    _G.git = require("diffly.git")
+    _G.config = require("diffly.config")
+    _G.unified = require("diffly.ui.unified")
 
     _G.repo = git.repo_identity(vim.fn.getcwd())
     _G.base_sha = vim.trim(vim.fn.system({ "git", "-C", repo.toplevel, "rev-parse", "main" }))
@@ -124,7 +124,7 @@ local function setup_child()
     end
 
     -- Mirrors `session.lua`'s `load_generated_attrs`: this test harness bypasses
-    -- `difit.Session` entirely, so `.gitattributes`-override tests need the same batched
+    -- `diffly.Session` entirely, so `.gitattributes`-override tests need the same batched
     -- lookup populated by hand.
     local generated_attrs = {}
     if config.get().collapse_generated then
@@ -222,7 +222,7 @@ end
 ---@param child table
 ---@param max integer|false
 local function set_max_file_size(child, max)
-  child.lua("require('difit.config').setup({ max_file_size = ... })", { max })
+  child.lua("require('diffly.config').setup({ max_file_size = ... })", { max })
 end
 
 local T = MiniTest.new_set({
@@ -269,12 +269,12 @@ T["open(): worktree mode shows the real file -- editable, real filetype (LSP-abl
   local result = open(paths.modified)
 
   eq(realpath(result.bufname), realpath(repo.dir .. "/" .. paths.modified))
-  eq(result.buftype, "", "a real file buffer, not a difit:// scratch buffer")
+  eq(result.buftype, "", "a real file buffer, not a diffly:// scratch buffer")
   eq(result.modifiable, true)
   eq(result.filetype, "lua", "the real file keeps its own filetype -- LSP/syntax works")
 end
 
-T["open(): '+' lines get DifitOverlayAdd line extmarks at the exact expected rows"] = function()
+T["open(): '+' lines get DifflyOverlayAdd line extmarks at the exact expected rows"] = function()
   local result = open(paths.modified)
   eq(add_rows(result.marks), { 3, 4, 5, 6, 7 })
 end
@@ -300,7 +300,7 @@ T["open(): context lines carry no overlay marks"] = function()
   end
 
   for _, row in ipairs({ 0, 1, 2, 8, 9, 10 }) do
-    eq(added[row], nil, "row " .. row .. " is context -- must not be DifitOverlayAdd")
+    eq(added[row], nil, "row " .. row .. " is context -- must not be DifflyOverlayAdd")
     eq(deleted[row], nil, "row " .. row .. " is context -- must not anchor a deleted run")
   end
 end
@@ -335,7 +335,7 @@ end
 -- needed beyond the general overlay algorithm above).
 ---------------------------------------------------------------------------------------
 
-T["open(): an added file gets DifitOverlayAdd on every line, no deleted runs"] = function()
+T["open(): an added file gets DifflyOverlayAdd on every line, no deleted runs"] = function()
   local result = open(paths.new)
 
   local expected = {}
@@ -347,23 +347,23 @@ T["open(): an added file gets DifitOverlayAdd on every line, no deleted runs"] =
 end
 
 ---------------------------------------------------------------------------------------
--- Deleted file: a read-only blob of entry.base_sha, entirely painted DifitOverlayDelete
+-- Deleted file: a read-only blob of entry.base_sha, entirely painted DifflyOverlayDelete
 -- (line-level marks, no virt_lines -- there is no "new file" to anchor deletions inside).
 ---------------------------------------------------------------------------------------
 
-T["open(): a deleted file shows a read-only base blob, entirely DifitOverlayDelete"] = function()
+T["open(): a deleted file shows a read-only base blob, entirely DifflyOverlayDelete"] = function()
   local result = open(paths.deleted)
 
   eq(result.buftype, "nofile")
   eq(result.modifiable, false)
-  eq(vim.startswith(result.bufname, "difit://"), true)
+  eq(vim.startswith(result.bufname, "diffly://"), true)
   eq(delete_runs(result.marks), {}, "no virt_lines -- the whole buffer IS the deleted content")
 
   local expected = {}
   for i = 0, #result.lines - 1 do
     expected[i + 1] = i
   end
-  eq(hl_rows(result.marks, "DifitOverlayDelete"), expected)
+  eq(hl_rows(result.marks, "DifflyOverlayDelete"), expected)
 end
 
 ---------------------------------------------------------------------------------------
@@ -381,7 +381,7 @@ T["open(): head mode shows a read-only HEAD blob with the overlay computed again
 
   eq(result.buftype, "nofile")
   eq(result.modifiable, false)
-  eq(vim.startswith(result.bufname, "difit://"), true)
+  eq(vim.startswith(result.bufname, "diffly://"), true)
   eq(add_rows(result.marks), { 3, 4, 5, 6, 7 })
   eq(delete_runs(result.marks)[1].lines, { '  return "hello"' })
 
@@ -465,7 +465,7 @@ T["open(): binary entries take precedence over the size guard -- no size text, n
 end
 
 ---------------------------------------------------------------------------------------
--- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/difit/generated.lua):
+-- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/diffly/generated.lua):
 -- shares the size guard's exact placeholder/`L`-key mechanics; only the message and
 -- detection source (`.gitattributes linguist-generated`, else content heuristics) differ.
 ---------------------------------------------------------------------------------------
@@ -473,7 +473,7 @@ end
 ---@param child table
 ---@param enabled boolean
 local function set_collapse_generated(child, enabled)
-  child.lua("require('difit.config').setup({ collapse_generated = ... })", { enabled })
+  child.lua("require('diffly.config').setup({ collapse_generated = ... })", { enabled })
 end
 
 --- Add `path` (with `lines` content) to the repo and commit it, then rebuild the child's
@@ -621,7 +621,7 @@ end
 --- `ctx.anchor` (the panel, in production).
 T["regression: an outgoing sidebyside view's close() must not steal this view's window when both show the same binary placeholder"] = function()
   child.lua([[
-    local sidebyside = require("difit.ui.sidebyside")
+    local sidebyside = require("diffly.ui.sidebyside")
     _G.__old_view = sidebyside.new(_G.ctx)
 
     local entry = {
@@ -663,7 +663,7 @@ end
 
 ---------------------------------------------------------------------------------------
 -- close(): a real buffer must retain NO trace (extmarks, keymaps) after close() -- it is
--- never wiped (it isn't difit-owned), only released; owned scratch buffers ARE wiped.
+-- never wiped (it isn't diffly-owned), only released; owned scratch buffers ARE wiped.
 ---------------------------------------------------------------------------------------
 
 T["close(): the real buffer survives but loses its overlay marks and keymaps.universal"] = function()
@@ -703,7 +703,7 @@ end
 
 ---------------------------------------------------------------------------------------
 -- keymaps: the real-buffer rule (design.md) -- worktree mode gets ONLY keymaps.universal,
--- never keymaps.diff's single-key shortcuts. Difit-owned buffers (deleted/head blobs,
+-- never keymaps.diff's single-key shortcuts. Diffly-owned buffers (deleted/head blobs,
 -- binary) get both, exactly like ui/sidebyside.lua's own owned buffers.
 ---------------------------------------------------------------------------------------
 
@@ -722,7 +722,7 @@ T["open(): worktree mode's real buffer gets keymaps.universal only, never keymap
   end
 end
 
-T["open(): a difit-owned buffer gets keymaps.diff's v/s/<leader>e/q in addition to keymaps.universal"] = function()
+T["open(): a diffly-owned buffer gets keymaps.diff's v/s/<leader>e/q in addition to keymaps.universal"] = function()
   local result = open(paths.deleted)
 
   for _, key in ipairs({ "v", "s", "<leader>e", "q", "<leader>v", "<leader>s" }) do
@@ -744,7 +744,7 @@ end
 
 T["keymaps.universal.toggle_mode = false disables only that key, leaving keymaps.diff's own toggle_mode intact on an owned buffer"] = function()
   child.lua(
-    [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
+    [[require("diffly.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
   )
 
   local result = open(paths.deleted)
@@ -838,7 +838,7 @@ T["show_head_blob(): a bogus head_sha notifies WARN once and still opens an empt
   eq(notes[1].level, vim.log.levels.WARN)
 end
 
-T["show_deleted(): a bogus base_sha notifies WARN once and still opens an empty, fully DifitOverlayDelete blob"] = function()
+T["show_deleted(): a bogus base_sha notifies WARN once and still opens an empty, fully DifflyOverlayDelete blob"] = function()
   child.lua(
     [[
       local path, sha = ...
@@ -851,7 +851,7 @@ T["show_deleted(): a bogus base_sha notifies WARN once and still opens an empty,
   local result = open(paths.deleted)
 
   eq(result.lines, { "" })
-  eq(hl_rows(result.marks, "DifitOverlayDelete"), { 0 })
+  eq(hl_rows(result.marks, "DifflyOverlayDelete"), { 0 })
 
   local notes = child.lua_get("_G.__notifications")
   eq(#notes, 1)
@@ -918,8 +918,8 @@ local function overlay_for_change(before, after)
 
   local c = helpers.new_child(r.dir)
   c.lua([[
-    local git2 = require("difit.git")
-    local unified2 = require("difit.ui.unified")
+    local git2 = require("diffly.git")
+    local unified2 = require("diffly.ui.unified")
 
     local repo2 = git2.repo_identity(vim.fn.getcwd())
     local base_sha2 = vim.trim(vim.fn.system({ "git", "-C", repo2.toplevel, "rev-parse", "main" }))
