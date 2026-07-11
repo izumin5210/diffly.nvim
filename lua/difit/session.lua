@@ -115,6 +115,29 @@ local function index_by_path(entries)
   return map
 end
 
+--- Batched `git check-attr linguist-generated` over every entry's path (`ui/guard.lua`'s
+--- `M.is_generated` reads the result per-entry, at `open()` time) -- ONE subprocess call
+--- per session build/`refresh()`, never per file/per open (docs/architecture.md
+--- "Rendering"'s "never add a subprocess call for files nobody opened" rule extends here:
+--- since EVERY entry's row/±counts already render in the panel regardless of whether its
+--- diff is ever opened, batching over the whole entry list up front is the cheap choice --
+--- one process per refresh beats a `git check-attr` per `open()` call for reviews with many
+--- open/close cycles over the same file). Skipped entirely (empty table, no subprocess)
+--- when `config.collapse_generated` is off.
+---@param repo difit.RepoIdentity
+---@param entries difit.FileEntry[]
+---@return table<string, string>
+local function load_generated_attrs(repo, entries)
+  if not config.get().collapse_generated then
+    return {}
+  end
+  local paths = {}
+  for _, e in ipairs(entries) do
+    table.insert(paths, e.path)
+  end
+  return git.check_attrs(repo, "linguist-generated", paths) or {}
+end
+
 --- Call every subscriber. Errors from one subscriber must not stop the others (a
 --- crashing render callback shouldn't corrupt session state or hide other subscribers'
 --- updates).
@@ -199,6 +222,15 @@ function M.new(opts)
 
   local right = opts.right or config.get().right
 
+  -- 5. The file list itself -- fetched before `spec` so `spec.generated_attrs` (the
+  -- batched `git check-attr` result, see `load_generated_attrs`) can be filled in as part
+  -- of building `spec` rather than mutated in right after.
+  local entries, entries_err =
+    git.diff_files(repo, merge_base, right, { include_untracked = config.get().include_untracked })
+  if not entries then
+    return nil, entries_err
+  end
+
   ---@type difit.DiffSpec
   local spec = {
     repo = repo,
@@ -206,15 +238,10 @@ function M.new(opts)
     merge_base = merge_base,
     right = right,
     review_key = review_key,
+    generated_attrs = load_generated_attrs(repo, entries),
   }
 
-  -- 5. Viewed state + the file list itself.
-  local entries, entries_err =
-    git.diff_files(repo, merge_base, right, { include_untracked = config.get().include_untracked })
-  if not entries then
-    return nil, entries_err
-  end
-
+  -- 6. Viewed state.
   local review_state = state.load(review_key)
 
   local self = setmetatable({
@@ -250,6 +277,7 @@ function Session:refresh()
     )
     if entries then
       self.spec.merge_base = merge_base
+      self.spec.generated_attrs = load_generated_attrs(self.spec.repo, entries)
       self.entries = entries
       self._entries_by_path = index_by_path(entries)
 

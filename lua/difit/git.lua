@@ -483,6 +483,58 @@ function M.hash_objects(repo, paths)
   return map
 end
 
+--- Batched `git check-attr -z <attr> --stdin`, one subprocess call for every path a
+--- caller cares about (the generated-file guard, `ui/guard.lua`'s `M.is_generated`, calls
+--- this once per session refresh over the whole entry list -- never per-file -- see
+--- `session.lua`). Deliberately does NOT pass `--cached`: check-attr's default behavior
+--- reads `.gitattributes` from the WORKING TREE (confirmed empirically -- an uncommitted
+--- edit to `.gitattributes` changes its output immediately, before any `git add`/commit),
+--- which is what a diff-against-worktree review tool wants; linguist itself queries the
+--- INDEX instead (`priority: [:index]` in its rugged source), a deliberate divergence
+--- documented here since it's the one place this module's git-attribute story differs
+--- from upstream linguist's.
+---
+--- Return value omits an entry entirely for a path git reports as "unspecified" (no
+--- matching rule) -- `attrs[path] == nil` IS "unspecified" for callers, so they can't
+--- mistake an absent key for a real value. A present entry is the raw value git-check-attr
+--- printed: "set" (`attr` alone in `.gitattributes`), "unset" (`-attr`), or any other
+--- string git accepts as an explicit value (e.g. "false" for `attr=false`, or an arbitrary
+--- custom string) -- callers map those to booleans themselves (see `ui/guard.lua`).
+---@param repo difit.RepoIdentity
+---@param attr string
+---@param paths string[] @relative to toplevel
+---@return table<string,string>|nil @path -> raw check-attr value; absent key == "unspecified"
+---@return string|nil err
+function M.check_attrs(repo, attr, paths)
+  if #paths == 0 then
+    return {}
+  end
+
+  local input = table.concat(paths, "\0") .. "\0"
+  local res = vim
+    .system(
+      { "git", "-C", repo.toplevel, "check-attr", "-z", attr, "--stdin" },
+      { text = true, stdin = input }
+    )
+    :wait()
+  if res.code ~= 0 then
+    return nil, vim.trim(res.stderr or "")
+  end
+
+  -- Output is NUL-terminated (path, attr-name, value) triplets, one per queried path, in
+  -- the same order paths were fed in (empirically verified) -- since exactly one attr is
+  -- ever queried here, every third token is the value that goes with `paths[i]`.
+  local tokens = split_z(res.stdout or "")
+  local result = {}
+  for i, path in ipairs(paths) do
+    local value = tokens[(i - 1) * 3 + 3]
+    if value and value ~= "unspecified" then
+      result[path] = value
+    end
+  end
+  return result
+end
+
 ---@param repo difit.RepoIdentity
 ---@param locator {sha: string}|{path: string}
 ---@return string[]|nil lines
@@ -510,7 +562,7 @@ end
 
 --- Byte size of a blob via `git cat-file -s` -- cheap compared to `M.file_content`
 --- (no content transfer), used by the size guard (`config.max_file_size`, see
---- `ui/size_guard.lua`) to decide whether a blob is worth loading in full BEFORE ever
+--- `ui/guard.lua`) to decide whether a blob is worth loading in full BEFORE ever
 --- reading it. Callers only ever invoke this for the one entry actually being opened, at
 --- `open()` time -- never for the whole diff list -- so it adds no subprocess calls for
 --- files nobody opens.

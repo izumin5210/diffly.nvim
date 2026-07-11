@@ -6,7 +6,7 @@ M.defaults = {
   include_untracked = true,
   -- Guard against loading a huge text file's full CONTENT into a diff view by accident
   -- (images/other binaries already render a placeholder regardless of size -- see
-  -- ui/sidebyside.lua's/ui/unified.lua's `show_binary`; `ui/size_guard.lua` owns this
+  -- ui/sidebyside.lua's/ui/unified.lua's `show_binary`; `ui/guard.lua` owns this
   -- one). Bytes; `false` disables the guard entirely. Applies only to actually loading a
   -- blob/worktree file's content into a buffer -- panel counts come from `git diff
   -- --numstat`, which is cheap regardless of file size, so panel rows are unaffected. An
@@ -14,6 +14,16 @@ M.defaults = {
   -- buffer-local `L` key to force-load it for the rest of that view (side-by-side/unified
   -- track this independently; a mode switch or `:Difit close` resets it).
   max_file_size = 1024 * 1024,
+  -- GitHub-parity collapsing of generated files (docs/architecture.md "Rendering",
+  -- lua/difit/generated.lua): a file's diff body renders as a placeholder (same `L`-key
+  -- force-load mechanics as `max_file_size` above, see `ui/guard.lua`) instead of its real
+  -- content when it's recognized as vendored/lockfile/codegen output, by linguist's own
+  -- rules, OR carries an explicit `.gitattributes` `linguist-generated` override. `false`
+  -- disables BOTH the heuristics and the `.gitattributes` override -- every file always
+  -- renders normally. There is no difit-specific pattern list to configure here: GitHub's
+  -- own extension point, `.gitattributes` `linguist-generated`/`-linguist-generated`, is
+  -- how a user opts a specific file in or out, same as on github.com.
+  collapse_generated = true,
   auto_advance = true, -- jump to next un-viewed file after marking
   icons = true, -- use mini.icons / nvim-web-devicons when available
   -- Bulk-viewed pattern GROUPS (gitignore-inspired globs), triggered explicitly via the

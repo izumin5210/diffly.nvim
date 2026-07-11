@@ -93,6 +93,15 @@ flat list toggle in the panel, fs-watch based refresh.
 - **Large files**: binary files always render a placeholder regardless of size; a huge
   text file (`config.max_file_size`, default 1 MiB) gets the same treatment instead of
   loading its content, with a buffer-local `L` key to load it anyway for that view.
+- **Generated files** (GitHub parity): a file recognized as vendored/lockfile/codegen
+  output (github-linguist's own `generated.rb` rules, or an explicit `.gitattributes`
+  `linguist-generated` override either way) keeps its panel row, `+`/`-` counts, and
+  manual viewed marking -- only its diff body gets the same placeholder-plus-`L`-key
+  treatment as large files, ranked just after the size guard (an oversized file's content
+  is never loaded, so the heuristics never run against it). `config.collapse_generated`
+  disables both the heuristics and the `.gitattributes` override; there is no separate
+  difit-specific pattern list -- `.gitattributes` is the only per-file override, same as
+  on github.com.
 
 ### Interface
 

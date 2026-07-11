@@ -13,18 +13,19 @@ warnings, not history trivia.
 | `plugin/difit.lua` | `:Difit` command + completion, `<Plug>` mappings. Thin: routes into `require("difit")`. |
 | `lua/difit/init.lua` | Orchestration: the tabpage-keyed session registry, open/close lifecycle, autocmds, the per-session `actions` table, sweep selector UI. |
 | `lua/difit/session.lua` | One review session: diff spec construction, entries, viewed toggles (single + batch), mode switching, subscriber notifications. No UI. |
-| `lua/difit/git.lua` | Synchronous git plumbing (`vim.system(...):wait()`): identity, refs, `diff_files` (NUL-parsed `--raw`/`--numstat`), blob content, hunks. |
+| `lua/difit/git.lua` | Synchronous git plumbing (`vim.system(...):wait()`): identity, refs, `diff_files` (NUL-parsed `--raw`/`--numstat`), blob content, hunks, batched `check_attrs`. |
 | `lua/difit/github.lua` | `gh` wrapper. PR detection only (base ref + PR number); every failure returns `nil, err` — never raises. |
 | `lua/difit/state.lua` | Viewed-state persistence under `stdpath('data')/difit/`; blob-SHA invalidation; `clean`. |
 | `lua/difit/tree.lua` | Pure tree model: build (single-child dir compression), flatten (folds), file_order. |
 | `lua/difit/config.lua` | Defaults, `setup()`, `viewed_patterns` group normalization. |
 | `lua/difit/types.lua` | `---@meta` LuaCATS contracts shared across modules. |
+| `lua/difit/generated.lua` | Pure classifier ported from github-linguist's `generated.rb`: `M.generated(path, lines) -> boolean`. No git, no I/O. |
 | `lua/difit/ui/panel.lua` | File-tree panel: render pipeline, cursor preservation, panel-local keys, hide-viewed filter. |
 | `lua/difit/ui/sidebyside.lua` | Native diff-mode view: blob left, real file (or head blob) right. |
 | `lua/difit/ui/unified.lua` | Inline-overlay view: real buffer + extmark overlay, deletions as `virt_lines`. |
 | `lua/difit/ui/keymaps.lua` | Keymap specs (diff/universal layers), attach/detach lifecycle, ownership tokens. |
 | `lua/difit/ui/scratch.lua` | All `difit://` buffer naming/options/reuse + LSP-safe highlighting. |
-| `lua/difit/ui/size_guard.lua` | `config.max_file_size` decision + placeholder message/`L` key, shared by both views. |
+| `lua/difit/ui/guard.lua` | `config.max_file_size` AND `config.collapse_generated` decisions + placeholder messages/`L` key, shared by both views (formerly `ui/size_guard.lua`, generalized once the generated-file guard needed the same shape). |
 | `lua/difit/ui/hl.lua` | Highlight groups (`default = true` links). |
 
 Dependency direction: `init` → `session`/`ui/*` → `git`/`state`/`tree`/`config`.
@@ -127,7 +128,7 @@ Three layers, all buffer-local **and `nowait`**:
   segment/viewed foreground groups still show through on top of it; `Session:open_file`
   notifies subscribers only when `current_path` actually changes, which is what keeps this
   highlight from going stale after `]f`/`[f`/`<CR>`/auto-advance.
-- **Large-file guard** (`ui/size_guard.lua`, `config.max_file_size`): lazily, at
+- **Large-file guard** (`ui/guard.lua`, `config.max_file_size`): lazily, at
   `open()` time for the one entry being opened, both views check whether the content they
   are about to load (sidebyside: base blob + right side; unified: whichever single side
   it renders, skipping the base blob it only ever feeds to `git diff` for hunks) exceeds
@@ -136,12 +137,39 @@ Three layers, all buffer-local **and `nowait`**:
   fresh view instance, i.e. a mode switch or close -- never persisted) and reopens.
   Binary detection is checked first and always wins outright. *Why lazy*: `max_file_size`
   must never add a subprocess call for a file nobody opened.
-- **Owned-buffer close() vs. shared names**: a binary/head-mode/oversized placeholder's
-  buffer name (`ui/scratch.lua`) has no per-view component, so sidebyside and unified can
-  end up sharing the exact same buffer for the same file. `Session:set_mode` opens the
-  incoming view before closing the outgoing one, so the outgoing view's `close()` can run
-  while the incoming view's window is already showing that shared buffer --
-  `nvim_buf_delete` closes every window still displaying the buffer it deletes, not just
+- **Generated-file guard** (`ui/guard.lua`'s `M.is_generated`, `lua/difit/generated.lua`,
+  `config.collapse_generated`): GitHub-parity collapsing of vendored/lockfile/codegen
+  output, sharing the large-file guard's exact placeholder/`L`-key/`force_loaded`
+  mechanics -- only the message and the detection source differ. Detection precedence per
+  entry, evaluated lazily at `open()` time, same as the size guard:
+  1. binary wins outright, same as the size guard;
+  2. the size guard itself runs next -- an oversized entry's content is never loaded, so
+     the generated-file heuristics (which need to read it) never get a chance to run for
+     it, and a `.gitattributes` override never gets consulted either; an accepted
+     divergence from a hypothetical "check generated first" ordering, since running
+     heuristics on unloaded content would defeat the size guard's entire point;
+  3. `spec.generated_attrs[entry.path]` -- the session's batched `git check-attr -z
+     linguist-generated --stdin` result (`git.lua`'s `M.check_attrs`, computed once per
+     session build/`refresh()`, never per `open()`) -- wins BOTH ways when present:
+     `-linguist-generated`/`linguist-generated=false` forces "not generated" and skips
+     heuristics entirely; any other explicit value forces "generated" without even
+     reading content; absent (git reported "unspecified") falls through to (4).
+     Deliberately reads the WORKING TREE (no `--cached`), unlike upstream linguist itself
+     (which queries the index) -- an uncommitted `.gitattributes` edit takes effect
+     immediately, matching what a diff-against-worktree review tool wants.
+  4. `lua/difit/generated.lua`'s heuristics (a verbatim port of github-linguist's
+     `generated.rb`) run against the content the view is about to render as the file's
+     "current" side -- worktree file, `entry.head_sha`'s blob, or `entry.base_sha`'s blob
+     for a deleted file. This side choice is difit's OWN decision (`ui/guard.lua`'s
+     `M.generated_check_lines`): linguist itself classifies one blob at a time with no
+     diff/side concept, and GitHub's own choice of which side of a PR diff it runs its
+     collapsing heuristics against isn't documented or observable.
+- **Owned-buffer close() vs. shared names**: a binary/head-mode/oversized/generated
+  placeholder's buffer name (`ui/scratch.lua`) has no per-view component, so sidebyside and
+  unified can end up sharing the exact same buffer for the same file. `Session:set_mode`
+  opens the incoming view before closing the outgoing one, so the outgoing view's
+  `close()` can run while the incoming view's window is already showing that shared buffer
+  -- `nvim_buf_delete` closes every window still displaying the buffer it deletes, not just
   the caller's own, so deleting unconditionally would silently destroy the incoming
   view's window and drop focus back to the panel. Both views' `close()` skip the delete
   when `vim.fn.win_findbuf` still finds a window on it; whichever view still owns a

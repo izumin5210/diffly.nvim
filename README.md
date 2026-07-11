@@ -157,6 +157,7 @@ require("difit").setup({
   right = "worktree",     -- "worktree"|"head"
   include_untracked = true,
   max_file_size = 1024 * 1024, -- bytes; false disables the guard (see "Large files" below)
+  collapse_generated = true, -- collapse generated files (see "Generated files" below)
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
   viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (`S`/`:Difit sweep`)
@@ -202,6 +203,37 @@ loading a file's content into a diff view is guarded — panel counts (`+`/`-`, 
 letters) come from `git diff --numstat`, which stays cheap regardless of file size, so
 they're unaffected, and marking a file viewed never requires loading it first. Set
 `max_file_size = false` to disable the guard entirely.
+
+## Generated files
+
+Mirrors GitHub's own "Generated files are not rendered by default" PR-diff behavior: a
+file recognized as vendored/lockfile/compiler output keeps its row, `+`/`-` counts, and
+manual viewed marking in the panel — only its diff body is replaced by a placeholder (`L`
+to load it anyway, same per-view mechanics as `max_file_size` above).
+
+Detection is [github-linguist](https://github.com/github-linguist/linguist)'s own
+`generated.rb` ruleset (vendored trees like `node_modules/`/`Pods/`/Go's `vendor/`,
+lockfiles like `package-lock.json`/`Cargo.lock`/`pnpm-lock.yaml`, and compiler/codegen
+markers like Go's `// Code generated ... `, protobuf/gRPC/Thrift headers, minified JS/CSS,
+source maps, and more — see `lua/difit/generated.lua` for the full ported list), plus
+`.gitattributes`
+[`linguist-generated`](https://github.com/github-linguist/linguist/blob/main/docs/overrides.md)
+as an override in BOTH directions: `path linguist-generated` (or `=true`/any non-`false`
+value) forces collapsing even for a file the heuristics would otherwise render normally;
+`path -linguist-generated` (or `=false`) forces normal rendering even for a heuristic
+match — exactly like on github.com, and the only place to configure individual files
+(there is no separate difit-specific pattern list). A working-tree (uncommitted)
+`.gitattributes` edit takes effect immediately, without needing to be staged or committed.
+
+Two rules linguist itself doesn't have, so difit doesn't add them either: no generic
+`@generated`-marker rule, no generic "DO NOT EDIT" rule. `yarn.lock`, `Gemfile.lock`, and
+`go.sum` are deliberately **not** treated as generated (linguist doesn't either) — if you
+want them collapsed anyway, opt them in via `.gitattributes`.
+
+The size guard above always wins when both would apply: an oversized file's content is
+never loaded, so the generated-file heuristics (which need to read that content) never run
+for it. Binary files keep winning over both. Set `collapse_generated = false` to disable
+heuristic AND `.gitattributes`-override collapsing entirely.
 
 ## Viewed-state semantics
 
