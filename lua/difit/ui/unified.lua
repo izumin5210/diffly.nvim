@@ -203,12 +203,14 @@ local function render_overlay(self, buf, hunks)
   -- clamped into range by `compute_overlay`, so only add rows need the guard here.
   for _, row in ipairs(add_rows) do
     if row >= 0 and row < line_count then
+      -- end_row makes this a line-spanning range: a zero-width point mark with only
+      -- hl_eol renders NOTHING (the highlight needs an extent to paint).
       vim.api.nvim_buf_set_extmark(
         buf,
         self.ns,
         row,
         0,
-        { hl_group = "DifitOverlayAdd", hl_eol = true }
+        { end_row = row + 1, end_col = 0, hl_group = "DifitOverlayAdd", hl_eol = true }
       )
     end
   end
@@ -235,13 +237,13 @@ local function render_all_deleted(self, buf)
   vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
   local line_count = vim.api.nvim_buf_line_count(buf)
   for row = 0, line_count - 1 do
-    vim.api.nvim_buf_set_extmark(
-      buf,
-      self.ns,
-      row,
-      0,
-      { hl_group = "DifitOverlayDelete", hl_eol = true }
-    )
+    -- Same line-spanning range as the add marks: point marks paint nothing.
+    vim.api.nvim_buf_set_extmark(buf, self.ns, row, 0, {
+      end_row = math.min(row + 1, line_count),
+      end_col = 0,
+      hl_group = "DifitOverlayDelete",
+      hl_eol = true,
+    })
   end
 end
 

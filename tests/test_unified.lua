@@ -53,6 +53,17 @@ local function hl_rows(marks, group)
   local rows = {}
   for _, m in ipairs(marks) do
     if m[4].hl_group == group then
+      -- Regression guard: a point mark (no end_row) with hl_eol paints NOTHING on
+      -- screen even though the extmark "exists" -- only line-spanning ranges count.
+      if m[4].end_row == nil or m[4].end_row <= m[2] then
+        error(
+          string.format(
+            "extmark at row %d is zero-width (end_row=%s) -- it would render no highlight",
+            m[2],
+            tostring(m[4].end_row)
+          )
+        )
+      end
       table.insert(rows, m[2])
     end
   end
