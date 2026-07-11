@@ -352,6 +352,31 @@ T["file_content(): by sha and by path agree for an unmodified file"] = function(
   repo:destroy()
 end
 
+-- 8b. blob_size() -------------------------------------------------------------------------
+
+T["blob_size(): matches the worktree file's actual byte length"] = function()
+  local repo = helpers.new_repo()
+  repo:write("f.txt", { "hello", "world", "a third line" })
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  local sha = vim.trim(repo:git({ "rev-parse", "HEAD:f.txt" }))
+  local expected = vim.uv.fs_stat(repo.dir .. "/f.txt").size
+
+  eq(git.blob_size(id, sha), expected)
+
+  repo:destroy()
+end
+
+T["blob_size(): nil for a sha that doesn't resolve to an object"] = function()
+  local repo = helpers.new_repo()
+  local id = git.repo_identity(repo.dir)
+
+  eq(git.blob_size(id, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), nil)
+
+  repo:destroy()
+end
+
 -- 9. hunks() ------------------------------------------------------------------------------
 
 T["hunks(): modified file hunks reconstruct the new content and match git's headers"] = function()

@@ -88,6 +88,9 @@ flat list toggle in the panel, fs-watch based refresh.
   editable in worktree mode, exactly like side-by-side's right-hand window.
 - **Refresh**: automatic on `BufWritePost` and `FocusGained`, manual with `R` in the
   panel.
+- **Large files**: binary files always render a placeholder regardless of size; a huge
+  text file (`config.max_file_size`, default 1 MiB) gets the same treatment instead of
+  loading its content, with a buffer-local `L` key to load it anyway for that view.
 
 ### Interface
 

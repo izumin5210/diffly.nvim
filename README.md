@@ -156,6 +156,7 @@ require("difit").setup({
   base = nil,             -- string|nil: base branch override
   right = "worktree",     -- "worktree"|"head"
   include_untracked = true,
+  max_file_size = 1024 * 1024, -- bytes; false disables the guard (see "Large files" below)
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
   viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (`S`/`:Difit sweep`)
@@ -188,6 +189,19 @@ require("difit").setup({
 ```
 
 Set any keymap value to `false` to disable it.
+
+## Large files
+
+Images and other binary files never load their content — both diff modes always render a
+placeholder for them, regardless of size. `max_file_size` (1 MiB by default) extends the
+same idea to huge *text* files: opening one shows a placeholder like `file too large (2.3
+MiB > 1.0 MiB) -- press L to load` instead of loading it into a buffer, with a
+buffer-local `L` key to load it anyway for the rest of that view (side-by-side/unified
+each track this separately, and it resets on a mode switch or `:Difit close`). Only
+loading a file's content into a diff view is guarded — panel counts (`+`/`-`, status
+letters) come from `git diff --numstat`, which stays cheap regardless of file size, so
+they're unaffected, and marking a file viewed never requires loading it first. Set
+`max_file_size = false` to disable the guard entirely.
 
 ## Viewed-state semantics
 

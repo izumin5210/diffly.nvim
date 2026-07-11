@@ -508,6 +508,23 @@ function M.file_content(repo, locator)
   return nil, "file_content: locator needs either `sha` or `path`"
 end
 
+--- Byte size of a blob via `git cat-file -s` -- cheap compared to `M.file_content`
+--- (no content transfer), used by the size guard (`config.max_file_size`, see
+--- `ui/size_guard.lua`) to decide whether a blob is worth loading in full BEFORE ever
+--- reading it. Callers only ever invoke this for the one entry actually being opened, at
+--- `open()` time -- never for the whole diff list -- so it adds no subprocess calls for
+--- files nobody opens.
+---@param repo difit.RepoIdentity
+---@param sha string
+---@return integer|nil size
+function M.blob_size(repo, sha)
+  local out = run(repo.toplevel, { "cat-file", "-s", sha })
+  if not out then
+    return nil
+  end
+  return tonumber(vim.trim(out))
+end
+
 ---@param repo difit.RepoIdentity
 ---@param entry difit.FileEntry
 ---@param base_sha string

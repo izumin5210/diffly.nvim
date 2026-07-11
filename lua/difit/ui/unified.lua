@@ -17,6 +17,7 @@
 local git = require("difit.git")
 local ui_keymaps = require("difit.ui.keymaps")
 local scratch = require("difit.ui.scratch")
+local size_guard = require("difit.ui.size_guard")
 
 local M = {}
 
@@ -28,6 +29,9 @@ local M = {}
 ---@field ns integer               -- this view's own overlay namespace (one ns per concern)
 ---@field universal_buf integer?   -- real bufnr currently carrying the overlay + `keymaps.universal`
 ---@field universal_keys string[]? -- keys applied to `universal_buf` (see `ui_keymaps.detach_universal`)
+---@field force_loaded table<string, boolean> -- paths whose size guard (config.max_file_size,
+--- ui/size_guard.lua) has been bypassed for the rest of THIS view instance's lifetime --
+--- resets on a mode switch/close (a fresh view instance) rather than persisting
 local View = {}
 View.__index = View
 
@@ -262,6 +266,30 @@ local function show_binary(self, entry)
   vim.api.nvim_win_set_buf(self.win, buf)
 end
 
+--- Oversized entries (`config.max_file_size` -- see `ui/size_guard.lua`): the same
+--- shared-placeholder shape as `show_binary` (difit-owned, `keymaps.diff` +
+--- `keymaps.universal`), styled identically, but with the actual/limit sizes in the
+--- message and a buffer-local `L` key that force-loads this exact path for the rest of
+--- this view instance's lifetime (`self.force_loaded`) rather than being unconditional
+--- like binary's placeholder. `actual` (rather than just `entry.path`) is folded into the
+--- buffer name so a `session:refresh()` that changes the file's size while it's still
+--- oversized gets a FRESH buffer instead of reusing stale message text -- mirrors every
+--- other owned buffer here relying on a content-addressed name for reuse-safety (see
+--- `show_deleted`/`show_head_blob` below).
+---@param self difit.ui.UnifiedView
+---@param entry difit.FileEntry
+---@param spec difit.DiffSpec
+---@param actual integer  -- bytes, the largest oversized side
+---@param limit integer   -- bytes, config.max_file_size
+local function show_oversized(self, entry, spec, actual, limit)
+  release_real_buf(self, nil)
+  local name =
+    scratch.name("oversized", self.ctx.anchor, string.format("%s@%d", entry.path, actual))
+  local buf = owned_buffer(self, name, { size_guard.message(actual, limit) }, entry.path)
+  vim.api.nvim_win_set_buf(self.win, buf)
+  size_guard.apply_force_load_keymap(buf, self, entry, spec)
+end
+
 --- Deleted entries (`entry.head_sha == nil`): a read-only blob of `entry.base_sha`,
 --- entirely painted as deleted (see `render_all_deleted`). Content-addressed buffer name
 --- (mirrors `ui/sidebyside.lua`'s left/head blob naming): reuse across opens is always
@@ -314,6 +342,9 @@ local function show_head_blob(self, entry, spec)
   return buf
 end
 
+--- Binary takes precedence over the size guard unconditionally (config.lua's
+--- `max_file_size` doc): a binary entry never shows size text or gets an `L` key, since
+--- there's nothing further to "load" -- the binary placeholder IS the final render.
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:open(entry, spec)
@@ -321,7 +352,21 @@ function View:open(entry, spec)
 
   if entry.binary then
     show_binary(self, entry)
-  elseif not entry.head_sha then
+    vim.api.nvim_set_current_win(self.win)
+    return
+  end
+
+  local limit = size_guard.limit()
+  if limit and not self.force_loaded[entry.path] then
+    local oversized = size_guard.exceeds(size_guard.unified_sizes(spec.repo, entry, spec), limit)
+    if oversized then
+      show_oversized(self, entry, spec, oversized, limit)
+      vim.api.nvim_set_current_win(self.win)
+      return
+    end
+  end
+
+  if not entry.head_sha then
     show_deleted(self, entry, spec)
   else
     local buf
@@ -352,7 +397,8 @@ function View:open(entry, spec)
 end
 
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
---- carried the overlay/`keymaps.universal`, then wipes every owned scratch buffer.
+--- carried the overlay/`keymaps.universal`, then wipes every owned scratch buffer still
+--- exclusively ours (see the `win_findbuf` guard below).
 function View:close()
   release_real_buf(self, nil)
 
@@ -371,7 +417,19 @@ function View:close()
   self.win = nil
 
   for buf in pairs(self.owned_bufs) do
-    if vim.api.nvim_buf_is_valid(buf) then
+    -- Regression guard (the "focus lands on the panel after switching modes on a
+    -- binary/head-mode file" bug): binary placeholders and head-mode blobs are named
+    -- purely from `entry.path`/the sha/`ctx.anchor` (see ui/scratch.lua), with no
+    -- per-view component, so `ui/sidebyside.lua` and this view can end up sharing the
+    -- EXACT SAME buffer for the same file. `Session:set_mode` opens the incoming view
+    -- BEFORE closing this outgoing one (docs/architecture.md "View contract"), so by the
+    -- time this loop runs, the incoming view's window may already be showing this very
+    -- buffer -- and `nvim_buf_delete` closes every window still displaying the buffer it
+    -- deletes, not just the ones this view itself owns. Deleting out from under a live
+    -- window would silently destroy it and drop focus back to whatever's left (the
+    -- panel). Only delete once no window anywhere still needs it; whichever view still
+    -- owns a window on it will wipe it in its own close() later.
+    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) == 0 then
       vim.api.nvim_buf_delete(buf, { force = true })
     end
   end
@@ -390,6 +448,7 @@ function M.new(ctx)
     universal_buf = nil,
     universal_keys = nil,
     universal_token = nil,
+    force_loaded = {},
   }, View)
 end
 

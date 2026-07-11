@@ -466,6 +466,144 @@ T["binary entries: both windows share a placeholder buffer without diffthis"] = 
   eq(win_buflines(child, "left_win"), { "binary file" })
 end
 
+--- Regression (the "focus lands on the panel after switching modes on a binary file"
+--- bug): `ui/unified.lua`'s and this view's binary placeholder buffers are named
+--- identically for the same file (`ui/scratch.lua` naming has no per-view component), so
+--- a fresh unified view sharing a `ctx` this test then hands to a fresh sidebyside view
+--- reproduces the exact collision `Session:set_mode` creates in production -- opening the
+--- incoming (sidebyside) view before closing the outgoing (unified) one (docs/architecture.md
+--- "View contract"). Before the `close()` fix (win_findbuf guard on the owned-buffer
+--- delete loop), the outgoing view's `close()` force-deleted that shared buffer out from
+--- under sidebyside's already-focused window, and Neovim closes every window still
+--- showing a buffer it deletes -- silently destroying sidebyside's window and dropping
+--- focus back to `ctx.anchor` (the panel, in production).
+T["regression: an outgoing unified view's close() must not steal sidebyside's window when both show the same binary placeholder"] = function()
+  local built = build(child, "worktree")
+  local entry = {
+    path = "bin.dat",
+    old_path = nil,
+    status = "M",
+    untracked = false,
+    binary = true,
+    additions = 0,
+    deletions = 0,
+    base_sha = "aaaaaaa",
+    head_sha = "bbbbbbb",
+  }
+
+  new_ctx(child)
+  child.lua(
+    [[
+      local unified = require("difit.ui.unified")
+      local spec, entry = ...
+      -- Mirrors Session:set_mode's order: the outgoing view opens first...
+      _G.__old_view = unified.new(_G.__ctx)
+      _G.__old_view:open(entry, spec)
+    ]],
+    { built.spec, entry }
+  )
+
+  -- ...then the incoming view (sidebyside, this file's own `_G.__view`) opens the SAME
+  -- entry BEFORE the outgoing one closes.
+  child.lua([[ _G.__view = require("difit.ui.sidebyside").new(_G.__ctx) ]])
+  view_open(child, built.spec, entry)
+  local right_win_before_close = win_id(child, "right_win")
+
+  child.lua([[ _G.__old_view:close() ]])
+
+  eq(
+    child.lua_get("vim.api.nvim_get_current_win()"),
+    right_win_before_close,
+    "focus must stay on sidebyside's right window, not fall back to ctx.anchor"
+  )
+  eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", right_win_before_close)), true)
+end
+
+---------------------------------------------------------------------------------------
+-- Large-file guard (config.max_file_size, ui/size_guard.lua): an entry whose content
+-- would exceed the configured limit renders a placeholder styled like the binary one
+-- (both windows, no diffthis) instead of loading it, with a `L` key to force-load it for
+-- the rest of this view instance. Binary detection always takes precedence.
+---------------------------------------------------------------------------------------
+
+---@param child table
+---@param max integer|false
+local function set_max_file_size(child, max)
+  child.lua("require('difit.config').setup({ max_file_size = ... })", { max })
+end
+
+T["oversized file: both windows share a placeholder with the size text instead of the real content"] = function()
+  set_max_file_size(child, 64)
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_diff(child, "left_win"), false)
+  eq(win_diff(child, "right_win"), false)
+
+  local left_buf = buf_of(child, "left_win")
+  local right_buf = buf_of(child, "right_win")
+  eq(left_buf, right_buf)
+
+  local lines = win_buflines(child, "left_win")
+  eq(#lines, 1)
+  eq(lines[1]:find("file too large", 1, true) ~= nil, true)
+  eq(lines[1]:find("press L to load", 1, true) ~= nil, true)
+end
+
+T["oversized file: pressing L force-loads the real diff, and it stays loaded on reopen"] = function()
+  set_max_file_size(child, 64)
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+  eq(win_buflines(child, "left_win")[1]:find("file too large", 1, true) ~= nil, true)
+
+  -- `open()` already focuses the right window (`focus_right_first_change`), and the
+  -- placeholder is shared by both windows -- pressing L from there triggers the same
+  -- buffer-local mapping either way.
+  child.type_keys("L")
+
+  eq(vim.endswith(win_bufname(child, "right_win"), "/" .. paths.modified), true)
+  eq(win_diff(child, "left_win"), true, "diffthis re-enabled once the real content loads")
+  eq(win_diff(child, "right_win"), true)
+
+  -- Reopening the same path later (e.g. navigating away and back) must not show the
+  -- placeholder again -- `force_loaded` persists for the rest of this view instance.
+  view_open(child, built.spec, entry)
+  eq(vim.endswith(win_bufname(child, "right_win"), "/" .. paths.modified), true)
+end
+
+T["oversized file: max_file_size = false disables the guard entirely"] = function()
+  set_max_file_size(child, false)
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(vim.endswith(win_bufname(child, "right_win"), "/" .. paths.modified), true)
+  eq(win_diff(child, "left_win"), true)
+end
+
+T["binary entries take precedence over the size guard -- no size text, no L key"] = function()
+  set_max_file_size(child, 1) -- tiny enough that even "binary file" would exceed it, if checked
+  write_bytes(repo, "bin.dat", "\0\1\2binary")
+  repo:commit("feat: add binary file")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "bin.dat")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_buflines(child, "left_win"), { "binary file" })
+  eq(mapped(buf_maparg(child, buf_of(child, "left_win"), "L")), false)
+end
+
 ---------------------------------------------------------------------------------------
 -- keymaps.diff / keymaps.universal (the two-layer model, docs/design.md "Interface"):
 -- difit-owned buffers (the left blob, and the right blob in head mode) get BOTH groups;

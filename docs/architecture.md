@@ -24,6 +24,7 @@ warnings, not history trivia.
 | `lua/difit/ui/unified.lua` | Inline-overlay view: real buffer + extmark overlay, deletions as `virt_lines`. |
 | `lua/difit/ui/keymaps.lua` | Keymap specs (diff/universal layers), attach/detach lifecycle, ownership tokens. |
 | `lua/difit/ui/scratch.lua` | All `difit://` buffer naming/options/reuse + LSP-safe highlighting. |
+| `lua/difit/ui/size_guard.lua` | `config.max_file_size` decision + placeholder message/`L` key, shared by both views. |
 | `lua/difit/ui/hl.lua` | Highlight groups (`default = true` links). |
 
 Dependency direction: `init` → `session`/`ui/*` → `git`/`state`/`tree`/`config`.
@@ -122,6 +123,25 @@ Three layers, all buffer-local **and `nowait`**:
 - **Panel**: plain lines + extmark highlights, rebuilt per render; cursor follows the
   node it was on across background refreshes; `winfixwidth` + an `ensure_width` check
   keep the configured width through window churn.
+- **Large-file guard** (`ui/size_guard.lua`, `config.max_file_size`): lazily, at
+  `open()` time for the one entry being opened, both views check whether the content they
+  are about to load (sidebyside: base blob + right side; unified: whichever single side
+  it renders, skipping the base blob it only ever feeds to `git diff` for hunks) exceeds
+  the limit, and render a binary-style placeholder instead when it does, with a
+  buffer-local `L` key that adds the path to a per-view `force_loaded` set (reset by a
+  fresh view instance, i.e. a mode switch or close -- never persisted) and reopens.
+  Binary detection is checked first and always wins outright. *Why lazy*: `max_file_size`
+  must never add a subprocess call for a file nobody opened.
+- **Owned-buffer close() vs. shared names**: a binary/head-mode/oversized placeholder's
+  buffer name (`ui/scratch.lua`) has no per-view component, so sidebyside and unified can
+  end up sharing the exact same buffer for the same file. `Session:set_mode` opens the
+  incoming view before closing the outgoing one, so the outgoing view's `close()` can run
+  while the incoming view's window is already showing that shared buffer --
+  `nvim_buf_delete` closes every window still displaying the buffer it deletes, not just
+  the caller's own, so deleting unconditionally would silently destroy the incoming
+  view's window and drop focus back to the panel. Both views' `close()` skip the delete
+  when `vim.fn.win_findbuf` still finds a window on it; whichever view still owns a
+  window on it wipes it in its own `close()` later.
 
 ## Viewed state
 

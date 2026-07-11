@@ -41,6 +41,13 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 - `Session:set_mode` opens the new view **before** closing the old one. Both views'
   lifetimes overlap on purpose; per-buffer ownership tokens keep keymap attach/detach
   correct across the overlap (`ui/keymaps.lua`).
+- A view's `close()` must never delete an owned buffer another live window still shows.
+  `ui/scratch.lua` buffer names have no per-view component, so sidebyside and unified can
+  share one buffer (binary/head-mode/oversized placeholders); `nvim_buf_delete` closes
+  every window still displaying the buffer it deletes, not just the caller's own —
+  deleting unconditionally during the `set_mode` overlap above silently destroyed the
+  incoming view's window and dropped focus back to the panel. Guard with
+  `vim.fn.win_findbuf` before deleting (`ui/sidebyside.lua`, `ui/unified.lua`).
 - Session teardown goes through `init.lua`'s idempotent `close_entry` funnel only
   (explicit close, `TabClosed` reconciliation, `WinClosed` sentinel all route there).
 - No module-level mutable seams. Keymap actions resolve the live session through the

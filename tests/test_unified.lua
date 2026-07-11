@@ -198,10 +198,17 @@ local function open_binary()
     view:open(entry, spec)
     local buf = vim.api.nvim_get_current_buf()
     return {
+      buf = buf,
       lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
       marks = vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {}),
     }
   ]])
+end
+
+---@param child table
+---@param max integer|false
+local function set_max_file_size(child, max)
+  child.lua("require('difit.config').setup({ max_file_size = ... })", { max })
 end
 
 local T = MiniTest.new_set({
@@ -376,6 +383,74 @@ T["open(): renamed files open the real (new-path) file without error"] = functio
 end
 
 ---------------------------------------------------------------------------------------
+-- Large-file guard (config.max_file_size, ui/size_guard.lua): an entry whose content
+-- would exceed the configured limit renders a placeholder styled like `show_binary`'s
+-- (owned buffer, no overlay) instead of loading it, with a `L` key to force-load it for
+-- the rest of this view instance. Binary detection always takes precedence.
+---------------------------------------------------------------------------------------
+
+T["open(): an oversized file renders a placeholder with the size text instead of its real content"] = function()
+  set_max_file_size(child, 64)
+
+  local result = open(paths.modified)
+
+  eq(result.buftype, "nofile")
+  eq(result.modifiable, false)
+  eq(#result.lines, 1)
+  eq(result.lines[1]:find("file too large", 1, true) ~= nil, true)
+  eq(result.lines[1]:find("press L to load", 1, true) ~= nil, true)
+  eq(#result.marks, 0, "no overlay for a placeholder")
+end
+
+T["open(): pressing L on the oversized placeholder force-loads the file and its overlay, and it stays loaded on reopen"] = function()
+  set_max_file_size(child, 64)
+  local placeholder = open(paths.modified)
+  eq(placeholder.lines[1]:find("file too large", 1, true) ~= nil, true)
+
+  child.type_keys("L")
+
+  local state = child.lua([[
+    local buf = vim.api.nvim_get_current_buf()
+    return {
+      bufname = vim.api.nvim_buf_get_name(buf),
+      buftype = vim.bo[buf].buftype,
+      overlay_marks = #vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {}),
+    }
+  ]])
+
+  eq(
+    vim.endswith(state.bufname, "/" .. paths.modified),
+    true,
+    "the real worktree file is now shown"
+  )
+  eq(state.buftype, "", "a real file buffer now, not the placeholder scratch")
+  eq(state.overlay_marks > 0, true, "the +/- overlay is drawn once the real file loads")
+
+  -- Reopening the same path later (e.g. navigating away and back) must not show the
+  -- placeholder again -- `force_loaded` persists for the rest of this view instance.
+  local second = open(paths.modified)
+  eq(vim.endswith(second.bufname, "/" .. paths.modified), true)
+end
+
+T["open(): max_file_size = false disables the guard entirely"] = function()
+  set_max_file_size(child, false)
+
+  local result = open(paths.modified)
+
+  eq(result.buftype, "", "the real file loads normally, not a placeholder")
+  eq(vim.endswith(result.bufname, "/" .. paths.modified), true)
+end
+
+T["open(): binary entries take precedence over the size guard -- no size text, no L key"] = function()
+  set_max_file_size(child, 1) -- tiny enough that even "binary file" would exceed it, if checked
+
+  local result = open_binary()
+
+  eq(result.lines, { "binary file" })
+  eq(mapped(buf_maparg(child, result.buf, "L")), false)
+end
+
+---------------------------------------------------------------------------------------
 -- Window ownership (docs/architecture.md "View contract"): unchanged from the pre-overlay view, since
 -- neither `ensure_window` nor the owned-window contract changed.
 ---------------------------------------------------------------------------------------
@@ -406,6 +481,59 @@ T["ensure_window: an offered ctx.claim is absorbed instead of splitting a fresh 
     child.lua_get("_G.ctx.claim == nil"),
     true,
     "claim is consumed so a later view build never reuses it"
+  )
+end
+
+--- Regression (the "focus lands on the panel after switching modes on a binary file"
+--- bug): `ui/sidebyside.lua`'s and this view's binary placeholder buffers are named
+--- identically for the same file (`ui/scratch.lua` naming has no per-view component), so
+--- a fresh sidebyside view sharing this test's `_G.ctx` reproduces the exact collision
+--- `Session:set_mode` creates in production -- opening the incoming (this) view before
+--- closing the outgoing (sidebyside) one (docs/architecture.md "View contract"). Before
+--- the `close()` fix (win_findbuf guard on the owned-buffer delete loop), the outgoing
+--- view's `close()` force-deleted that shared buffer out from under this view's
+--- already-focused window, and Neovim closes every window still showing a buffer it
+--- deletes -- silently destroying this view's window and dropping focus back to
+--- `ctx.anchor` (the panel, in production).
+T["regression: an outgoing sidebyside view's close() must not steal this view's window when both show the same binary placeholder"] = function()
+  child.lua([[
+    local sidebyside = require("difit.ui.sidebyside")
+    _G.__old_view = sidebyside.new(_G.ctx)
+
+    local entry = {
+      path = "bin.dat",
+      old_path = nil,
+      status = "M",
+      untracked = false,
+      binary = true,
+      additions = 0,
+      deletions = 0,
+      base_sha = "aaaaaaa",
+      head_sha = "bbbbbbb",
+    }
+    _G.__entry = entry
+
+    -- Mirrors Session:set_mode's order: the outgoing view opens first...
+    _G.__old_view:open(entry, spec)
+  ]])
+
+  -- ...then the incoming view (this test's shared `view`) opens the SAME entry BEFORE
+  -- the outgoing one closes.
+  child.lua([[ view:open(_G.__entry, spec) ]])
+  local view_win_before_close = child.lua_get("view.win")
+
+  child.lua([[ _G.__old_view:close() ]])
+
+  eq(
+    child.lua_get("vim.api.nvim_get_current_win()"),
+    view_win_before_close,
+    "focus must stay on this view's window, not fall back to ctx.anchor"
+  )
+  eq(child.lua_get("vim.api.nvim_win_is_valid(...)", { view_win_before_close }), true)
+  eq(
+    child.lua_get("view.win"),
+    view_win_before_close,
+    "this view's own window bookkeeping is untouched"
   )
 end
 

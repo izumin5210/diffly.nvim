@@ -210,6 +210,20 @@ local function select_log(child)
   return child.lua_get("_G.__select_log")
 end
 
+--- Write raw bytes bypassing `Repo:write` (which round-trips through `writefile()` and
+--- can't carry an embedded NUL byte) -- mirrors tests/test_git.lua's/tests/test_sidebyside.lua's
+--- helper of the same purpose.
+---@param repo difit.test.Repo
+---@param path string
+---@param bytes string
+local function write_bytes(repo, path, bytes)
+  local full = repo.dir .. "/" .. path
+  vim.fn.mkdir(vim.fn.fnamemodify(full, ":h"), "p")
+  local fd = assert(io.open(full, "wb"))
+  fd:write(bytes)
+  fd:close()
+end
+
 --- Additions count (`+N`) of the first panel row whose text contains `filename_substr`,
 -- used instead of hardcoding absolute git-diff stats (robust to exactly how git's diff
 -- algorithm represents a given edit).
@@ -870,6 +884,63 @@ T["round-trip regression: side-by-side <-> unified is reachable from every entry
   assert_sidebyside_layout(child, paths.modified)
 end
 
+-- Regression (bug report, reproduced with a binary file, e.g. this repo's own
+-- assets/demo.gif): switching modes while a binary entry is open left focus on the
+-- PANEL instead of the new view. Root cause: `ui/sidebyside.lua`'s and `ui/unified.lua`'s
+-- binary placeholder buffers are named identically for the same file (`ui/scratch.lua`'s
+-- naming has no per-view component -- see both views' own `close()` comments), so
+-- `Session:set_mode` opening the incoming view before closing the outgoing one
+-- (docs/architecture.md "View contract") meant the outgoing view's `close()` was
+-- force-deleting a buffer the incoming view's window was ALREADY showing --
+-- `nvim_buf_delete` closes every window still displaying the buffer it deletes, so this
+-- silently destroyed the incoming view's own window and dropped focus back to whatever
+-- was left (the panel), even though both views' `open()` already ends by focusing
+-- itself.
+T["regression: switching modes on a binary entry keeps focus on the new view, not the panel"] = function()
+  write_bytes(repo, "bin.dat", "\0\1\2binary")
+  repo:commit("feat: add a binary file")
+  child.cmd("Difit")
+
+  local function bin_row(child)
+    local lines = panel_lines(child)
+    for i, l in ipairs(lines) do
+      if l:find("bin.dat", 1, true) then
+        return i
+      end
+    end
+    error("bin.dat row not found")
+  end
+
+  set_cursor(child, bin_row(child))
+  child.type_keys("<CR>")
+  eq(session_field(child, "current_path"), "bin.dat")
+  eq(panel_is_current_win(child), false, "sanity: focus already left the panel")
+
+  local function view_win(child)
+    return child.lua_get([[
+      (function()
+        local view = __difit_entry().session._view
+        return view.win or view.right_win
+      end)()
+    ]])
+  end
+
+  -- sidebyside -> unified: the outgoing sidebyside view's close() must not blow away the
+  -- shared binary buffer the fresh unified window is now showing.
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+  eq(panel_is_current_win(child), false, "focus must land on the unified view, not the panel")
+  eq(child.lua_get("vim.api.nvim_get_current_win()"), view_win(child))
+
+  -- unified -> sidebyside: the reverse direction shares the same buffer-name collision.
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "sidebyside")
+  eq(panel_is_current_win(child), false, "focus must land back on sidebyside, not the panel")
+  eq(child.lua_get("vim.api.nvim_get_current_win()"), view_win(child))
+end
+
 -- Regression (bug report): switching side-by-side <-> unified changed the panel's own
 -- width. Both views split rightward FROM the panel window (ctx.anchor -- see
 -- ui/sidebyside.lua's `ensure_windows`/ui/unified.lua's `ensure_window`), so every mode
@@ -1355,6 +1426,88 @@ end
 T["`:Difit sweep <Tab>` completion offers no candidates outside a viewer tabpage"] = function()
   local candidates = child.lua_get([[vim.fn.getcompletion("Difit sweep ", "cmdline")]])
   eq(candidates, {})
+end
+
+---------------------------------------------------------------------------------------
+-- Large-file guard (config.max_file_size, ui/size_guard.lua): a purpose-built repo with
+-- one file whose content exceeds a (test-configured, deliberately small so the case runs
+-- fast) `max_file_size` -- mirrors `lock_pattern_repo()`'s own "own repo via `tcd`" style
+-- rather than the shared fixture, since none of its files are anywhere near oversized.
+---------------------------------------------------------------------------------------
+
+--- main with one commit, `feature` touching a text file whose content comfortably
+--- exceeds the tiny `max_file_size` this scenario configures below -- entries sort by
+--- path: only "big.txt" changes, row 3 (no directory to compress/expand).
+---@return difit.test.Repo
+local function large_file_repo()
+  local r = helpers.new_repo()
+  local base_lines = {}
+  for i = 1, 50 do
+    base_lines[i] = string.rep("x", 40) .. tostring(i)
+  end
+  r:write("big.txt", base_lines)
+  r:commit("chore: base")
+  r:branch("feature")
+  local feature_lines = vim.deepcopy(base_lines)
+  table.insert(feature_lines, "-- one more line on feature")
+  r:write("big.txt", feature_lines)
+  r:commit("feat: touch the large file")
+  return r
+end
+
+T["large-file guard: an oversized file shows a placeholder in both modes; L loads it; viewed-marking works without loading"] = function()
+  local big_repo = large_file_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(big_repo.dir))
+  child.lua([[require("difit.config").setup({ max_file_size = 1024 })]])
+
+  child.cmd("Difit")
+  eq(session_field(child, "current_path"), "big.txt")
+
+  -- sidebyside (the default mode): both windows share the placeholder, no real content.
+  local left_lines = child.lua_get([[
+    vim.api.nvim_buf_get_lines(
+      vim.api.nvim_win_get_buf(__difit_entry().session._view.left_win), 0, -1, false
+    )
+  ]])
+  eq(#left_lines, 1)
+  eq(left_lines[1]:find("file too large", 1, true) ~= nil, true)
+
+  -- Marking viewed must NOT require loading the file first (viewed state is entirely
+  -- independent of what the view currently renders -- session.lua/state.lua never read
+  -- buffer content).
+  eq(is_viewed(child, "big.txt"), false)
+  focus_panel(child)
+  set_cursor(child, 3) -- big.txt (a single root-level file, no directory row above it)
+  child.type_keys("v")
+  eq(is_viewed(child, "big.txt"), true)
+
+  -- Switching to unified builds a FRESH view instance -- `force_loaded` resets, so it's
+  -- still a placeholder there too, not yet loaded.
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+  local unified_lines = child.lua_get([[
+    vim.api.nvim_buf_get_lines(
+      vim.api.nvim_win_get_buf(__difit_entry().session._view.win), 0, -1, false
+    )
+  ]])
+  eq(#unified_lines, 1)
+  eq(unified_lines[1]:find("file too large", 1, true) ~= nil, true)
+
+  -- L force-loads the real file (and its overlay) in unified mode.
+  child.type_keys("L")
+  local state = child.lua([[
+    local view = __difit_entry().session._view
+    local buf = vim.api.nvim_win_get_buf(view.win)
+    return {
+      bufname = vim.api.nvim_buf_get_name(buf),
+      overlay_marks = #vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {}),
+    }
+  ]])
+  eq(vim.endswith(state.bufname, "/big.txt"), true, "the real worktree file is now shown")
+  eq(state.overlay_marks > 0, true, "the +/- overlay is drawn once the real file loads")
+
+  big_repo:destroy()
 end
 
 ---------------------------------------------------------------------------------------

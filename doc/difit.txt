@@ -7,9 +7,10 @@ CONTENTS                                                      *difit-contents*
   2. Commands ............................... |difit-commands|
   3. Configuration ........................... |difit-config|
   4. Keymaps ................................. |difit-keymaps|
-  5. Viewed-state semantics .................. |difit-viewed-state|
-  6. Bulk viewed marking ..................... |difit-bulk-viewed|
-  7. GitHub integration ...................... |difit-github|
+  5. Large files .............................. |difit-large-files|
+  6. Viewed-state semantics .................. |difit-viewed-state|
+  7. Bulk viewed marking ..................... |difit-bulk-viewed|
+  8. GitHub integration ...................... |difit-github|
 
 ==============================================================================
 1. Introduction                                           *difit-introduction*
@@ -99,6 +100,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
     base = nil,             -- string|nil: base branch override
     right = "worktree",     -- "worktree"|"head"
     include_untracked = true,
+    max_file_size = 1024 * 1024, -- bytes; false disables the guard (see below)
     auto_advance = true,    -- jump to next un-viewed file after marking
     icons = true,           -- use mini.icons / nvim-web-devicons when present
     viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (S/sweep)
@@ -139,6 +141,8 @@ Notes:
   (default) shows uncommitted edits immediately and lets you edit + `:w`
   straight from the diff; `"head"` compares against the last commit instead.
 - `include_untracked`: whether untracked files show up as added ("A") files.
+- `max_file_size`: guards against loading a huge text file's full content into
+  a diff view; see |difit-large-files|.
 - `icons`: silently does nothing when neither `mini.icons` nor
   `nvim-web-devicons` is installed.
 - `viewed_patterns`: glob pattern GROUPS for `S`/`:Difit sweep`'s bulk-toggle;
@@ -241,7 +245,32 @@ None has a default binding; map them yourself if wanted: >lua
 <
 
 ==============================================================================
-5. Viewed-state semantics                                 *difit-viewed-state*
+5. Large files                                             *difit-large-files*
+
+Images and other binary files never load their content -- both diff modes
+always render a placeholder for them, regardless of size. `max_file_size`
+(|difit-config|, 1 MiB by default) extends the same idea to huge TEXT files:
+opening one shows a placeholder instead of loading it into a buffer, styled
+like the binary one -- >
+  file too large (2.3 MiB > 1.0 MiB) -- press L to load
+<
+with a buffer-local `L` key to load it anyway, for the rest of that view
+(side-by-side and unified each track this separately; switching modes or
+`:Difit close` resets it -- it is never persisted).
+
+Only actually loading a file's content into a diff view is guarded:
+- Panel counts (status letter, `+`/`-`) come from `git diff --numstat`, which
+  stays cheap regardless of file size, so panel rows are entirely unaffected.
+- Marking a file viewed (`v`/`<leader>v`/`V`/`S`) never requires loading it
+  first -- viewed state is tracked independently of what the view currently
+  renders.
+- Binary detection always takes precedence: a binary entry never shows size
+  text or an `L` key, since there is nothing further to load.
+
+Set `max_file_size = false` to disable the guard entirely.
+
+==============================================================================
+6. Viewed-state semantics                                 *difit-viewed-state*
 
 Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
 and is shared between the panel, the diff buffers, and real file buffers: `v`
@@ -275,7 +304,7 @@ clean` / `:Difit clean all` to remove it; there is no automatic
 garbage-collection.
 
 ==============================================================================
-6. Bulk viewed marking                                     *difit-bulk-viewed*
+7. Bulk viewed marking                                     *difit-bulk-viewed*
 
 Marking files "viewed" stays manual-trigger-only (see |difit-viewed-state|
 above) -- nothing is ever marked as a side effect of scrolling, opening, or
@@ -372,7 +401,7 @@ resolved from the start of file order, since a batch has no single "current"
 file to resume from); a batch that UNMARKED files never advances.
 
 ==============================================================================
-7. GitHub integration                                           *difit-github*
+8. GitHub integration                                           *difit-github*
 
 The `gh` CLI is entirely optional. When it is missing, not authenticated, or
 the current branch has no associated pull request, difit.nvim silently falls
