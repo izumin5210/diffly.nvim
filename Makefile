@@ -18,3 +18,8 @@ lint:
 
 fmt:
 	stylua lua tests
+
+# Regenerate the README demo GIF + screenshot. Needs vhs and ttyd (aqua.yaml) plus
+# ffmpeg on PATH; records a throwaway repo built by scripts/demo_repo.sh.
+demo:
+	vhs scripts/demo.tape
