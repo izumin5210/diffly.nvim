@@ -16,6 +16,11 @@ local LINKS = {
   DifitStatusDeleted = "Removed",
   DifitStatusRenamed = "Special",
   DifitViewed = "Comment",
+  -- The row for whichever file is currently shown in the diff view (`session.current_path`,
+  -- see ui/panel.lua's `Panel:render`). `QuickFixLine` is the closest builtin semantic
+  -- match ("the current entry") and is bg-colored in most colorschemes, so it reads as a
+  -- row highlight rather than text-only styling.
+  DifitCurrentFile = "QuickFixLine",
   DifitCounts = "Comment",
   DifitCheckbox = "Special",
   -- Inline-overlay unified view (see docs/architecture.md's "Rendering" section): "+"

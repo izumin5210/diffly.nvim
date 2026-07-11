@@ -190,6 +190,10 @@ Universal (all difit windows) ~
   for.
 
 File panel ~
+The row for whichever file is currently open in the diff view is highlighted with the
+`DifitCurrentFile` highlight group (linked to `QuickFixLine` by default; override it like
+any other difit highlight group, e.g. `:hi link DifitCurrentFile Visual`).
+
   <CR>    Open the file under the cursor (or toggle a directory's fold).
   v       Toggle the file under the cursor as viewed/un-viewed. When
           `auto_advance` is enabled (the default), the cursor and diff jump

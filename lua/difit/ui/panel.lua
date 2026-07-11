@@ -44,6 +44,14 @@ local MINUS = "−"
 local ELLIPSIS = "…"
 local ARROW = "→"
 
+-- Extmark priority for the current-file row background (`DifitCurrentFile`, see
+-- `Panel:render`'s row loop below): deliberately BELOW Neovim's default extmark priority
+-- (4096, unspecified on every other highlight this module sets), so it composes as a
+-- background layer UNDER the segment/viewed foreground groups -- those still show their
+-- own colors on top of it, exactly like the checkbox/status/counts highlights already do
+-- over a viewed row's `DifitViewed` styling.
+local CURRENT_FILE_PRIORITY = 100
+
 local STATUS_HL = {
   A = "DifitStatusAdded",
   M = "DifitStatusModified",
@@ -284,6 +292,15 @@ function Panel:render()
       extmarks[#extmarks + 1] =
         { line = lnum - 1, col_start = hl.col_start, col_end = hl.col_end, hl_group = hl.hl_group }
     end
+
+    -- The row for whichever file the diff view currently shows: a whole-row background so
+    -- it stays visible regardless of viewed/status styling on top of it. Only file rows
+    -- carry `entry.path`, so dir rows are excluded by construction (never by a special
+    -- case); a file filtered out by `hide_viewed` never reaches this loop at all (see
+    -- `visible_entries`), so it naturally never gets marked either.
+    if row.node.type == "file" and row.node.entry.path == session.current_path then
+      extmarks[#extmarks + 1] = { line = lnum - 1, whole_row = true, hl_group = "DifitCurrentFile" }
+    end
   end
 
   self.row_nodes = row_nodes
@@ -292,10 +309,26 @@ function Panel:render()
   vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
   vim.api.nvim_buf_clear_namespace(self.buf, ns, 0, -1)
   for _, hl in ipairs(extmarks) do
-    vim.api.nvim_buf_set_extmark(self.buf, ns, hl.line, hl.col_start, {
-      end_col = hl.col_end,
-      hl_group = hl.hl_group,
-    })
+    if hl.whole_row then
+      -- `end_row = line + 1` (spanning onto the very start of the next line), not just a
+      -- wide `end_col`, is what makes `hl_eol` actually extend the highlight past the
+      -- text to fill the rest of the screen line -- Neovim only honors `hl_eol` for a
+      -- range that reaches the next line's start (same idiom mini.pick's
+      -- `MiniPickMatchCurrent`/`MiniPickPreviewLine` use for "highlight the whole current
+      -- row").
+      vim.api.nvim_buf_set_extmark(self.buf, ns, hl.line, 0, {
+        end_row = hl.line + 1,
+        end_col = 0,
+        hl_group = hl.hl_group,
+        hl_eol = true,
+        priority = CURRENT_FILE_PRIORITY,
+      })
+    else
+      vim.api.nvim_buf_set_extmark(self.buf, ns, hl.line, hl.col_start, {
+        end_col = hl.col_end,
+        hl_group = hl.hl_group,
+      })
+    end
   end
   vim.bo[self.buf].modifiable = false
 

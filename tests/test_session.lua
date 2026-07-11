@@ -695,6 +695,9 @@ T["set_mode(): opens the new view via view_factory and reopens current_path BEFO
   eq(view_log(child), { { event = "open", mode = "sidebyside", path = "src/one.lua" } })
   eq(session_field(child, "current_path"), "src/one.lua")
 
+  -- The counter is installed AFTER open_file() above, so its own notify (current_path
+  -- changed nil -> "src/one.lua"; see the dedicated open_file() notify test) already fired
+  -- and isn't part of this count -- set_mode() is the only source counted below.
   install_notify_counter(child)
   set_mode(child, "unified")
 
@@ -728,6 +731,39 @@ T["set_mode(): with no current_path, only closes+recreates the view (no reopen)"
 
   eq(view_log(child), { { event = "close", mode = "sidebyside" } })
   eq(session_field(child, "current_path"), nil)
+
+  child.stop()
+  repo:destroy()
+end
+
+-- 6b. open_file() notify-on-change (the panel's current-file row highlight relies on this:
+-- ui/panel.lua's Panel:render highlights whichever row matches session.current_path, and
+-- only re-renders on a subscriber notification) ------------------------------------------
+
+T["open_file(): notifies subscribers when current_path changes, not when reopening the same path"] = function()
+  local repo = helpers.new_repo()
+  repo:write("a.txt", "1\n")
+  repo:commit("chore: base")
+  repo:branch("feature")
+  repo:write("src/one.lua", "one\n")
+  repo:write("src/two.lua", "two\n")
+  repo:commit("feat: add one and two")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_notify_counter(child)
+
+  open_file(child, "src/one.lua")
+  eq(notify_count(child), 1, "current_path changed from nil to src/one.lua")
+
+  open_file(child, "src/one.lua")
+  eq(notify_count(child), 1, "reopening the SAME path must not notify again")
+
+  open_file(child, "src/two.lua")
+  eq(notify_count(child), 2, "switching to a different file notifies once more")
 
   child.stop()
   repo:destroy()

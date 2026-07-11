@@ -275,15 +275,25 @@ function Session:subscribe(fn)
 end
 
 --- Open `path` in the current view. A no-op when `path` isn't among `self.entries`
---- (e.g. a stale panel row after a refresh dropped the file).
+--- (e.g. a stale panel row after a refresh dropped the file). Notifies subscribers only
+--- when `current_path` actually CHANGES -- the panel's current-file row highlight
+--- (ui/panel.lua's `Panel:render`, keyed off `session.current_path`) would otherwise keep
+--- pointing at the previously open file after `]f`/`[f`/`<CR>`/auto-advance, since none of
+--- those go through `toggle_viewed`/`refresh`/`set_mode` (the only other notifying calls).
+--- Reopening the SAME path (e.g. a stale `<CR>` on the row already open) must not notify
+--- again -- that would re-render the panel for no visible change.
 ---@param path string
 function Session:open_file(path)
   local entry = self._entries_by_path[path]
   if not entry then
     return
   end
+  local changed = self.current_path ~= path
   self.current_path = path
   self._view:open(entry, self.spec)
+  if changed then
+    self:_notify()
+  end
 end
 
 --- Toggle `path`'s viewed mark, persist it, and notify subscribers.

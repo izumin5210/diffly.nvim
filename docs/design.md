@@ -76,7 +76,9 @@ flat list toggle in the panel, fs-watch based refresh.
   Closing restores the previous layout.
 - **Tree**: directory hierarchy with folds and single-child directory compression
   (GitHub-style `a/b/c` collapsing). Status letter (A/M/D/R), +/- counts, viewed mark per
-  row. Icons via mini.icons / nvim-web-devicons when installed.
+  row. Icons via mini.icons / nvim-web-devicons when installed. The row for whichever file
+  is currently open in the diff view is highlighted (`DifitCurrentFile`) so its position in
+  the tree is always visible.
 - **Side-by-side**: native diff mode. Left = read-only git blob buffer (`difit://`
   namespace), right = the real file buffer (edits and `:w` work as usual). Deleted files
   show an empty right side; untracked files an empty left side.

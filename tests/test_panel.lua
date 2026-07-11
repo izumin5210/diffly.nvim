@@ -301,6 +301,47 @@ local function notifications()
   return child.lua_get("_G.__notifications")
 end
 
+--- 1-indexed row numbers carrying a `DifitCurrentFile` extmark in the panel buffer --
+--- queried across every namespace (rather than reaching into panel.lua's private `ns`
+--- local) so this stays a black-box assertion against the documented rendering behavior.
+---@return integer[]
+local function current_file_rows()
+  return child.lua_get([[
+    (function()
+      local marks = vim.api.nvim_buf_get_extmarks(_G.panel.buf, -1, 0, -1, { details = true })
+      local rows = {}
+      for _, m in ipairs(marks) do
+        if m[4].hl_group == "DifitCurrentFile" then
+          table.insert(rows, m[2] + 1)
+        end
+      end
+      return rows
+    end)()
+  ]])
+end
+
+--- Every `hl_group` of an extmark STARTING on 1-indexed row `lnum` -- used to check that
+--- more than one highlight (e.g. `DifitViewed` and `DifitCurrentFile`) coexist on the same
+--- row without one clobbering the other.
+---@param lnum integer
+---@return string[]
+local function hl_groups_on_row(lnum)
+  return child.lua(
+    [[
+      local lnum = ...
+      local marks = vim.api.nvim_buf_get_extmarks(_G.panel.buf, -1, 0, -1, { details = true })
+      local groups = {}
+      for _, m in ipairs(marks) do
+        if m[2] == lnum - 1 then
+          table.insert(groups, m[4].hl_group)
+        end
+      end
+      return groups
+    ]],
+    { lnum }
+  )
+end
+
 local T = MiniTest.new_set({
   hooks = {
     pre_case = function()
@@ -803,6 +844,59 @@ T["focus() moves the current window back to the panel"] = function()
   eq(child.lua_get("vim.api.nvim_get_current_win() == _G.panel.win"), true)
 end
 
+---------------------------------------------------------------------------------------
+-- DifitCurrentFile: the row for `session.current_path` (the file the diff view currently
+-- shows) gets a whole-row background highlight, so the panel always shows where the
+-- review currently is. Set directly on the fake session and `render()`ed explicitly
+-- (rather than routed through `session:open_file`, whose subscriber-notify semantics
+-- belong to tests/test_session.lua, and the `]f`-follows-the-highlight regression to
+-- tests/test_e2e.lua) -- these cases are purely about `Panel:render()`'s own logic given a
+-- `current_path`.
+---------------------------------------------------------------------------------------
+
+T["render() adds no DifitCurrentFile extmark when current_path is nil"] = function()
+  eq(
+    child.lua_get("_G.session.current_path == nil"),
+    true,
+    "sanity: the fixture starts with no current file"
+  )
+  eq(current_file_rows(), {})
+end
+
+T["render() highlights only the row matching session.current_path"] = function()
+  child.lua([[_G.session.current_path = "lua/difit/new.lua"; _G.panel:render()]])
+  eq(current_file_rows(), { 7 }) -- row for lua/difit/new.lua, per this file's fixed fixture layout
+end
+
+T["a viewed AND current file's row carries both DifitViewed and DifitCurrentFile"] = function()
+  child.lua([[_G.session.current_path = "lua/difit/state.lua"; _G.panel:render()]])
+  eq(current_file_rows(), { 9 }, "state.lua's row -- pre-viewed per FAKE_SESSION_SETUP")
+
+  local groups = hl_groups_on_row(9)
+  eq(vim.tbl_contains(groups, "DifitViewed"), true, "the viewed row-wide style is still applied")
+  eq(
+    vim.tbl_contains(groups, "DifitCurrentFile"),
+    true,
+    "the current-file background is layered under it"
+  )
+end
+
+T["dir rows never get DifitCurrentFile, even if current_path happens to equal a dir's path"] = function()
+  child.lua([[_G.session.current_path = "lua/difit"; _G.panel:render()]]) -- "lua/difit" is a DIR node's path, not any file's entry.path
+  eq(current_file_rows(), {})
+end
+
+T["hide_viewed filtering the current file away leaves no DifitCurrentFile extmark and does not error"] = function()
+  child.lua([[_G.session.current_path = "lua/difit/state.lua"]]) -- pre-viewed; H below hides its row
+  eq(pcall(child.type_keys, "H"), true)
+
+  eq(current_file_rows(), {})
+  local got = lines()
+  for _, l in ipairs(got) do
+    eq(l:find("state.lua", 1, true), nil, "sanity: the current file's row really is hidden")
+  end
+end
+
 T["hl.setup() links the documented groups with default = true"] = function()
   local hl = require("difit.ui.hl")
   hl.setup()
@@ -815,6 +909,7 @@ T["hl.setup() links the documented groups with default = true"] = function()
     DifitStatusDeleted = "Removed",
     DifitStatusRenamed = "Special",
     DifitViewed = "Comment",
+    DifitCurrentFile = "QuickFixLine",
     DifitCounts = "Comment",
     DifitCheckbox = "Special",
   }
