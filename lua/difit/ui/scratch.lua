@@ -1,6 +1,6 @@
--- Shared `difit://` scratch-buffer helper (docs/refactor-v1.md R4). Replaces the
--- find-or-create/configure logic that used to be triplicated across ui/panel.lua,
--- ui/sidebyside.lua (`owned_buffer`) and ui/unified.lua (`get_or_create_buf`).
+-- Shared `difit://` scratch-buffer helper. Replaces the find-or-create/configure logic
+-- that used to be triplicated across ui/panel.lua, ui/sidebyside.lua (`owned_buffer`) and
+-- ui/unified.lua (`get_or_create_buf`). See docs/architecture.md's "Rendering" section.
 --
 -- Two responsibilities live here:
 --

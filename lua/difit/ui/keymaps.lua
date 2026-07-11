@@ -2,7 +2,7 @@
 -- `ui/unified.lua` need to apply the same shaped config (`keymaps.diff`/`keymaps.universal`)
 -- to a buffer and later peel it off again (a real worktree buffer moves between files
 -- across the same view instance's lifetime, in both views now that `ui/unified.lua` also
--- shows the real file in worktree mode -- docs/refactor-v1.md's inline-overlay note) --
+-- shows the real file in worktree mode -- the inline-overlay model (docs/architecture.md "Rendering")) --
 -- this module is the one place that logic lives, instead of each view re-deriving it.
 
 local config = require("difit.config")
@@ -13,7 +13,7 @@ local M = {}
 ---@field key string|false|nil  -- falsy disables the mapping (config.lua convention)
 ---@field callback fun()
 
---- docs/refactor-v1.md R3: the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
+--- docs/architecture.md "View contract": the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
 --- call into for `config.keymaps.diff`/`keymaps.universal`, replacing the old module-level
 --- `_on_toggle_viewed`/`_on_toggle_mode`/`_on_focus_panel`/`_on_close` slots. Built once per
 --- session entry in `init.lua` (see `build_actions` there): every field resolves the LIVE
@@ -28,7 +28,7 @@ local M = {}
 ---@field next_file fun(path: string)
 ---@field prev_file fun(path: string)
 
---- docs/refactor-v1.md R2: the explicit window-ownership contract both diff views' `M.new`
+--- docs/architecture.md "View contract": the explicit window-ownership contract both diff views' `M.new`
 --- takes in place of ever reading "the current window". `anchor` is the window to split
 --- rightward from (`init.lua` passes the panel window); `claim` is an optional window a
 --- view may absorb as one of its own instead of splitting a fresh one (`init.lua` passes
@@ -182,7 +182,7 @@ end
 
 --- Delete `keys` from `bufnr`, but ONLY if `bufnr`'s current ownership stamp still equals
 --- `token` -- guards against a cross-view race: `session.lua`'s mode switch builds the new
---- view and opens it BEFORE closing the old one (docs/refactor-v1.md R2, so the diff area
+--- view and opens it BEFORE closing the old one (docs/architecture.md "View contract", so the diff area
 --- never flashes empty), so when both sidebyside and unified can show the SAME real
 --- worktree buffer, the NEW view's `attach_universal` can run and re-stamp `bufnr` BEFORE
 --- the OLD view's `close()`/file-switch cleanup gets around to detaching it. Without this

@@ -294,8 +294,8 @@ make fmt    # stylua (auto-format)
 ```
 
 Tests never mock git: `tests/helpers.lua` creates real repositories in temporary
-directories, and only the `gh` layer is faked (a PATH shim). See `docs/design.md` and
-`docs/plan.md` for the full design rationale and implementation plan.
+directories, and only the `gh` layer is faked (a PATH shim). See `docs/design.md` for the
+design rationale and `docs/architecture.md` for how the plugin is structured.
 
 ## Credits
 

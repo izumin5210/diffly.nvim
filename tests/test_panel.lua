@@ -1,6 +1,6 @@
 -- Tests for lua/difit/ui/panel.lua + lua/difit/ui/hl.lua (WP-H). Panel rendering and
 -- keymaps run in a child Neovim (real buffers/windows/keymaps are needed); panel.lua is
--- driven only through the documented `difit.Session` interface (see docs/plan.md, WP-E),
+-- driven only through the documented `difit.Session` interface (see docs/architecture.md),
 -- so a scripted fake session -- never `lua/difit/session.lua` -- stands in here and
 -- records every call into `_G.calls` for the assertions below.
 

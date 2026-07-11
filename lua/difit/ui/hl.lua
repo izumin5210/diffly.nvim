@@ -18,8 +18,9 @@ local LINKS = {
   DifitViewed = "Comment",
   DifitCounts = "Comment",
   DifitCheckbox = "Special",
-  -- Inline-overlay unified view (docs/refactor-v1.md v2): "+" lines get a line-level
-  -- extmark in this group; deleted runs render as `virt_lines` chunks in the other.
+  -- Inline-overlay unified view (see docs/architecture.md's "Rendering" section): "+"
+  -- lines get a line-level extmark in this group; deleted runs render as `virt_lines`
+  -- chunks in the other.
   DifitOverlayAdd = "DiffAdd",
   DifitOverlayDelete = "DiffDelete",
 }

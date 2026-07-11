@@ -705,7 +705,7 @@ T["set_mode(): opens the new view via view_factory and reopens current_path BEFO
     { event = "open", mode = "sidebyside", path = "src/one.lua" },
     { event = "open", mode = "unified", path = "src/one.lua" },
     { event = "close", mode = "sidebyside" },
-  }, "docs/refactor-v1.md R2: the new view opens current_path before the old view closes")
+  }, "view-ownership contract: the new view opens current_path before the old view closes")
 
   child.stop()
   repo:destroy()

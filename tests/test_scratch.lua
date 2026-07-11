@@ -1,4 +1,4 @@
--- Tests for lua/difit/ui/scratch.lua (docs/refactor-v1.md R4): the shared find-or-create
+-- Tests for lua/difit/ui/scratch.lua: the shared find-or-create
 -- helper for `difit://` scratch buffers that replaces the logic previously triplicated
 -- across ui/panel.lua, ui/sidebyside.lua, and ui/unified.lua. No child Neovim is needed
 -- here: MiniTest itself already runs inside a real Neovim process capable of creating

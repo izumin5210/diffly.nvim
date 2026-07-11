@@ -2,7 +2,7 @@
 -- tree with per-file viewed marks, status letters, and +/- counts, and wires the
 -- buffer-local panel keymaps to the session.
 --
--- `session` is used ONLY through the documented interface from docs/plan.md (WP-E):
+-- `session` is used ONLY through the documented interface from docs/architecture.md:
 -- fields `spec`/`entries`/`state`/`mode`/`current_path`, methods `subscribe`/
 -- `open_file`/`toggle_viewed`/`is_viewed`/`next_unviewed`/`progress`/`set_mode`/
 -- `refresh`/`close`/`toggle_viewed_batch`. `lua/difit/session.lua` is intentionally never
@@ -39,7 +39,7 @@ local GLYPH = {
   checked = "✓",
 }
 -- U+2212 MINUS SIGN and U+2026 HORIZONTAL ELLIPSIS, matching the rendering sketch in
--- docs/plan.md verbatim (not ASCII "-"/"...").
+-- the original design sketch verbatim (not ASCII "-"/"...").
 local MINUS = "−"
 local ELLIPSIS = "…"
 local ARROW = "→"
@@ -683,7 +683,7 @@ function M.open(session, opts)
   local cfg = config.get()
 
   local buf = vim.api.nvim_create_buf(false, true)
-  -- Named after the buffer's own (unique) number: since docs/refactor-v1.md R1, more
+  -- Named after the buffer's own (unique) number: since docs/architecture.md "Session lifecycle", more
   -- than one review -- hence more than one panel -- can be open at once, and a bare
   -- "difit://panel" would collide (E95) on the second `panel.open()` call. R4 unifies
   -- this into the same `difit://<kind>/<session_id>` scheme every other owned buffer
@@ -691,7 +691,7 @@ function M.open(session, opts)
   -- discriminator, since it's already known and already unique.
   vim.api.nvim_buf_set_name(buf, scratch.name("panel", buf))
   -- No `filetype`/highlighting: the panel draws its own extmarks and, per
-  -- docs/refactor-v1.md R4, `difit://` buffers must never fire `FileType` autocmds.
+  -- docs/architecture.md "Rendering", `difit://` buffers must never fire `FileType` autocmds.
   scratch.configure(buf, { modifiable = false })
 
   -- `win = -1` makes this a top-level split (like `:topleft vsplit`): full tabpage
@@ -714,14 +714,13 @@ function M.open(session, opts)
   -- same two options for the identical reason.
   vim.wo[win].winfixwidth = true
   vim.wo[win].winfixheight = true
-  -- Sentinel for init.lua's `WinClosed` teardown funnel (docs/refactor-v1.md R1): the
+  -- Sentinel for init.lua's `WinClosed` teardown funnel (docs/architecture.md "Session lifecycle"): the
   -- panel window is the sole navigational anchor of a review, so its own closure is what
   -- that autocmd watches for. Harmless when this module is driven standalone (see
   -- tests/test_panel.lua) -- nothing reads `vim.w[win].difit` outside init.lua.
   vim.w[win].difit = true
   -- Defense in depth (Neovim 0.12+): both diff views already build their own windows via
-  -- explicit `ctx.anchor`/`ctx.claim` handles and never touch "the current window" (docs/
-  -- refactor-v1.md R2), so nothing should ever `:edit`/`:buffer` a real file straight into
+  -- explicit `ctx.anchor`/`ctx.claim` handles and never touch "the current window" (docs/architecture.md "View contract"), so nothing should ever `:edit`/`:buffer` a real file straight into
   -- this one -- but 'winfixbuf' makes Neovim itself refuse that outright, so a future code
   -- path that gets this wrong still can't silently destroy the tree.
   vim.wo[win].winfixbuf = true

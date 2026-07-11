@@ -4,9 +4,9 @@
 -- is never mocked (see tests/helpers.lua); only `gh` is faked, via the same PATH-shim
 -- pattern tests/test_github.lua uses. Screenshot goldens live in tests/screenshots/.
 --
--- Covers the 10 scenarios from docs/plan.md's WP-I section, in order, plus one bonus case
+-- Covers the 10 scenarios from the original v1 plan, in order, plus one bonus case
 -- for `<Plug>(difit-toggle-viewed)` (part of the WP-I contract but not one of the 10), plus
--- (further down) the R1 session-registry cases from docs/refactor-v1.md.
+-- (further down) the session-registry cases.
 
 local helpers = dofile("tests/helpers.lua")
 
@@ -23,7 +23,7 @@ local eq = MiniTest.expect.equality
 ---@param child table
 local function source_plugin(child)
   child.cmd("runtime! plugin/difit.lua")
-  -- R1 (docs/refactor-v1.md) replaced `require("difit")._session`/`._panel` with a
+  -- The session-registry refactor replaced `require("difit")._session`/`._panel` with a
   -- registry keyed by tabpage handle (`require("difit")._entries`); every test helper
   -- below that used to read the old singleton fields now goes through this one place
   -- instead, mirroring how `init.lua`'s own `current_entry()` resolves "the" session.
@@ -288,7 +288,7 @@ end
 --- Assert the viewer tabpage looks like a healthy unified layout: the panel window still
 --- shows a `difit://panel/...` buffer, plus exactly one unified window showing `path` and
 --- nothing else. Unlike the pre-overlay design, the unified window's buffer is the REAL
---- file in worktree mode (docs/refactor-v1.md's now-implemented inline-overlay note) --
+--- file in worktree mode (the inline-overlay model; docs/architecture.md "Rendering") --
 --- not a `difit://unified/...` scratch buffer -- so this asserts `path`'s own name instead,
 --- mirroring `assert_sidebyside_layout`'s right-hand check.
 ---@param child table
@@ -497,7 +497,7 @@ T["7. `s` switches to unified mode, showing the real file inline with its overla
   eq(session_field(child, "mode"), "unified")
 
   -- Unlike every other difit-owned buffer in these screenshots, the unified window now
-  -- shows the REAL worktree file (docs/refactor-v1.md's inline-overlay note) at its actual
+  -- shows the REAL worktree file (the inline-overlay model) at its actual
   -- absolute path -- which embeds `vim.fn.tempname()`'s random component, same as the
   -- tabline problem `set_size` already works around, just via the default ruler/statusline
   -- instead. `%t` (tail-of-filename only) keeps the golden deterministic without losing
@@ -506,10 +506,10 @@ T["7. `s` switches to unified mode, showing the real file inline with its overla
   expect_screenshot(child)
 
   -- `set_mode` always builds a fresh view whose own `close()` destroys the outgoing
-  -- view's windows (docs/refactor-v1.md R2), so the only non-panel window left in the tab
+  -- view's windows (view window ownership; docs/architecture.md), so the only non-panel window left in the tab
   -- is the unified one, and pressing `s` already focused it (unified.lua's `open()`
   -- always takes focus for itself). Unlike the old patch-buffer design, that window now
-  -- shows the real worktree file directly (docs/refactor-v1.md's now-implemented
+  -- shows the real worktree file directly (the now-implemented
   -- inline-overlay note) -- no jump needed -- with the +/- diff painted on top of it via
   -- its own dedicated extmark namespace.
   local state = child.lua([[
@@ -614,7 +614,7 @@ T["bonus: <Plug>(difit-toggle-viewed) toggles viewed for a real file buffer"] = 
   eq(is_viewed(child, paths.modified), true)
 end
 
--- Regression (finding 1, docs/refactor-v1.md R2): difit must never touch a window it
+-- Regression (finding 1, docs/architecture.md "View contract"): difit must never touch a window it
 -- doesn't own. This used to require a `reap_stray_windows` sweep that recognized "my
 -- windows" by name/registry and left everything else alone; now it holds trivially,
 -- since no such sweep exists at all -- views only ever create/close windows they
@@ -653,7 +653,7 @@ T["a user's real-file split survives a refresh and a mode switch; the outgoing v
   )
 
   -- Mode switch: the outgoing sidebyside view's own windows must be closed by its own
-  -- `close()` (docs/refactor-v1.md R2), same end result as the old reaper, but as a
+  -- `close()` (docs/architecture.md "View contract"), same end result as the old reaper, but as a
   -- direct consequence of the view owning its windows rather than a separate sweep.
   focus_panel(child)
   child.type_keys("s")
@@ -671,7 +671,7 @@ end
 
 -- Regression (finding 2, OBSOLETE as of the inline-overlay unified view): this used to
 -- guard `ui/unified.lua`'s own `target_window()` helper, which resolved a window to jump
--- a real file INTO when `<CR>` was pressed on a patch-buffer line. docs/refactor-v1.md's
+-- a real file INTO when `<CR>` was pressed on a patch-buffer line. The
 -- inline-overlay rewrite deleted that whole jump mechanism -- the unified window already
 -- IS the real file in worktree mode, so there is nothing left to jump to, and no
 -- "previous window" ambiguity for it to fall into. See tests/test_unified.lua for the
@@ -1358,7 +1358,7 @@ T["`:Difit sweep <Tab>` completion offers no candidates outside a viewer tabpage
 end
 
 ---------------------------------------------------------------------------------------
--- R1 (docs/refactor-v1.md): the session registry replacing the old M._session/M._panel/
+-- Session registry (docs/architecture.md "Session lifecycle"): the registry replacing the old M._session/M._panel/
 -- M._viewer_tab singletons. Covers the four scenarios called out for this phase: focusing
 -- an existing review instead of duplicating it, `:Difit close` from inside the viewer
 -- (twice), a manual `:tabclose` reconciling the registry, and the `WinClosed` teardown
@@ -1547,7 +1547,7 @@ T["registry: two concurrent sessions with byte-identical blob content never coll
 end
 
 ---------------------------------------------------------------------------------------
--- R2/R3 (docs/refactor-v1.md): each session's `view_factory` closure captures its own
+-- View isolation (docs/architecture.md "View contract"): each session's `view_factory` closure captures its own
 -- `ctx` (anchor/claim/actions -- see `ui/keymaps.lua`'s `difit.ui.ViewCtx`), so nothing
 -- about one review's windows or buffer-local keymap wiring can leak into another's.
 ---------------------------------------------------------------------------------------
@@ -1622,7 +1622,7 @@ T["actions resolve at call time: a stale action captured before close() notifies
   child.cmd("Difit close")
 
   -- Every action captured from the now-closed review must degrade to a no-op notify,
-  -- never raise, when invoked after the fact (docs/refactor-v1.md R3).
+  -- never raise, when invoked after the fact (docs/architecture.md "View contract").
   local ok_toggle_viewed =
     child.lua([[return pcall(_G.__stale_actions.toggle_viewed, ...)]], { paths.modified })
   local ok_toggle_mode = child.lua([[return pcall(_G.__stale_actions.toggle_mode)]])

@@ -221,9 +221,9 @@ end
 
 --- Parse a `@@ -old_start,old_count +new_start,new_count @@ ...` header. Git omits the
 --- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@"). Only `new_start`/
---- `new_count` are kept on `difit.Hunk` (docs/refactor-v1.md R4 dropped `old_start`/
---- `old_count`: the future inline overlay anchors on new-side positions only; deleted
---- text comes from the hunk's own "-" lines, not from these old-side numbers) -- the
+--- `new_count` are kept on `difit.Hunk` (`old_start`/`old_count` were dropped: the
+--- inline overlay anchors on new-side positions only; deleted text comes from the hunk's
+--- own "-" lines, not from these old-side numbers) -- the
 --- old-side numbers are still parsed here, just to recognize a header line at all and to
 --- keep this function's shape matching `git diff`'s own header format one-for-one.
 ---@param line string

@@ -215,8 +215,8 @@ end
 --- test-runner process (fine: it's just a filesystem operation) and then points *the
 --- child's* `PATH` at it -- since the child, not this process, is what actually runs the
 --- code under test (`require("difit.github")`/`require("difit")` inside `child.lua`
---- calls). Promoted from tests/test_github.lua and tests/test_e2e.lua (docs/
---- refactor-v1.md R4), which had it duplicated identically.
+--- calls). Promoted from tests/test_github.lua and tests/test_e2e.lua, which had it
+--- duplicated identically.
 ---@param child table
 ---@param name string
 ---@param body string

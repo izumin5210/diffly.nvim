@@ -1,5 +1,4 @@
--- Tests for lua/difit/ui/unified.lua: the inline-overlay unified diff view (docs/
--- refactor-v1.md's "Notes for the future inline-overlay unified view", now implemented).
+-- Tests for lua/difit/ui/unified.lua: the inline-overlay unified diff view (the inline-overlay design, now implemented (docs/architecture.md "Rendering")).
 -- Runs in a child Neovim (real buffers/windows) against the standard fixture repo plus a
 -- handful of purpose-built ones for overlay-anchoring edge cases; git is never mocked --
 -- entry/spec data comes from real `difit.git` calls, and the anchoring math below was
@@ -94,7 +93,7 @@ local repo, paths, child
 --- `main`...`feature` comparison, and stash them as globals in the child so later
 --- `child.lua(...)` calls (one per assertion) can all see the same view instance.
 --
---- `_G.ctx` (docs/refactor-v1.md R2/R3) is the `difit.ui.ViewCtx` the view is built with:
+--- `_G.ctx` (docs/architecture.md "View contract") is the `difit.ui.ViewCtx` the view is built with:
 --- `anchor` is whatever window is current when this runs (never touched -- this view only
 --- ever splits rightward from it); `actions` records every call into `_G.__actions_log`
 --- instead of driving a real session.
@@ -366,7 +365,7 @@ T["open(): renamed files open the real (new-path) file without error"] = functio
 end
 
 ---------------------------------------------------------------------------------------
--- Window ownership (docs/refactor-v1.md R2): unchanged from the pre-overlay view, since
+-- Window ownership (docs/architecture.md "View contract"): unchanged from the pre-overlay view, since
 -- neither `ensure_window` nor the owned-window contract changed.
 ---------------------------------------------------------------------------------------
 
@@ -539,7 +538,7 @@ T["universal actions (leader-prefixed) fire from the real worktree buffer"] = fu
 end
 
 ---------------------------------------------------------------------------------------
--- Blob-loading / hunks error honesty (docs/refactor-v1.md R4): a REAL git failure (a sha
+-- Blob-loading / hunks error honesty (docs/architecture.md "Rendering"): a REAL git failure (a sha
 -- that doesn't resolve to an object) must notify once instead of silently degrading to
 -- an empty/truncated render indistinguishable from ordinary "nothing to show" cases.
 ---------------------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 -- buffer for the base side; right window shows either the real worktree file (edits + `:w`
 -- work normally) or a read-only HEAD blob, depending on `spec.right`.
 --
--- docs/refactor-v1.md R2/R3 view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
 -- `ui/keymaps.lua`) -- this view never reads "the current window". Both its windows are
 -- always created by splitting rightward from `ctx.anchor` (the panel window), or by
 -- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
@@ -22,7 +22,7 @@ local M = {}
 --- makes a `session:refresh()` that moves the merge-base forward produce fresh buffer
 --- names instead of silently reusing stale content under an old name).
 ---
---- `session_id` (docs/refactor-v1.md R4) is `ctx.anchor`, the panel window this view's
+--- `session_id` (docs/architecture.md "Rendering") is `ctx.anchor`, the panel window this view's
 --- session was built with -- stable and unique for the session's whole lifetime, so two
 --- concurrent reviews whose entries happen to share a blob/merge-base sha never collide
 --- on the same buffer name (see ui/scratch.lua).
@@ -70,7 +70,7 @@ View.__index = View
 
 --- Get-or-create a difit-owned scratch buffer via ui/scratch.lua: `buftype=nofile`,
 --- `bufhidden=hide`, non-modifiable once populated, LSP-safe highlighting (never
---- `'filetype'` -- docs/refactor-v1.md R4). Reuses an existing buffer with the exact
+--- `'filetype'` -- docs/architecture.md "Rendering"). Reuses an existing buffer with the exact
 --- same name instead of recreating/re-populating it (buffer names always embed whatever
 --- makes their content unique, so reuse is always content-safe).
 ---@param name string
@@ -164,7 +164,7 @@ end
 --- Populate the left window with entry.base_sha's blob content, or an empty scratch
 --- buffer when there is no base blob (added/untracked file). `entry.base_sha == nil` is
 --- a legitimate empty buffer (nothing to load); a non-nil sha that `git.file_content`
---- still fails to load is a REAL git failure (docs/refactor-v1.md R4) -- notify once
+--- still fails to load is a REAL git failure (docs/architecture.md "Rendering") -- notify once
 --- rather than silently degrading to the same empty buffer a legitimate absence would
 --- produce, so the UI still renders instead of erroring.
 ---@param entry difit.FileEntry
@@ -317,7 +317,7 @@ function View:open(entry, spec)
 end
 
 --- `diffoff` where applicable, close every owned window, then wipe every difit-owned
---- buffer this view created (docs/refactor-v1.md R2: views own their windows now, not
+--- buffer this view created (docs/architecture.md "View contract": views own their windows now, not
 --- just their buffers -- WP-I no longer reaps them). Real file BUFFERS are still never
 --- wiped: closing the right window when it shows one just closes that window, exactly
 --- like any other window onto it closing would -- the buffer itself survives, hidden.

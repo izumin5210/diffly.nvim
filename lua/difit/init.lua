@@ -4,13 +4,13 @@
 -- entire job is lifecycle (tabpage/window layout, autocmds, command dispatch) around the
 -- documented `difit.Session`/`difit.View`/`difit.Panel` interfaces.
 --
--- R1 (docs/refactor-v1.md): a module-local registry replaces what used to be a single
+-- Session registry (docs/architecture.md "Session lifecycle"): a module-local registry replaces what used to be a single
 -- `M._session`/`M._panel`/`M._viewer_tab` triple, so more than one review can be open at
 -- once (different repos/branches/PRs each get their own dedicated tabpage). Every public
 -- entry point resolves "the" session by asking `current_entry()` which tabpage it was
 -- called from, instead of reading a singleton.
 --
--- R2/R3 (docs/refactor-v1.md): views no longer read "the current window" or reach for
+-- View contract (docs/architecture.md "View contract"): views no longer read "the current window" or reach for
 -- module-level `_on_*` seam slots. Each session gets one `difit.ui.ViewCtx` table (see
 -- `ui/keymaps.lua`), built here and passed BY REFERENCE into every view the session's
 -- `view_factory` closure ever constructs (including across `set_mode`). `ctx.anchor`/
@@ -186,8 +186,7 @@ local function entry_augroup_name(tab)
   return string.format("difit_entry_%d", tab)
 end
 
---- Per-entry augroup for the BufWritePost/FocusGained refresh triggers (docs/
---- refactor-v1.md R1: these move off the old single global augroup so each concurrent
+--- Per-entry augroup for the BufWritePost/FocusGained refresh triggers (docs/architecture.md "Session lifecycle": these move off the old single global augroup so each concurrent
 --- review gets its own, torn down independently in `close_entry`).
 ---@param tab integer
 ---@param entry difit.init.Entry
@@ -241,7 +240,7 @@ local function close_entry(tab)
   end
 
   -- `session:close()`/`panel:close()` may already have closed every window `tab` had
-  -- (docs/refactor-v1.md R2: a view's own `close()` destroys its owned windows now, not
+  -- (docs/architecture.md "View contract": a view's own `close()` destroys its owned windows now, not
   -- just its buffers) -- closing a tabpage's last window makes Neovim remove the tabpage
   -- itself as a side effect, so `tab` can legitimately already be gone by the time we get
   -- here, same as when this runs from the `TabClosed` reconciler. Only ask to close it
@@ -254,7 +253,7 @@ local function close_entry(tab)
   -- `tab` itself still existing: whether `tab` needed an explicit `close_tabpage_safe`
   -- above or had already vanished on its own, Neovim's own choice of which tab to land on
   -- next (typically whatever is adjacent) is not necessarily `entry.origin_tab` once more
-  -- than one other tabpage exists (docs/refactor-v1.md R1: concurrent reviews).
+  -- than one other tabpage exists (docs/architecture.md "Session lifecycle": concurrent reviews).
   if entry.origin_tab and vim.api.nvim_tabpage_is_valid(entry.origin_tab) then
     vim.api.nvim_set_current_tabpage(entry.origin_tab)
   end
@@ -311,7 +310,7 @@ end
 
 local global_autocmds_ready = false
 
---- Registered once behind this guard (docs/refactor-v1.md R1), regardless of how many
+--- Registered once behind this guard (docs/architecture.md "Session lifecycle"), regardless of how many
 --- reviews get opened/closed over the plugin's lifetime -- unlike the per-entry
 --- augroups, these two watch every tabpage, not just one review's.
 local function setup_global_autocmds()
@@ -357,8 +356,7 @@ end
 --- `difit.Session`/`difit.init.Entry` reference directly -- the entry a buffer-local
 --- keymap was wired against can always outlive the review itself (a real file buffer, or a
 --- `difit://` scratch buffer some other window still shows), and a stale action firing
---- after `close_entry` must degrade to a harmless no-op, never an error (docs/
---- refactor-v1.md R3).
+--- after `close_entry` must degrade to a harmless no-op, never an error (docs/architecture.md "View contract").
 ---@param tab integer
 ---@param what string  -- action name, folded into the notify message
 ---@return difit.init.Entry?
@@ -608,7 +606,7 @@ end
 --- tabpage is current (repo identity comes from `vim.fn.getcwd()`), so this lets a
 --- same-review-key match (below) or a resolution failure both bail out without ever
 --- flashing a throwaway tabpage into existence. That means the view factory closure below
---- must close over a `ctx` table (docs/refactor-v1.md R2) BEFORE its `anchor`/`claim`/
+--- must close over a `ctx` table (docs/architecture.md "View contract") BEFORE its `anchor`/`claim`/
 --- `actions` fields are actually known: `session.new()` calls it once immediately (just to
 --- construct the initial, window-less `difit.View` instance), well before the tabpage,
 --- panel, or diff placeholder window exist. Because `ctx` is a plain table passed BY
@@ -635,7 +633,7 @@ local function open_new(base)
   end
 
   -- Multiple concurrent reviews are allowed (different repos/branches/PRs), but the same
-  -- review must never get a second tabpage (docs/refactor-v1.md R1): focus the existing
+  -- review must never get a second tabpage (docs/architecture.md "Session lifecycle"): focus the existing
   -- one instead of duplicating it.
   local existing_tab = find_entry_by_review_key(sess.spec.review_key)
   if existing_tab then

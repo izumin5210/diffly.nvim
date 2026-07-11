@@ -45,7 +45,7 @@ local function entry_by_path(entries, path)
   error("no entry for path " .. path)
 end
 
---- Build a `difit.ui.ViewCtx` (docs/refactor-v1.md R2/R3) in the child: `anchor` is
+--- Build a `difit.ui.ViewCtx` (docs/architecture.md "View contract") in the child: `anchor` is
 --- whatever window is current at the time this runs (views must split rightward from it
 --- and never touch it -- see the `ensure_windows` regression test below); `actions`
 --- records every call into `_G.__actions_log` instead of driving a real session, so
@@ -156,7 +156,7 @@ local function buf_of(child, which)
   return child.lua_get(string.format("vim.api.nvim_win_get_buf(_G.__view.%s)", which))
 end
 
---- The per-session discriminator (docs/refactor-v1.md R4) every owned buffer name
+--- The per-session discriminator (docs/architecture.md "Rendering") every owned buffer name
 --- embeds -- `ctx.anchor`, the window `new_ctx` captured as the split point. Buffer-name
 --- assertions below build the exact expected name around this instead of hardcoding the
 --- pre-R4 `difit://<kind>/<path>` shape.
@@ -249,7 +249,7 @@ T["modified file: two &diff windows, left is an owned non-modifiable buffer, rig
   new_view(child)
   view_open(child, built.spec, entry)
 
-  -- ctx.anchor (the window `new_ctx` captured) is never claimed (docs/refactor-v1.md R2)
+  -- ctx.anchor (the window `new_ctx` captured) is never claimed (docs/architecture.md "View contract")
   -- -- both diff windows are always fresh splits to its right, so it survives alongside
   -- them as a third window.
   eq(win_count(child), 3)
@@ -333,7 +333,7 @@ T["reopening a second file reuses the same two windows"] = function()
 end
 
 ---------------------------------------------------------------------------------------
--- ensure_windows() must never claim ctx.anchor itself (docs/refactor-v1.md R2 -- this
+-- ensure_windows() must never claim ctx.anchor itself (docs/architecture.md "View contract" -- this
 -- used to be the "unclaimable current window" regression: switching unified -> sidebyside
 -- lands focus on the panel, which the old bare "claim the current window" logic used to
 -- grab as left_win -- fatal once the panel got 'winfixbuf', silent window-stealing before
@@ -420,7 +420,7 @@ T["close(): no difit:// buffers remain and both owned windows are closed"] = fun
   ]])
   eq(remaining_difit_bufs, 0)
 
-  -- docs/refactor-v1.md R2: close() destroys every window this view owns...
+  -- docs/architecture.md "View contract": close() destroys every window this view owns...
   eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", left_win)), false)
   eq(child.lua_get(string.format("vim.api.nvim_win_is_valid(%d)", right_win)), false)
   -- ...and leaves whatever it never owned (ctx.anchor) completely alone.
@@ -661,7 +661,7 @@ T["regression: buffer-local keymaps.universal.toggle_viewed fires immediately de
 end
 
 ---------------------------------------------------------------------------------------
--- Blob-loading error honesty (docs/refactor-v1.md R4): `entry.base_sha`/`head_sha` being
+-- Blob-loading error honesty (docs/architecture.md "Rendering"): `entry.base_sha`/`head_sha` being
 -- `nil` is a legitimate empty buffer (added/deleted files, covered above); a non-nil sha
 -- that `git.file_content` still fails to load (e.g. it doesn't resolve to a real object)
 -- is a REAL git failure and must not be silently indistinguishable from that legitimate

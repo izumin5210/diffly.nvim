@@ -1,12 +1,11 @@
 -- Unified (single-column) diff view: inline overlay on top of the REAL file/blob buffer
--- (docs/refactor-v1.md's "Notes for the future inline-overlay unified view", now
--- implemented). The old design rendered a synthetic `diff --git` patch buffer with no
+-- (docs/architecture.md "Rendering"). The old design rendered a synthetic `diff --git` patch buffer with no
 -- source-language highlighting and no LSP; this one shows the actual buffer -- worktree
 -- file, HEAD blob, or deleted-file blob -- and paints the diff on top of it with extmarks:
 -- "+" lines get a line-level highlight, and each contiguous run of "-" lines becomes ONE
 -- `virt_lines` extmark anchored where the text used to sit. Context lines get no marks.
 --
--- docs/refactor-v1.md R2/R3 view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
 -- `ui/keymaps.lua`) -- this view never reads "the current window". Its one window is
 -- always created by splitting rightward from `ctx.anchor` (the panel window), or by
 -- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
@@ -36,7 +35,7 @@ View.__index = View
 --- (the panel window) on first use, or absorbing `self.ctx.claim` (the initial placeholder
 --- window `init.lua` creates alongside the viewer tabpage) when one is offered and still
 --- valid -- consumed at most once, mirroring `ui/sidebyside.lua`'s `ensure_windows`
---- (docs/refactor-v1.md R2). `ctx.anchor` itself is never claimed or touched, so this
+--- (docs/architecture.md "View contract"). `ctx.anchor` itself is never claimed or touched, so this
 --- view's window can never collide with whatever the anchor currently shows. Subsequent
 --- opens reuse `self.win`.
 ---@param self difit.ui.UnifiedView
@@ -61,7 +60,7 @@ local function ensure_window(self)
 end
 
 --- Load a blob's content via `git.file_content`, notifying once on a REAL git failure
---- (docs/refactor-v1.md R4) rather than silently degrading to the same empty buffer a
+--- (docs/architecture.md "Rendering") rather than silently degrading to the same empty buffer a
 --- legitimate absence would produce -- mirrors `ui/sidebyside.lua`'s `set_left`/
 --- `set_right_head`.
 ---@param repo difit.RepoIdentity
@@ -198,7 +197,7 @@ local function render_overlay(self, buf, hunks)
 
   -- `row` can exceed `line_count` when the hunks (computed straight from git) disagree
   -- with what's actually in `buf` -- the one legitimate way that happens is a blob whose
-  -- content failed to load (docs/refactor-v1.md R4 already notified once for that), which
+  -- content failed to load (docs/architecture.md "Rendering" already notified once for that), which
   -- degrades to an empty/short buffer while `hunks` still reflects the real diff. Skip
   -- rather than erroring `nvim_buf_set_extmark` out; `delete_runs`' own row is already
   -- clamped into range by `compute_overlay`, so only add rows need the guard here.
@@ -330,7 +329,7 @@ function View:open(entry, spec)
       buf = show_head_blob(self, entry, spec)
     end
 
-    -- A nil hunk list is a REAL git failure (docs/refactor-v1.md R4): notify once and
+    -- A nil hunk list is a REAL git failure (docs/architecture.md "Rendering"): notify once and
     -- still render the buffer with no overlay at all, rather than erroring open() out.
     local hunks, err = git.hunks(spec.repo, entry, spec.merge_base, spec.right)
     if not hunks then
@@ -350,7 +349,7 @@ function View:open(entry, spec)
   vim.api.nvim_set_current_win(self.win)
 end
 
---- Closes the owned window (docs/refactor-v1.md R2), releases whatever real buffer
+--- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
 --- carried the overlay/`keymaps.universal`, then wipes every owned scratch buffer.
 function View:close()
   release_real_buf(self, nil)
