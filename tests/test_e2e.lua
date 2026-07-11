@@ -813,6 +813,51 @@ T["round-trip regression: side-by-side <-> unified is reachable from every entry
   assert_sidebyside_layout(child, paths.modified)
 end
 
+-- Regression (bug report): switching side-by-side <-> unified changed the panel's own
+-- width. Both views split rightward FROM the panel window (ctx.anchor -- see
+-- ui/sidebyside.lua's `ensure_windows`/ui/unified.lua's `ensure_window`), so every mode
+-- switch closes/reopens diff-area windows right next to the panel; without 'winfixwidth'
+-- Neovim's default 'equalalways' re-equalizes every non-fixed window (including the panel)
+-- at that moment, and the fresh split also transiently carves space straight out of the
+-- panel while it's being created. A non-default `panel.width` (30, distinct from this
+-- file's other scenarios' default 35) makes the drift impossible to miss by coincidence.
+T["panel width survives repeated mode switches and diff-area window churn"] = function()
+  set_size(child, 24, 100)
+  child.lua([[require("difit.config").setup({ panel = { width = 30 } })]])
+
+  child.cmd("Difit")
+
+  local function panel_width()
+    return child.lua_get("vim.api.nvim_win_get_width(__difit_entry().panel.win)")
+  end
+
+  eq(panel_width(), 30, "initial width matches config.panel.width")
+
+  for i = 1, 2 do
+    focus_panel(child)
+    child.type_keys("s") -- -> unified
+    eq(session_field(child, "mode"), "unified")
+    eq(panel_width(), 30, "unchanged after switching to unified (round " .. i .. ")")
+
+    focus_panel(child)
+    child.type_keys("s") -- -> sidebyside
+    eq(session_field(child, "mode"), "sidebyside")
+    eq(panel_width(), 30, "unchanged after switching back to sidebyside (round " .. i .. ")")
+  end
+
+  -- Window churn in the diff area alone (opening different files, no mode switch) must
+  -- not disturb the panel's width either.
+  focus_panel(child)
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  eq(panel_width(), 30, "unchanged after opening src/mod.lua")
+
+  focus_panel(child)
+  set_cursor(child, 6) -- src/new.lua
+  child.type_keys("<CR>")
+  eq(panel_width(), 30, "unchanged after opening src/new.lua")
+end
+
 T["bonus: <Plug>(difit-toggle-mode) and <Plug>(difit-focus-panel) work as user-mappable Plug targets"] = function()
   child.cmd("Difit")
   child.lua([[

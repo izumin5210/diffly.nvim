@@ -262,6 +262,25 @@ function Panel:render()
   restore_cursor(self, cursor_path, #lines)
 end
 
+--- Re-pin the panel window to `config.get().panel.width` if something (most likely a
+--- fresh split from a view rebuilding its windows -- see ui/sidebyside.lua/ui/unified.lua,
+--- both of which split rightward FROM this window) has carved space out of it since the
+--- last render. `winfixwidth` (set in `M.open` below) already stops Neovim's own
+--- 'equalalways' from doing this on its own, but a config with 'equalalways' off, or the
+--- transient resize a brand-new split briefly imposes on its neighbor before this module
+--- ever gets a chance to react, both slip past that -- so this is belt-and-braces, not the
+--- primary fix. A no-op when the width already matches, so it never fights a user's own
+--- manual `<C-w>` resize on every unrelated re-render.
+function Panel:ensure_width()
+  if not vim.api.nvim_win_is_valid(self.win) then
+    return
+  end
+  local want = config.get().panel.width
+  if vim.api.nvim_win_get_width(self.win) ~= want then
+    vim.api.nvim_win_set_width(self.win, want)
+  end
+end
+
 function Panel:close()
   if self.win and vim.api.nvim_win_is_valid(self.win) then
     pcall(vim.api.nvim_win_close, self.win, true)
@@ -486,6 +505,15 @@ function M.open(session)
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
+  -- Every mode switch closes/reopens the diff-area windows, and both views build theirs by
+  -- splitting rightward FROM this window (ctx.anchor -- see ui/sidebyside.lua's
+  -- `ensure_windows`/ui/unified.lua's `ensure_window`). Without these, Neovim's default
+  -- 'equalalways' re-equalizes every non-fixed window -- including this one -- the instant
+  -- a window opens or closes anywhere in the tabpage, silently drifting the panel away from
+  -- `config.panel.width` on every single toggle. diffview.nvim's own file panel sets the
+  -- same two options for the identical reason.
+  vim.wo[win].winfixwidth = true
+  vim.wo[win].winfixheight = true
   -- Sentinel for init.lua's `WinClosed` teardown funnel (docs/refactor-v1.md R1): the
   -- panel window is the sole navigational anchor of a review, so its own closure is what
   -- that autocmd watches for. Harmless when this module is driven standalone (see
@@ -512,6 +540,12 @@ function M.open(session)
     if vim.api.nvim_buf_is_valid(panel.buf) then
       panel:render()
     end
+    -- Runs on every refresh/toggle/set_mode notification (this is the panel's own single
+    -- subscriber callback -- see `Panel:ensure_width`'s doc for why this belongs here
+    -- rather than a dedicated WinResized/WinNew autocmd): a set_mode tears down and rebuilds
+    -- the diff-area windows before notifying, so this is always the first point after that
+    -- churn where the panel can reliably re-pin its own width back.
+    panel:ensure_width()
   end)
 
   panel:render()
