@@ -1,100 +1,36 @@
--- Unified (single-column patch) diff view (WP-G). Read-only formatted-patch buffer with
--- a jump-to-file key; kept deliberately dumb (no diff algorithm of its own) so it can
--- later be swapped for an inline-overlay implementation without touching callers -- the
--- `difit.View` interface (open/close) is the only contract other modules depend on.
+-- Unified (single-column) diff view: inline overlay on top of the REAL file/blob buffer
+-- (docs/refactor-v1.md's "Notes for the future inline-overlay unified view", now
+-- implemented). The old design rendered a synthetic `diff --git` patch buffer with no
+-- source-language highlighting and no LSP; this one shows the actual buffer -- worktree
+-- file, HEAD blob, or deleted-file blob -- and paints the diff on top of it with extmarks:
+-- "+" lines get a line-level highlight, and each contiguous run of "-" lines becomes ONE
+-- `virt_lines` extmark anchored where the text used to sit. Context lines get no marks.
 --
 -- docs/refactor-v1.md R2/R3 view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
 -- `ui/keymaps.lua`) -- this view never reads "the current window". Its one window is
 -- always created by splitting rightward from `ctx.anchor` (the panel window), or by
 -- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
 -- go through `ctx.actions` instead of module-level seam slots. `ui/sidebyside.lua` follows
--- the identical contract.
+-- the identical contract, and this view reuses its real-buffer/universal-keymap/head-blob
+-- patterns (via the shared helpers in `ui/keymaps.lua` and `ui/scratch.lua`) rather than
+-- re-deriving them.
 
-local config = require("difit.config")
 local git = require("difit.git")
 local ui_keymaps = require("difit.ui.keymaps")
 local scratch = require("difit.ui.scratch")
 
 local M = {}
 
----@class difit.ui.UnifiedBufMeta
----@field path string      -- entry.path, relative to toplevel
----@field toplevel string  -- absolute worktree root, for resolving the real file
----@field repo difit.RepoIdentity   -- for fetching HEAD blob content when right == "head"
----@field right "worktree"|"head"
----@field head_sha string?  -- entry.head_sha; the blob to jump into when right == "head"
----@field jump_map table<integer, integer>  -- 1-based buffer line -> new-file line
-
 ---@class difit.ui.UnifiedView : difit.View
 ---@field ctx difit.ui.ViewCtx
 ---@field win integer?                          -- the one window this view owns
 ---@field owned_wins integer[]                  -- same window as `win`; destroyed by close()
----@field bufs table<string, integer>            -- bufname -> owned bufnr
----@field meta table<integer, difit.ui.UnifiedBufMeta>  -- bufnr -> jump metadata
+---@field owned_bufs table<integer, boolean>     -- difit-owned scratch buffers, wiped by close()
+---@field ns integer               -- this view's own overlay namespace (one ns per concern)
+---@field universal_buf integer?   -- real bufnr currently carrying the overlay + `keymaps.universal`
+---@field universal_keys string[]? -- keys applied to `universal_buf` (see `ui_keymaps.detach_universal`)
 local View = {}
 View.__index = View
-
---- Build the buffer content and its line -> real-file-line jump map for one entry.
---- Binary entries get a single placeholder line and an empty jump map (nothing to jump
---- to). Deleted/added/renamed files fall out of `git.hunks` naturally; a nil hunk list
---- is a REAL git failure (docs/refactor-v1.md R4) -- notify once and degrade to just the
---- header line, so the UI still renders instead of erroring.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
----@return string[] lines
----@return table<integer, integer> jump_map
-local function build_content(entry, spec)
-  if entry.binary then
-    return { "binary file" }, {}
-  end
-
-  local lines = { "diff --git a/" .. (entry.old_path or entry.path) .. " b/" .. entry.path }
-  local jump_map = {}
-
-  local hunks, err = git.hunks(spec.repo, entry, spec.merge_base, spec.right)
-  if not hunks then
-    vim.notify(
-      string.format("difit: failed to compute hunks for %s: %s", entry.path, err or "unknown error"),
-      vim.log.levels.WARN
-    )
-    hunks = {}
-  end
-  for _, hunk in ipairs(hunks) do
-    table.insert(lines, hunk.header)
-
-    -- Count only "+"/" " body lines: those are the ones that exist in the new file, so
-    -- the Nth one (0-indexed) sits at `new_start + N`. "-" lines have no new-file line
-    -- of their own; clicking one jumps to the top of the hunk instead.
-    local seen = 0
-    for _, body_line in ipairs(hunk.lines) do
-      table.insert(lines, body_line)
-      local marker = body_line:sub(1, 1)
-      if marker == "+" or marker == " " then
-        jump_map[#lines] = hunk.new_start + seen
-        seen = seen + 1
-      elseif marker == "-" then
-        jump_map[#lines] = hunk.new_start
-      end
-      -- marker == "\\" ("\ No newline at end of file"): left unmapped, <CR> no-ops.
-    end
-  end
-
-  return lines, jump_map
-end
-
---- Get-or-create the owned buffer for `name` via ui/scratch.lua, tracking it in
---- `self.bufs` so `close()` can sweep it later (scratch.lua itself no longer needs that
---- table for lookups -- `vim.fn.bufnr(name)` already handles reuse -- but this view still
---- owns cleaning up whatever it created).
----@param self difit.ui.UnifiedView
----@param name string
----@param opts difit.ui.scratch.Opts?
----@return integer bufnr
-local function get_or_create_buf(self, name, opts)
-  local buf = scratch.find_or_create(name, opts)
-  self.bufs[name] = buf
-  return buf
-end
 
 --- Ensure `self.win` points at a live window: splitting rightward from `self.ctx.anchor`
 --- (the panel window) on first use, or absorbing `self.ctx.claim` (the initial placeholder
@@ -124,228 +60,301 @@ local function ensure_window(self)
   self.owned_wins = { self.win }
 end
 
---- Resolve the window that a file jump should land in: Vim's own "previous window"
---- (`CTRL-W p`) when that is a real window distinct from the unified one AND not a
---- difit-owned window (most notably the panel, `difit://panel`) -- else a fresh vertical
---- split next to it. Assumes the unified window is currently focused (true whenever this
---- runs from its own `<CR>` mapping).
----
---- The difit-owned check matters because `wincmd p`'s "previous window" is Vim's own
---- last-focused-window tracking, not anything this plugin controls: e.g. switching modes
---- while the panel is focused builds the new unified window via a `vsplit` run *while
---- the panel is current*, which makes the panel Vim's "previous window" from that point
---- on -- so an unguarded `wincmd p` here would jump straight back into the panel and then
---- `:edit` the real file into it, destroying the tree.
----@param self difit.ui.UnifiedView
----@return integer winid
-local function target_window(self)
-  local unified_win = self.win
-  vim.cmd("wincmd p")
-  local candidate = vim.api.nvim_get_current_win()
-  local candidate_owned = false
-  if vim.api.nvim_win_is_valid(candidate) then
-    local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(candidate))
-    candidate_owned = vim.startswith(bufname, "difit://")
+--- Load a blob's content via `git.file_content`, notifying once on a REAL git failure
+--- (docs/refactor-v1.md R4) rather than silently degrading to the same empty buffer a
+--- legitimate absence would produce -- mirrors `ui/sidebyside.lua`'s `set_left`/
+--- `set_right_head`.
+---@param repo difit.RepoIdentity
+---@param sha string
+---@param path string
+---@param what string  -- "base"|"head", folded into the notify message
+---@return string[] lines
+local function load_blob(repo, sha, path, what)
+  local content, err = git.file_content(repo, { sha = sha })
+  if content then
+    return content
   end
-
-  if candidate ~= unified_win and vim.api.nvim_win_is_valid(candidate) and not candidate_owned then
-    return candidate
-  end
-
-  -- `wincmd p` had nowhere else to go (the unified view is the only window in this
-  -- tabpage), or landed on a difit-owned window -- give the real file its own split
-  -- instead of hijacking either.
-  vim.api.nvim_set_current_win(unified_win)
-  vim.cmd("vsplit")
-  return vim.api.nvim_get_current_win()
+  vim.notify(
+    string.format("difit: failed to load %s blob for %s: %s", what, path, err or "unknown error"),
+    vim.log.levels.WARN
+  )
+  return {}
 end
 
---- `spec.right == "head"`: `jump_map` lines were computed against `git diff <base>
---- HEAD` (see `build_content`), i.e. they're HEAD-relative -- but the *worktree* file may
---- have diverged from HEAD since (more/fewer lines above the hunk), so opening it there
---- would land on the wrong line, or the wrong content entirely. Open a read-only blob of
---- `entry.head_sha` instead, so the line numbers always match what the diff showed,
---- mirroring `ui/sidebyside.lua`'s own head-mode blob buffers (including its buffer
---- naming scheme -- see ui/scratch.lua). A `head_sha` that fails to load is a REAL git
---- failure (docs/refactor-v1.md R4): notify once and still open an empty blob rather
---- than erroring.
+--- Get-or-create a difit-owned scratch buffer, tracking it in `self.owned_bufs` so
+--- `close()` can wipe it later, and applying the full `keymaps.diff` + `keymaps.universal`
+--- action sets (every difit-owned buffer this view creates gets both -- mirrors
+--- `ui/sidebyside.lua`'s `View:owned_buffer`).
 ---@param self difit.ui.UnifiedView
----@param win integer
----@param meta difit.ui.UnifiedBufMeta
+---@param name string
+---@param lines string[]
+---@param path string
 ---@return integer bufnr
-local function open_head_blob(self, win, meta)
-  local short_sha = meta.head_sha and meta.head_sha:sub(1, 7) or "unknown"
-  local name = scratch.name(short_sha, self.ctx.anchor, meta.path)
+local function owned_buffer(self, name, lines, path)
+  local bufnr = scratch.find_or_create(name, { lines = lines, filename = path })
+  self.owned_bufs[bufnr] = true
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, path))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, path))
+  return bufnr
+end
 
-  local content
-  if meta.head_sha then
-    local err
-    content, err = git.file_content(meta.repo, { sha = meta.head_sha })
-    if not content then
-      vim.notify(
-        string.format("difit: failed to load blob for %s: %s", meta.path, err or "unknown error"),
-        vim.log.levels.WARN
+--- Detach the overlay + `keymaps.universal` from whatever real buffer currently carries
+--- them, unless `keep` names that exact buffer (re-opening the very same file reuses it).
+--- Mirrors `ui/sidebyside.lua`'s `clear_universal_keymaps`, extended with this view's own
+--- extra responsibility: a real buffer must retain no trace of the overlay either, the
+--- moment the view stops showing it (a different file, a difit-owned buffer, or close()).
+---@param self difit.ui.UnifiedView
+---@param keep integer?
+local function release_real_buf(self, keep)
+  if not self.universal_buf or self.universal_buf == keep then
+    return
+  end
+  if vim.api.nvim_buf_is_valid(self.universal_buf) then
+    vim.api.nvim_buf_clear_namespace(self.universal_buf, self.ns, 0, -1)
+  end
+  ui_keymaps.detach_universal(self)
+end
+
+--- Compute this hunk set's overlay as plain data: 0-based rows to paint `DifitOverlayAdd`
+--- on, plus one virt_lines run per contiguous "-" block. Kept separate from the extmark
+--- calls themselves so the anchoring math (the empirically-verified part) is easy to
+--- reason about on its own.
+---
+--- Walks each hunk's body lines with `cur_new` starting at `hunk.new_start` (1-based):
+--- " "/"+" lines occupy the real new-file line at `cur_new`, then advance it; "+" lines
+--- additionally get an add row. "-" lines never advance `cur_new` -- they accumulate into
+--- a pending run that gets flushed (as one virt_lines entry) the moment a non-"-" line is
+--- seen, or the hunk ends. The flush's anchor row is `cur_new - 1` (0-based: "immediately
+--- before the real line now sitting at `cur_new`"), with two edge cases confirmed against
+--- real git output (see the empirical cases in tests/test_unified.lua):
+---   - `cur_new == 0` (git reports this ONLY when the whole hunk -- and, in practice with
+---     `-U3` context, the whole new-side file -- is empty; there is no "line 0" to anchor
+---     before) -- clamp to row 0, still `virt_lines_above = true` (renders at the very top).
+---   - the anchor would land past the buffer's last real line (a deletion running to EOF,
+---     where the following line simply doesn't exist) -- clamp to the last line instead,
+---     with `virt_lines_above = false` so the run renders BELOW it rather than overlapping.
+--- "\ No newline at end of file" markers are skipped (neither a real line nor a deletion).
+---@param hunks difit.Hunk[]
+---@param line_count integer  -- `nvim_buf_line_count` of the buffer this overlay targets
+---@return integer[] add_rows
+---@return { row: integer, above: boolean, lines: string[] }[] delete_runs
+local function compute_overlay(hunks, line_count)
+  local add_rows = {}
+  local delete_runs = {}
+
+  for _, hunk in ipairs(hunks) do
+    local cur_new = hunk.new_start
+    local pending = nil
+
+    local function flush()
+      if not pending then
+        return
+      end
+      local raw_row = cur_new - 1
+      local row, above
+      if raw_row < 0 then
+        row, above = 0, true
+      elseif raw_row > line_count - 1 then
+        row, above = math.max(line_count - 1, 0), false
+      else
+        row, above = raw_row, true
+      end
+      table.insert(delete_runs, { row = row, above = above, lines = pending })
+      pending = nil
+    end
+
+    for _, body_line in ipairs(hunk.lines) do
+      local marker = body_line:sub(1, 1)
+      if marker == " " then
+        flush()
+        cur_new = cur_new + 1
+      elseif marker == "+" then
+        flush()
+        table.insert(add_rows, cur_new - 1)
+        cur_new = cur_new + 1
+      elseif marker == "-" then
+        pending = pending or {}
+        table.insert(pending, body_line:sub(2))
+      end
+      -- marker == "\\" ("\ No newline at end of file"): neither a real line nor a
+      -- deletion -- skipped.
+    end
+    flush()
+  end
+
+  return add_rows, delete_runs
+end
+
+--- Full clear-and-redraw of `self.ns` on `buf` from `hunks` -- never incremental, so a
+--- stale mark from a previous render (different hunks, a different file reusing this
+--- buffer, ...) can never linger.
+---@param self difit.ui.UnifiedView
+---@param buf integer
+---@param hunks difit.Hunk[]
+local function render_overlay(self, buf, hunks)
+  vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
+  local line_count = vim.api.nvim_buf_line_count(buf)
+  local add_rows, delete_runs = compute_overlay(hunks, line_count)
+
+  -- `row` can exceed `line_count` when the hunks (computed straight from git) disagree
+  -- with what's actually in `buf` -- the one legitimate way that happens is a blob whose
+  -- content failed to load (docs/refactor-v1.md R4 already notified once for that), which
+  -- degrades to an empty/short buffer while `hunks` still reflects the real diff. Skip
+  -- rather than erroring `nvim_buf_set_extmark` out; `delete_runs`' own row is already
+  -- clamped into range by `compute_overlay`, so only add rows need the guard here.
+  for _, row in ipairs(add_rows) do
+    if row >= 0 and row < line_count then
+      vim.api.nvim_buf_set_extmark(
+        buf,
+        self.ns,
+        row,
+        0,
+        { hl_group = "DifitOverlayAdd", hl_eol = true }
       )
     end
   end
 
-  local buf = get_or_create_buf(self, name, { lines = content or {}, filename = meta.path })
-  vim.api.nvim_win_set_buf(win, buf)
+  for _, run in ipairs(delete_runs) do
+    local chunks = {}
+    for _, line in ipairs(run.lines) do
+      table.insert(chunks, { { line, "DifitOverlayDelete" } })
+    end
+    vim.api.nvim_buf_set_extmark(buf, self.ns, run.row, 0, {
+      virt_lines = chunks,
+      virt_lines_above = run.above,
+    })
+  end
+end
+
+--- Deleted-file rendering: the buffer already IS the removed content in full (the base
+--- blob), so every line just gets a line-level `DifitOverlayDelete` highlight -- no
+--- `virt_lines` needed, unlike the mixed add/delete overlay `render_overlay` draws for a
+--- file that still exists on the new side.
+---@param self difit.ui.UnifiedView
+---@param buf integer
+local function render_all_deleted(self, buf)
+  vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
+  local line_count = vim.api.nvim_buf_line_count(buf)
+  for row = 0, line_count - 1 do
+    vim.api.nvim_buf_set_extmark(
+      buf,
+      self.ns,
+      row,
+      0,
+      { hl_group = "DifitOverlayDelete", hl_eol = true }
+    )
+  end
+end
+
+--- Binary entries: a shared one-line placeholder, difit-owned (gets `keymaps.diff` +
+--- `keymaps.universal` like every other owned buffer), no overlay.
+---@param self difit.ui.UnifiedView
+---@param entry difit.FileEntry
+local function show_binary(self, entry)
+  release_real_buf(self, nil)
+  local buf = owned_buffer(
+    self,
+    scratch.name("binary", self.ctx.anchor, entry.path),
+    { "binary file" },
+    entry.path
+  )
+  vim.api.nvim_win_set_buf(self.win, buf)
+end
+
+--- Deleted entries (`entry.head_sha == nil`): a read-only blob of `entry.base_sha`,
+--- entirely painted as deleted (see `render_all_deleted`). Content-addressed buffer name
+--- (mirrors `ui/sidebyside.lua`'s left/head blob naming): reuse across opens is always
+--- content-safe, since the name embeds the exact sha being shown.
+---@param self difit.ui.UnifiedView
+---@param entry difit.FileEntry
+---@param spec difit.DiffSpec
+local function show_deleted(self, entry, spec)
+  release_real_buf(self, nil)
+  local lines = entry.base_sha and load_blob(spec.repo, entry.base_sha, entry.path, "base") or {}
+  local name =
+    scratch.name(scratch.short_sha(entry.base_sha) or "empty", self.ctx.anchor, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path)
+  vim.api.nvim_win_set_buf(self.win, buf)
+  render_all_deleted(self, buf)
+end
+
+--- `spec.right == "worktree"`: `:edit` the real file directly into `self.win` -- normal
+--- buffer semantics (autocmds, filetype/LSP, `:w`) apply exactly like
+--- `ui/sidebyside.lua`'s right-hand worktree window. Only `keymaps.universal` is applied
+--- (design.md: real file buffers never get the single-key `keymaps.diff` shortcuts),
+--- attached/detached via the same lifecycle `ui/sidebyside.lua` uses.
+---@param self difit.ui.UnifiedView
+---@param entry difit.FileEntry
+---@param spec difit.DiffSpec
+---@return integer buf
+local function show_worktree_file(self, entry, spec)
+  local abs_path = vim.fs.joinpath(spec.repo.toplevel, entry.path)
+  vim.api.nvim_win_call(self.win, function()
+    vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
+  end)
+  local buf = vim.api.nvim_win_get_buf(self.win)
+  release_real_buf(self, buf)
+  ui_keymaps.attach_universal(self, buf, entry.path, self.ctx.actions)
   return buf
 end
 
---- `<CR>` handler: jump to the line the current buffer line maps to -- the real worktree
---- file when `spec.right == "worktree"`, or a read-only HEAD blob buffer when
---- `spec.right == "head"` (see `open_head_blob`). No-op on lines with no mapping (the
---- `diff --git` line and hunk headers).
+--- `spec.right == "head"`: a read-only blob of `entry.head_sha` (difit-owned, gets
+--- `keymaps.diff` + `keymaps.universal`) -- mirrors `ui/sidebyside.lua`'s `set_right_head`.
 ---@param self difit.ui.UnifiedView
----@param buf integer
-local function jump_to_file(self, buf)
-  local meta = self.meta[buf]
-  if not meta then
-    return
-  end
-
-  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-  local target_line = meta.jump_map[cursor_line]
-  if not target_line then
-    return
-  end
-
-  local win = target_window(self)
-  vim.api.nvim_set_current_win(win)
-
-  if meta.right == "head" then
-    open_head_blob(self, win, meta)
-  else
-    vim.cmd("edit " .. vim.fn.fnameescape(vim.fs.joinpath(meta.toplevel, meta.path)))
-  end
-
-  local line_count = vim.api.nvim_buf_line_count(0)
-  vim.api.nvim_win_set_cursor(win, { math.min(target_line, line_count), 0 })
-end
-
---- Full `config.keymaps.diff` action set for the unified buffer (always difit-owned, so
---- it gets `close` too -- see `ui/sidebyside.lua`'s identically-shaped helper of the same
---- name for the diff-window case).
----@param actions difit.ui.Actions
----@param path string
----@return table<string, difit.ui.KeymapAction>
-local function diff_keymap_spec(actions, path)
-  local cfg = config.get().keymaps.diff
-  return {
-    toggle_viewed = {
-      key = cfg.toggle_viewed,
-      callback = function()
-        actions.toggle_viewed(path)
-      end,
-    },
-    toggle_mode = {
-      key = cfg.toggle_mode,
-      callback = function()
-        actions.toggle_mode()
-      end,
-    },
-    focus_panel = {
-      key = cfg.focus_panel,
-      callback = function()
-        actions.focus_panel()
-      end,
-    },
-    close = {
-      key = cfg.close,
-      callback = function()
-        actions.close()
-      end,
-    },
-  }
-end
-
---- `config.keymaps.universal` action set, applied IN ADDITION to `diff_keymap_spec` above
---- (see `setup_keymaps`) -- the universal layer must work in every difit context, including
---- this always-difit-owned buffer, not just real file buffers (mirrors
---- `ui/sidebyside.lua`'s `universal_keymap_spec`). No `close` entry: `keymaps.universal`
---- never includes one (see config.lua).
----@param actions difit.ui.Actions
----@param path string
----@return table<string, difit.ui.KeymapAction>
-local function universal_keymap_spec(actions, path)
-  local cfg = config.get().keymaps.universal
-  return {
-    toggle_viewed = {
-      key = cfg.toggle_viewed,
-      callback = function()
-        actions.toggle_viewed(path)
-      end,
-    },
-    toggle_mode = {
-      key = cfg.toggle_mode,
-      callback = function()
-        actions.toggle_mode()
-      end,
-    },
-    focus_panel = {
-      key = cfg.focus_panel,
-      callback = function()
-        actions.focus_panel()
-      end,
-    },
-  }
-end
-
---- Apply the hardcoded jump key plus the full configurable `config.keymaps.diff` action
---- set (toggle_viewed/toggle_mode/focus_panel/close), then `config.keymaps.universal` on
---- top of it, to `buf`. Deterministic apply order (see config.lua): `keymaps.diff` first,
---- `keymaps.universal` second -- `vim.keymap.set` overwrites on a shared lhs, so a user who
---- configures the same key in both groups gets the universal binding (mirrors
---- `ui/sidebyside.lua`'s `View:owned_buffer`).
----@param self difit.ui.UnifiedView
----@param buf integer
 ---@param entry difit.FileEntry
-local function setup_keymaps(self, buf, entry)
-  vim.keymap.set("n", "<CR>", function()
-    jump_to_file(self, buf)
-  end, { buffer = buf, silent = true, nowait = true, desc = "difit: jump to file" })
-
-  local actions = self.ctx.actions
-  ui_keymaps.apply(buf, diff_keymap_spec(actions, entry.path))
-  ui_keymaps.apply(buf, universal_keymap_spec(actions, entry.path))
+---@param spec difit.DiffSpec
+---@return integer buf
+local function show_head_blob(self, entry, spec)
+  release_real_buf(self, nil)
+  local lines = load_blob(spec.repo, entry.head_sha, entry.path, "head")
+  local name = scratch.name(scratch.short_sha(entry.head_sha), self.ctx.anchor, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path)
+  vim.api.nvim_win_set_buf(self.win, buf)
+  return buf
 end
 
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:open(entry, spec)
-  -- `lang = "diff"` (never `entry.path`'s own language): this buffer's content is always
-  -- a unified patch, regardless of which file it's showing -- highlighting it as the
-  -- reviewed file's own language would be wrong even before considering docs/
-  -- refactor-v1.md R4's "never set 'filetype'" rule.
-  local bufname = scratch.name("unified", self.ctx.anchor, entry.path)
-  local buf = get_or_create_buf(self, bufname, { lang = "diff" })
-
-  local lines, jump_map = build_content(entry, spec)
-
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-
-  self.meta[buf] = {
-    path = entry.path,
-    toplevel = spec.repo.toplevel,
-    repo = spec.repo,
-    right = spec.right,
-    head_sha = entry.head_sha,
-    jump_map = jump_map,
-  }
-
   ensure_window(self)
-  vim.api.nvim_win_set_buf(self.win, buf)
-  vim.api.nvim_set_current_win(self.win)
 
-  setup_keymaps(self, buf, entry)
+  if entry.binary then
+    show_binary(self, entry)
+  elseif not entry.head_sha then
+    show_deleted(self, entry, spec)
+  else
+    local buf
+    if spec.right == "worktree" then
+      buf = show_worktree_file(self, entry, spec)
+    else
+      buf = show_head_blob(self, entry, spec)
+    end
+
+    -- A nil hunk list is a REAL git failure (docs/refactor-v1.md R4): notify once and
+    -- still render the buffer with no overlay at all, rather than erroring open() out.
+    local hunks, err = git.hunks(spec.repo, entry, spec.merge_base, spec.right)
+    if not hunks then
+      vim.notify(
+        string.format(
+          "difit: failed to compute hunks for %s: %s",
+          entry.path,
+          err or "unknown error"
+        ),
+        vim.log.levels.WARN
+      )
+      hunks = {}
+    end
+    render_overlay(self, buf, hunks)
+  end
+
+  vim.api.nvim_set_current_win(self.win)
 end
 
---- Closes the owned window (docs/refactor-v1.md R2), then wipes every owned buffer.
+--- Closes the owned window (docs/refactor-v1.md R2), releases whatever real buffer
+--- carried the overlay/`keymaps.universal`, then wipes every owned scratch buffer.
 function View:close()
+  release_real_buf(self, nil)
+
   for _, win in ipairs(self.owned_wins) do
     if vim.api.nvim_win_is_valid(win) then
       local tab = vim.api.nvim_win_get_tabpage(win)
@@ -360,19 +369,27 @@ function View:close()
   self.owned_wins = {}
   self.win = nil
 
-  for _, buf in pairs(self.bufs) do
+  for buf in pairs(self.owned_bufs) do
     if vim.api.nvim_buf_is_valid(buf) then
       vim.api.nvim_buf_delete(buf, { force = true })
     end
   end
-  self.bufs = {}
-  self.meta = {}
+  self.owned_bufs = {}
 end
 
 ---@param ctx difit.ui.ViewCtx
 ---@return difit.View
 function M.new(ctx)
-  return setmetatable({ ctx = ctx, win = nil, owned_wins = {}, bufs = {}, meta = {} }, View)
+  return setmetatable({
+    ctx = ctx,
+    win = nil,
+    owned_wins = {},
+    owned_bufs = {},
+    ns = vim.api.nvim_create_namespace(""), -- anonymous: one dedicated ns per view instance
+    universal_buf = nil,
+    universal_keys = nil,
+    universal_token = nil,
+  }, View)
 end
 
 return M

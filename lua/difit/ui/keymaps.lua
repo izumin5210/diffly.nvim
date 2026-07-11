@@ -1,8 +1,11 @@
 -- Shared buffer-local keymap plumbing for the diff views. Both `ui/sidebyside.lua` and
 -- `ui/unified.lua` need to apply the same shaped config (`keymaps.diff`/`keymaps.universal`)
--- to a buffer and later peel it off again (sidebyside's real right-hand buffer moves
--- between files across the same view instance's lifetime) -- this module is the one place
--- that logic lives, instead of each view re-deriving it.
+-- to a buffer and later peel it off again (a real worktree buffer moves between files
+-- across the same view instance's lifetime, in both views now that `ui/unified.lua` also
+-- shows the real file in worktree mode -- docs/refactor-v1.md's inline-overlay note) --
+-- this module is the one place that logic lives, instead of each view re-deriving it.
+
+local config = require("difit.config")
 
 local M = {}
 
@@ -82,6 +85,146 @@ function M.remove(bufnr, keys)
   for _, key in ipairs(keys) do
     pcall(vim.keymap.del, "n", key, { buffer = bufnr })
   end
+end
+
+-- Monotonic counter backing `M.attach_universal`'s ownership stamp (see below) -- module-
+-- level rather than per-buffer-var-initialized, so every stamp handed out for the whole
+-- Neovim session is unique regardless of how many buffers/views come and go.
+local next_universal_token = 0
+
+--- Full `config.keymaps.diff` action set for a difit-owned buffer showing `path` --
+--- applied to every difit-owned diff buffer both views ever create (the side-by-side
+--- blob windows; the unified view's owned blob/binary buffers), never to a real file
+--- buffer (design.md: real buffers only ever get `M.universal_spec` below).
+---@param actions difit.ui.Actions
+---@param path string
+---@return table<string, difit.ui.KeymapAction>
+function M.diff_spec(actions, path)
+  local cfg = config.get().keymaps.diff
+  return {
+    toggle_viewed = {
+      key = cfg.toggle_viewed,
+      callback = function()
+        actions.toggle_viewed(path)
+      end,
+    },
+    toggle_mode = {
+      key = cfg.toggle_mode,
+      callback = function()
+        actions.toggle_mode()
+      end,
+    },
+    focus_panel = {
+      key = cfg.focus_panel,
+      callback = function()
+        actions.focus_panel()
+      end,
+    },
+    close = {
+      key = cfg.close,
+      callback = function()
+        actions.close()
+      end,
+    },
+  }
+end
+
+--- `config.keymaps.universal` action set: applied ALONE to whichever real worktree buffer
+--- a view currently shows (see `M.attach_universal` below), and a second time, IN ADDITION
+--- to `M.diff_spec`, to every difit-owned buffer either view creates -- the universal layer
+--- must work everywhere. No `close` entry: `keymaps.universal` never includes one (real
+--- buffers never get a difit-mapped `close`; an owned buffer still gets it from
+--- `M.diff_spec`).
+---@param actions difit.ui.Actions
+---@param path string
+---@return table<string, difit.ui.KeymapAction>
+function M.universal_spec(actions, path)
+  local cfg = config.get().keymaps.universal
+  return {
+    toggle_viewed = {
+      key = cfg.toggle_viewed,
+      callback = function()
+        actions.toggle_viewed(path)
+      end,
+    },
+    toggle_mode = {
+      key = cfg.toggle_mode,
+      callback = function()
+        actions.toggle_mode()
+      end,
+    },
+    focus_panel = {
+      key = cfg.focus_panel,
+      callback = function()
+        actions.focus_panel()
+      end,
+    },
+  }
+end
+
+--- Delete `keys` from `bufnr`, but ONLY if `bufnr`'s current ownership stamp still equals
+--- `token` -- guards against a cross-view race: `session.lua`'s mode switch builds the new
+--- view and opens it BEFORE closing the old one (docs/refactor-v1.md R2, so the diff area
+--- never flashes empty), so when both sidebyside and unified can show the SAME real
+--- worktree buffer, the NEW view's `attach_universal` can run and re-stamp `bufnr` BEFORE
+--- the OLD view's `close()`/file-switch cleanup gets around to detaching it. Without this
+--- check, the old view's cleanup would blindly delete `keymaps.universal`'s lhs set again
+--- -- which, by then, belongs to the NEW view -- leaving the real buffer with none of
+--- difit's keymaps at all. The stamp lives in `vim.b[bufnr]` (survives independently of
+--- any one view instance) rather than solely in `state`, precisely so a STALE `state` can
+--- tell its own attach has since been superseded.
+---@param bufnr integer
+---@param token integer?
+---@param keys string[]
+local function remove_if_still_owner(bufnr, token, keys)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if vim.b[bufnr].difit_universal_token ~= token then
+    return
+  end
+  M.remove(bufnr, keys)
+end
+
+--- Apply `keymaps.universal` to the real buffer `bufnr` (showing `path`), first peeling
+--- the same keys off whatever buffer `state.universal_buf` held them before -- otherwise a
+--- real file buffer that stops being "the current file" (the view moved on to a different
+--- one) would keep responding to difit's keymaps forever, since nothing else ever touches
+--- a real file buffer's own keymaps.
+---
+--- `state` is any plain table the caller (a View) owns for its whole lifetime, with
+--- `universal_buf`/`universal_keys`/`universal_token` fields this function reads and
+--- writes -- both `ui/sidebyside.lua` and `ui/unified.lua` just pass `self`, so the two
+--- views share this exact attach/detach lifecycle instead of each re-implementing it.
+---@param state { universal_buf: integer?, universal_keys: string[]?, universal_token: integer? }
+---@param bufnr integer
+---@param path string
+---@param actions difit.ui.Actions
+function M.attach_universal(state, bufnr, path, actions)
+  if state.universal_buf and state.universal_buf ~= bufnr then
+    remove_if_still_owner(state.universal_buf, state.universal_token, state.universal_keys or {})
+  end
+  next_universal_token = next_universal_token + 1
+  vim.b[bufnr].difit_universal_token = next_universal_token
+  state.universal_token = next_universal_token
+  state.universal_keys = M.apply(bufnr, M.universal_spec(actions, path))
+  state.universal_buf = bufnr
+end
+
+--- Peel `keymaps.universal` off whatever real buffer currently holds them, if any --
+--- UNLESS a newer `attach_universal` call has since re-claimed that same buffer (see
+--- `remove_if_still_owner`). Called whenever a view stops showing that buffer (a different
+--- file, a difit-owned buffer, or `close()`) -- the previous real buffer is left alone
+--- otherwise (design.md: editing/`:w` on it must keep working normally), it just must not
+--- keep difit's keymaps.
+---@param state { universal_buf: integer?, universal_keys: string[]?, universal_token: integer? }
+function M.detach_universal(state)
+  if state.universal_buf then
+    remove_if_still_owner(state.universal_buf, state.universal_token, state.universal_keys or {})
+  end
+  state.universal_buf = nil
+  state.universal_keys = nil
+  state.universal_token = nil
 end
 
 return M

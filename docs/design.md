@@ -78,8 +78,12 @@ flat list toggle in the panel, fs-watch based refresh.
 - **Side-by-side**: native diff mode. Left = read-only git blob buffer (`difit://`
   namespace), right = the real file buffer (edits and `:w` work as usual). Deleted files
   show an empty right side; untracked files an empty left side.
-- **Unified**: read-only formatted patch buffer with a jump-to-file key. The view layer
-  keeps a boundary so this can later be replaced by an inline-overlay implementation.
+- **Unified**: inline overlay on the real buffer (worktree file, HEAD blob, or
+  deleted-file blob), not a synthetic patch buffer -- so it gets the file's own syntax
+  highlighting and LSP where side-by-side already did, which the old patch-text buffer
+  never could. "+" lines are highlighted in place; deleted lines render as read-only
+  virtual lines (`virt_lines`) anchored where the text used to sit. The buffer is
+  editable in worktree mode, exactly like side-by-side's right-hand window.
 - **Refresh**: automatic on `BufWritePost` and `FocusGained`, manual with `R` in the
   panel.
 

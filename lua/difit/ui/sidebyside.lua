@@ -11,17 +11,10 @@
 -- the identical contract.
 
 local git = require("difit.git")
-local config = require("difit.config")
 local ui_keymaps = require("difit.ui.keymaps")
 local scratch = require("difit.ui.scratch")
 
 local M = {}
-
----@param sha string?
----@return string?
-local function short_sha(sha)
-  return sha and sha:sub(1, 7) or nil
-end
 
 --- Buffer name for the left (base) side. Deliberately keyed by `spec.merge_base` (which
 --- is constant for the whole diff spec) rather than `entry.base_sha` (which would be
@@ -41,7 +34,7 @@ local function left_buffer_name(entry, spec, session_id)
   if not entry.base_sha then
     return scratch.name("empty", session_id, entry.path)
   end
-  return scratch.name(short_sha(spec.merge_base), session_id, entry.path)
+  return scratch.name(scratch.short_sha(spec.merge_base), session_id, entry.path)
 end
 
 --- Buffer name for the right side when it is a blob (head mode) rather than the real
@@ -58,7 +51,7 @@ local function right_blob_buffer_name(entry, session_id)
   if not entry.head_sha then
     return scratch.name("deleted", session_id, entry.path)
   end
-  return scratch.name(short_sha(entry.head_sha), session_id, entry.path)
+  return scratch.name(scratch.short_sha(entry.head_sha), session_id, entry.path)
 end
 
 ---@class difit.ui.SideBySide : difit.View
@@ -67,77 +60,13 @@ end
 ---@field right_win integer?  -- ditto
 ---@field owned_wins integer[]  -- every window this view currently owns; destroyed by close()
 ---@field owned_bufs table<integer, boolean>
----@field universal_buf integer?    -- real bufnr currently carrying `keymaps.universal`, if any
----@field universal_keys string[]?  -- keys applied to `universal_buf`
+---@field universal_buf integer?    -- real bufnr currently carrying `keymaps.universal`, if
+--- any -- read/written by `ui/keymaps.lua`'s `attach_universal`/`detach_universal`, not by
+--- this module directly (see the calls in `set_right_worktree`/`clear_universal_keymaps`
+--- below).
+---@field universal_keys string[]?  -- keys applied to `universal_buf`, ditto
 local View = {}
 View.__index = View
-
---- Full `config.keymaps.diff` action set for a difit-owned buffer showing `path`.
----@param actions difit.ui.Actions
----@param path string
----@return table<string, difit.ui.KeymapAction>
-local function diff_keymap_spec(actions, path)
-  local cfg = config.get().keymaps.diff
-  return {
-    toggle_viewed = {
-      key = cfg.toggle_viewed,
-      callback = function()
-        actions.toggle_viewed(path)
-      end,
-    },
-    toggle_mode = {
-      key = cfg.toggle_mode,
-      callback = function()
-        actions.toggle_mode()
-      end,
-    },
-    focus_panel = {
-      key = cfg.focus_panel,
-      callback = function()
-        actions.focus_panel()
-      end,
-    },
-    close = {
-      key = cfg.close,
-      callback = function()
-        actions.close()
-      end,
-    },
-  }
-end
-
---- `config.keymaps.universal` action set: applied to the real right-hand worktree buffer
---- showing `path` (its ONLY keymap group -- see `apply_universal_keymaps`), and a second
---- time, IN ADDITION to `diff_keymap_spec`, to every difit-owned buffer this view creates
---- (see `View:owned_buffer`) -- the universal layer must work everywhere. No `close` entry:
---- closing a real file buffer doesn't mean "close the review" (see config.lua); an owned
---- buffer still gets `close` from `diff_keymap_spec`.
----@param actions difit.ui.Actions
----@param path string
----@return table<string, difit.ui.KeymapAction>
-local function universal_keymap_spec(actions, path)
-  local cfg = config.get().keymaps.universal
-  return {
-    toggle_viewed = {
-      key = cfg.toggle_viewed,
-      callback = function()
-        actions.toggle_viewed(path)
-      end,
-    },
-    toggle_mode = {
-      key = cfg.toggle_mode,
-      callback = function()
-        actions.toggle_mode()
-      end,
-    },
-    focus_panel = {
-      key = cfg.focus_panel,
-      callback = function()
-        actions.focus_panel()
-      end,
-    },
-  }
-end
 
 --- Get-or-create a difit-owned scratch buffer via ui/scratch.lua: `buftype=nofile`,
 --- `bufhidden=hide`, non-modifiable once populated, LSP-safe highlighting (never
@@ -154,37 +83,20 @@ function View:owned_buffer(name, lines, opts)
   -- Deterministic apply order (see config.lua): `keymaps.diff` first, `keymaps.universal`
   -- second -- `vim.keymap.set` overwrites on a shared lhs, so a user who configures the
   -- same key in both groups gets the universal binding, consistently across every owned
-  -- buffer (mirrors `ui/unified.lua`'s `setup_keymaps`).
-  ui_keymaps.apply(bufnr, diff_keymap_spec(self.ctx.actions, opts.entry_path))
-  ui_keymaps.apply(bufnr, universal_keymap_spec(self.ctx.actions, opts.entry_path))
+  -- buffer (mirrors `ui/unified.lua`'s equivalent helper).
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, opts.entry_path))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, opts.entry_path))
   return bufnr
-end
-
---- Apply `keymaps.universal` to the real worktree buffer `bufnr` (showing `path`), first
---- peeling the same keys off whatever buffer held them before -- otherwise a real file
---- buffer that stops being "the current file" (the view moved on to a different one)
---- would keep responding to difit's keymaps forever, since nothing else ever touches a
---- real file buffer's own keymaps.
----@param bufnr integer
----@param path string
-function View:apply_universal_keymaps(bufnr, path)
-  if self.universal_buf and self.universal_buf ~= bufnr then
-    ui_keymaps.remove(self.universal_buf, self.universal_keys or {})
-  end
-  self.universal_keys = ui_keymaps.apply(bufnr, universal_keymap_spec(self.ctx.actions, path))
-  self.universal_buf = bufnr
 end
 
 --- Peel `keymaps.universal` off whatever real buffer currently holds them, if any. Called
 --- whenever the right window stops showing a real file (deleted-file scratch, binary
 --- placeholder, `close()`) -- the previous real buffer is left alone otherwise (design.md:
 --- editing/`:w` on it must keep working normally), it just must not keep difit's keymaps.
+--- Thin wrapper around `ui/keymaps.lua`'s shared lifecycle (see `View.universal_buf`'s doc
+--- above) -- kept as a method so call sites read the same as before the extraction.
 function View:clear_universal_keymaps()
-  if self.universal_buf then
-    ui_keymaps.remove(self.universal_buf, self.universal_keys or {})
-  end
-  self.universal_buf = nil
-  self.universal_keys = nil
+  ui_keymaps.detach_universal(self)
 end
 
 --- Build the two-window vertical pair on first use, splitting rightward from
@@ -306,7 +218,12 @@ function View:set_right_worktree(entry, spec)
   vim.api.nvim_win_call(self.right_win, function()
     vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
   end)
-  self:apply_universal_keymaps(vim.api.nvim_win_get_buf(self.right_win), entry.path)
+  ui_keymaps.attach_universal(
+    self,
+    vim.api.nvim_win_get_buf(self.right_win),
+    entry.path,
+    self.ctx.actions
+  )
 end
 
 --- Populate the right window for `spec.right == "head"`: a read-only blob buffer of
@@ -442,6 +359,7 @@ function M.new(ctx)
     owned_bufs = {},
     universal_buf = nil, -- real bufnr currently carrying `keymaps.universal`, if any
     universal_keys = nil, -- keys applied to `universal_buf`, for `ui_keymaps.remove`
+    universal_token = nil, -- this attach's ownership stamp (see `ui_keymaps.attach_universal`)
   }, View)
 end
 

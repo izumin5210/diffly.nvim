@@ -24,6 +24,14 @@ pull request, when one is detected for the current branch, is used only as
 metadata: to resolve the base branch and to key the viewed state -- reviewing
 someone else's PR still means checking it out first (e.g. `gh pr checkout`).
 
+Diffs display either side-by-side (native Neovim diff mode) or unified
+(single column, `<leader>s`/`s` toggles between them -- see
+|difit-keymaps|). Both show the real file -- not a synthetic patch buffer --
+so either mode gets the file's own syntax highlighting and LSP; unified
+overlays the diff on top of it with extmarks, and deleted lines render as
+read-only virtual lines rather than real ones. The buffer is editable in
+worktree mode (the default), in both modes alike.
+
 `setup()` is entirely optional; the plugin works with its defaults untouched.
 Call it only to override them: >lua
   require("difit").setup({
@@ -133,15 +141,16 @@ Universal (all difit windows) ~
   <leader>s    Toggle between side-by-side and unified diff modes.
   <leader>e    Focus the panel (same as `:Difit focus`).
 
-  Works everywhere: the panel, the side-by-side blob windows, the unified
-  view, and real file buffers currently shown in the viewer (the side-by-side
-  view's worktree right-hand window) -- the one place these keys matter most,
-  since real buffers get no local shortcuts at all. There is no universal
-  `close`: closing a real file buffer isn't "closing the review". On a real
-  file buffer these maps are applied only while it is the one currently open
-  in the view, and are removed again the moment the view opens a different
-  file or the review closes -- a real file buffer never keeps difit's
-  keymaps once the viewer stops showing it.
+  Works everywhere: the panel, difit-owned blob buffers, and real file
+  buffers currently shown in the viewer -- worktree-mode side-by-side's
+  right-hand window, and worktree-mode unified's single window alike -- the
+  one place these keys matter most, since real buffers get no local
+  shortcuts at all. There is no universal `close`: closing a real file
+  buffer isn't "closing the review". On a real file buffer these maps are
+  applied only while it is the one currently open in the view, and are
+  removed again the moment the view opens a different file or the review
+  closes -- a real file buffer never keeps difit's keymaps once the viewer
+  stops showing it.
 
 File panel ~
   <CR>    Open the file under the cursor (or toggle a directory's fold).
@@ -155,15 +164,13 @@ File panel ~
           when the cursor is on a file row) -- mirrors native `za`.
 
 difit diff buffers ~
-Difit-owned buffers only (the side-by-side blob windows and the unified
-view) -- never real file buffers, which get only the universal layer above.
+Difit-owned buffers only -- the side-by-side blob windows, and unified's own
+blob buffers (HEAD mode, or a deleted file's read-only content) -- never
+real file buffers, which get only the universal layer above.
   v            Toggle the current file as viewed/un-viewed (same key and
                semantics as the panel's `v`).
   s            Toggle between side-by-side and unified diff modes.
   q            Close the review UI (same as `:Difit close`/the panel's `q`).
-
-  In the unified view specifically, `<CR>` (hardcoded, not configurable)
-  jumps from a diff line to the corresponding line of the real file.
 
                                                  *<Plug>(difit-toggle-viewed)*
                                                     *<Plug>(difit-toggle-mode)*

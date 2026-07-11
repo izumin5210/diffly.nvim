@@ -1,6 +1,9 @@
--- Tests for lua/difit/ui/unified.lua (WP-G): the read-only unified/patch diff view.
--- Runs in a child Neovim (real buffers/windows) against the standard fixture repo;
--- git is never mocked -- entry/spec data comes from real `difit.git` calls.
+-- Tests for lua/difit/ui/unified.lua: the inline-overlay unified diff view (docs/
+-- refactor-v1.md's "Notes for the future inline-overlay unified view", now implemented).
+-- Runs in a child Neovim (real buffers/windows) against the standard fixture repo plus a
+-- handful of purpose-built ones for overlay-anchoring edge cases; git is never mocked --
+-- entry/spec data comes from real `difit.git` calls, and the anchoring math below was
+-- confirmed against REAL `git diff -U3` output (see the comments on each edge-case test).
 
 local helpers = dofile("tests/helpers.lua")
 
@@ -42,15 +45,58 @@ local function mapped(m)
   return m ~= nil and next(m) ~= nil and m.buffer == 1
 end
 
+--- 0-based rows carrying a line-level `hl_group == group` extmark (i.e. `hl_eol`
+--- highlights -- `DifitOverlayAdd`/`DifitOverlayDelete`'s "every line" case), sorted.
+---@param marks table[]  -- from `nvim_buf_get_extmarks(..., { details = true })`
+---@param group string
+---@return integer[]
+local function hl_rows(marks, group)
+  local rows = {}
+  for _, m in ipairs(marks) do
+    if m[4].hl_group == group then
+      table.insert(rows, m[2])
+    end
+  end
+  table.sort(rows)
+  return rows
+end
+
+---@param marks table[]
+---@return integer[]
+local function add_rows(marks)
+  return hl_rows(marks, "DifitOverlayAdd")
+end
+
+--- Every `virt_lines` extmark (one per contiguous "-" run), as `{ row, above, lines }`
+--- with `lines` flattened back to plain strings (each chunk list has exactly one
+--- `{text, "DifitOverlayDelete"}` pair per rendered virtual line).
+---@param marks table[]
+---@return { row: integer, above: boolean, lines: string[] }[]
+local function delete_runs(marks)
+  local runs = {}
+  for _, m in ipairs(marks) do
+    local details = m[4]
+    if details.virt_lines then
+      local lines = {}
+      for _, vl in ipairs(details.virt_lines) do
+        table.insert(lines, vl[1][1])
+      end
+      table.insert(runs, { row = m[2], above = details.virt_lines_above, lines = lines })
+    end
+  end
+  return runs
+end
+
 local repo, paths, child
 
---- Build a real difit.RepoIdentity + entries map (keyed by path) + a difit.DiffSpec for
---- the fixture's `main`...`feature` comparison, and stash them as globals in the child so
---- later `child.lua(...)` calls (one per assertion) can all see the same view instance.
+--- Build a real difit.RepoIdentity + entries map (keyed by path) + a difit.DiffSpec
+--- (`right = "worktree"`, matching config.lua's own default) for the fixture's
+--- `main`...`feature` comparison, and stash them as globals in the child so later
+--- `child.lua(...)` calls (one per assertion) can all see the same view instance.
 --
 --- `_G.ctx` (docs/refactor-v1.md R2/R3) is the `difit.ui.ViewCtx` the view is built with:
---- `anchor` is whatever window is current when this runs (never touched -- views only
---- ever split rightward from it); `actions` records every call into `_G.__actions_log`
+--- `anchor` is whatever window is current when this runs (never touched -- this view only
+--- ever splits rightward from it); `actions` records every call into `_G.__actions_log`
 --- instead of driving a real session.
 local function setup_child()
   child.lua([[
@@ -60,7 +106,7 @@ local function setup_child()
     _G.repo = git.repo_identity(vim.fn.getcwd())
     _G.base_sha = vim.trim(vim.fn.system({ "git", "-C", repo.toplevel, "rev-parse", "main" }))
 
-    local entries = git.diff_files(repo, base_sha, "head", { include_untracked = true })
+    local entries = git.diff_files(repo, base_sha, "worktree", { include_untracked = true })
     _G.entries = {}
     for _, e in ipairs(entries) do
       _G.entries[e.path] = e
@@ -70,9 +116,10 @@ local function setup_child()
       repo = repo,
       base_ref = "main",
       merge_base = base_sha,
-      right = "head",
+      right = "worktree",
       review_key = { kind = "branch", repo = repo.id, base = "main", head = "feature" },
     }
+    _G.spec_head = vim.tbl_extend("force", {}, spec, { right = "head" })
 
     _G.__actions_log = {}
     _G.ctx = {
@@ -97,17 +144,18 @@ local function setup_child()
   ]])
 end
 
---- Open `path` in the shared view, returning the resulting window/buffer state.
+--- Open `path` (via `_G[spec_name]`, `"spec"` by default) in the shared view, returning
+--- the resulting window/buffer/overlay state.
 ---@param path string
-local function open(path)
+---@param spec_name string?
+local function open(path, spec_name)
   return child.lua(
     [[
-      local path = ...
-      view:open(entries[path], spec)
-      local win = vim.api.nvim_get_current_win()
+      local path, spec_name = ...
+      view:open(entries[path], _G[spec_name])
       local buf = vim.api.nvim_get_current_buf()
       return {
-        win = win,
+        win = vim.api.nvim_get_current_win(),
         buf = buf,
         lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
         filetype = vim.bo[buf].filetype,
@@ -115,9 +163,10 @@ local function open(path)
         modifiable = vim.bo[buf].modifiable,
         bufname = vim.api.nvim_buf_get_name(buf),
         win_count = #vim.api.nvim_tabpage_list_wins(0),
+        marks = vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, { details = true }),
       }
     ]],
-    { path }
+    { path, spec_name or "spec" }
   )
 end
 
@@ -138,37 +187,11 @@ local function open_binary()
     }
     view:open(entry, spec)
     local buf = vim.api.nvim_get_current_buf()
-    return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  ]])
-end
-
---- Move the cursor to `line` in the current (unified) window, press <CR>, and report
---- where the input landed.
----@param line integer
-local function press_cr_at(line)
-  child.api.nvim_win_set_cursor(0, { line, 0 })
-  child.type_keys("<CR>")
-  return child.lua([[
-    local win = vim.api.nvim_get_current_win()
-    local buf = vim.api.nvim_get_current_buf()
     return {
-      bufname = vim.api.nvim_buf_get_name(buf),
-      cursor = vim.api.nvim_win_get_cursor(win),
+      lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+      marks = vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {}),
     }
   ]])
-end
-
---- Index (1-based) of the first buffer line whose content is exactly `content`.
----@param lines string[]
----@param content string
----@return integer
-local function line_index(lines, content)
-  for i, l in ipairs(lines) do
-    if l == content then
-      return i
-    end
-  end
-  error("line not found: " .. content)
 end
 
 local T = MiniTest.new_set({
@@ -185,44 +208,172 @@ local T = MiniTest.new_set({
   },
 })
 
-T["open(): renders the diff --git header, hunk header and +/- body lines"] = function()
+---------------------------------------------------------------------------------------
+-- worktree mode: the real file, with the +/- overlay drawn on top of it. Expected rows
+-- below are computed straight from tests/helpers.lua's fixture content -- confirmed
+-- against real `git diff main feature -- src/mod.lua` output:
+--
+--   @@ -1,7 +1,11 @@
+--    local M = {}
+--
+--    function M.hello()
+--   -  return "hello"
+--   +  return "hello, world"
+--   +end
+--   +
+--   +function M.extra()
+--   +  return true
+--    end
+--
+--    return M
+--   \ No newline at end of file
+--
+-- so the real (post-change) file's 11 lines are: 1 local M={}, 2 blank, 3 function
+-- M.hello(), 4 return "hello, world", 5 end, 6 blank, 7 function M.extra(), 8 return
+-- true, 9 end, 10 blank, 11 return M -- rows 3..7 (0-based) are "+", and the deleted
+-- `  return "hello"` sits right before row 3 (i.e. anchored AT row 3, virt_lines_above).
+---------------------------------------------------------------------------------------
+
+T["open(): worktree mode shows the real file -- editable, real filetype (LSP-able), correct bufname"] = function()
   local result = open(paths.modified)
 
-  eq(result.lines[1], "diff --git a/" .. paths.modified .. " b/" .. paths.modified)
-  eq(vim.tbl_contains(result.lines, "@@ -1,7 +1,11 @@"), true)
-  eq(vim.tbl_contains(result.lines, '-  return "hello"'), true)
-  eq(vim.tbl_contains(result.lines, '+  return "hello, world"'), true)
-  eq(vim.tbl_contains(result.lines, "+function M.extra()"), true)
+  eq(realpath(result.bufname), realpath(repo.dir .. "/" .. paths.modified))
+  eq(result.buftype, "", "a real file buffer, not a difit:// scratch buffer")
+  eq(result.modifiable, true)
+  eq(result.filetype, "lua", "the real file keeps its own filetype -- LSP/syntax works")
 end
 
-T["open(): buffer never sets 'filetype' (docs/refactor-v1.md R4), is a read-only scratch buffer"] = function()
+T["open(): '+' lines get DifitOverlayAdd line extmarks at the exact expected rows"] = function()
   local result = open(paths.modified)
+  eq(add_rows(result.marks), { 3, 4, 5, 6, 7 })
+end
 
-  eq(result.filetype, "", "difit:// buffers must never fire FileType autocmds")
+T["open(): the deleted line renders as ONE virt_lines run anchored right before its replacement"] = function()
+  local result = open(paths.modified)
+  local runs = delete_runs(result.marks)
+
+  eq(#runs, 1)
+  eq(runs[1].row, 3)
+  eq(runs[1].above, true)
+  eq(runs[1].lines, { '  return "hello"' })
+end
+
+T["open(): context lines carry no overlay marks"] = function()
+  local result = open(paths.modified)
+  local added, deleted = {}, {}
+  for _, r in ipairs(add_rows(result.marks)) do
+    added[r] = true
+  end
+  for _, run in ipairs(delete_runs(result.marks)) do
+    deleted[run.row] = true
+  end
+
+  for _, row in ipairs({ 0, 1, 2, 8, 9, 10 }) do
+    eq(added[row], nil, "row " .. row .. " is context -- must not be DifitOverlayAdd")
+    eq(deleted[row], nil, "row " .. row .. " is context -- must not anchor a deleted run")
+  end
+end
+
+T["open(): re-rendering the same file clears stale marks instead of accumulating them"] = function()
+  local first = open(paths.modified)
+  local second = open(paths.modified)
+
+  -- If `render_overlay` failed to clear the namespace before redrawing, re-opening the
+  -- same hunks a second time would DOUBLE the mark count instead of reproducing it --
+  -- this is `session:refresh()`'s own call path (reopen `current_path` through the same
+  -- view instance), so this also stands in for "refresh re-renders the overlay".
+  eq(#second.marks, #first.marks)
+  eq(#second.marks > 0, true)
+end
+
+T["worktree mode: editing the real buffer then :write persists to disk"] = function()
+  open(paths.modified)
+  child.lua([[
+    local buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "-- edited during review" })
+    vim.cmd("write")
+  ]])
+
+  local content = vim.fn.readfile(repo.dir .. "/" .. paths.modified)
+  eq(content[#content], "-- edited during review")
+end
+
+---------------------------------------------------------------------------------------
+-- Added file: every line is "+" (git.hunks against merge_base naturally returns a
+-- single, all-"+" hunk for a path that doesn't exist at merge_base -- no special-casing
+-- needed beyond the general overlay algorithm above).
+---------------------------------------------------------------------------------------
+
+T["open(): an added file gets DifitOverlayAdd on every line, no deleted runs"] = function()
+  local result = open(paths.new)
+
+  local expected = {}
+  for i = 0, #result.lines - 1 do
+    expected[i + 1] = i
+  end
+  eq(add_rows(result.marks), expected)
+  eq(delete_runs(result.marks), {})
+end
+
+---------------------------------------------------------------------------------------
+-- Deleted file: a read-only blob of entry.base_sha, entirely painted DifitOverlayDelete
+-- (line-level marks, no virt_lines -- there is no "new file" to anchor deletions inside).
+---------------------------------------------------------------------------------------
+
+T["open(): a deleted file shows a read-only base blob, entirely DifitOverlayDelete"] = function()
+  local result = open(paths.deleted)
+
   eq(result.buftype, "nofile")
   eq(result.modifiable, false)
-  local anchor = child.lua_get("_G.ctx.anchor")
-  eq(result.bufname, "difit://unified/" .. anchor .. "/" .. paths.modified)
+  eq(vim.startswith(result.bufname, "difit://"), true)
+  eq(delete_runs(result.marks), {}, "no virt_lines -- the whole buffer IS the deleted content")
+
+  local expected = {}
+  for i = 0, #result.lines - 1 do
+    expected[i + 1] = i
+  end
+  eq(hl_rows(result.marks, "DifitOverlayDelete"), expected)
 end
 
-T["open(): highlights as 'diff' via treesitter or the legacy 'syntax' option, never 'filetype'"] = function()
-  local result = open(paths.modified)
+---------------------------------------------------------------------------------------
+-- Binary and head mode.
+---------------------------------------------------------------------------------------
 
-  local highlighted = child.lua(
-    [[
-      local buf = ...
-      local ts_active = vim.treesitter.highlighter.active[buf] ~= nil
-      return ts_active or vim.bo[buf].syntax == "diff"
-    ]],
-    { result.buf }
-  )
-  eq(highlighted, true)
+T["open(): binary entries render a single placeholder line, no overlay"] = function()
+  local result = open_binary()
+  eq(result.lines, { "binary file" })
+  eq(#result.marks, 0)
 end
 
-T["open(): reuses the same window across multiple opens"] = function()
-  local first = open(paths.modified)
+T["open(): head mode shows a read-only HEAD blob with the overlay computed against HEAD"] = function()
+  local result = open(paths.modified, "spec_head")
+
+  eq(result.buftype, "nofile")
+  eq(result.modifiable, false)
+  eq(vim.startswith(result.bufname, "difit://"), true)
+  eq(add_rows(result.marks), { 3, 4, 5, 6, 7 })
+  eq(delete_runs(result.marks)[1].lines, { '  return "hello"' })
+
+  local head_lines = vim.fn.systemlist({ "git", "-C", repo.dir, "show", "HEAD:" .. paths.modified })
+  eq(result.lines, head_lines)
+end
+
+T["open(): renamed files open the real (new-path) file without error"] = function()
+  local result = open(paths.renamed_to)
+
+  eq(result.buftype, "")
+  eq(vim.endswith(result.bufname, "/" .. paths.renamed_to), true)
+end
+
+---------------------------------------------------------------------------------------
+-- Window ownership (docs/refactor-v1.md R2): unchanged from the pre-overlay view, since
+-- neither `ensure_window` nor the owned-window contract changed.
+---------------------------------------------------------------------------------------
+
+T["open(): reuses the same window across multiple opens, across different buffer kinds"] = function()
+  local first = open(paths.modified) -- real buffer
   local before = child.lua([[return #vim.api.nvim_list_wins()]])
-  local second = open(paths.new)
+  local second = open(paths.deleted) -- owned blob buffer
   local after = child.lua([[return #vim.api.nvim_list_wins()]])
 
   eq(second.win, first.win)
@@ -248,200 +399,93 @@ T["ensure_window: an offered ctx.claim is absorbed instead of splitting a fresh 
   )
 end
 
--- NOTE: `_G.spec` (built by `setup_child`) has `right = "head"`, so from here down every
--- jump lands in a read-only HEAD blob buffer (finding 7's fix), never the worktree file
--- -- see the divergence regression test further below for *why* that matters. Cross-check
--- expected content against `git show HEAD:<path>` (independent of the worktree) rather
--- than `vim.fn.readfile` (which reads the worktree file) to make that distinction explicit.
+---------------------------------------------------------------------------------------
+-- close(): a real buffer must retain NO trace (extmarks, keymaps) after close() -- it is
+-- never wiped (it isn't difit-owned), only released; owned scratch buffers ARE wiped.
+---------------------------------------------------------------------------------------
 
----@param path string
----@return string[]
-local function head_content(path)
-  return vim.fn.systemlist({ "git", "-C", repo.dir, "show", "HEAD:" .. path })
-end
-
----@param bufname string
----@param path string
-local function assert_head_blob_bufname(bufname, path)
-  eq(vim.startswith(bufname, "difit://"), true)
-  eq(vim.endswith(bufname, "/" .. path), true)
-end
-
-T["<CR> on a '+' line jumps to the exact line in a read-only HEAD blob (spec.right == 'head')"] = function()
+T["close(): the real buffer survives but loses its overlay marks and keymaps.universal"] = function()
   local result = open(paths.modified)
-  local target_line = line_index(result.lines, '+  return "hello, world"')
-
-  local jumped = press_cr_at(target_line)
-
-  assert_head_blob_bufname(jumped.bufname, paths.modified)
-  eq(jumped.cursor[1], 4)
-
-  local head_lines = head_content(paths.modified)
-  eq(head_lines[4], '  return "hello, world"')
-
-  local buf_props = child.lua([[
-    return { buftype = vim.bo[0].buftype, modifiable = vim.bo[0].modifiable }
-  ]])
-  eq(buf_props.buftype, "nofile")
-  eq(buf_props.modifiable, false)
-end
-
-T["<CR> on a context line jumps to the corresponding line in the HEAD blob"] = function()
-  local result = open(paths.modified)
-  local target_line = line_index(result.lines, " function M.hello()")
-
-  local jumped = press_cr_at(target_line)
-
-  assert_head_blob_bufname(jumped.bufname, paths.modified)
-  eq(jumped.cursor[1], 3)
-
-  local head_lines = head_content(paths.modified)
-  eq(head_lines[3], "function M.hello()")
-end
-
-T["<CR> on a '-' line jumps to the hunk's new_start in the HEAD blob"] = function()
-  local result = open(paths.modified)
-  local target_line = line_index(result.lines, '-  return "hello"')
-
-  local jumped = press_cr_at(target_line)
-
-  assert_head_blob_bufname(jumped.bufname, paths.modified)
-  eq(jumped.cursor[1], 1)
-end
-
-T["<CR>: right=worktree jump still opens the real worktree file (unchanged behavior)"] = function()
-  child.lua([[_G.spec_worktree = vim.tbl_extend("force", {}, spec, { right = "worktree" })]])
-  local result = child.lua(
-    [[
-      local path = ...
-      view:open(entries[path], _G.spec_worktree)
-      return { lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false) }
-    ]],
-    { paths.modified }
-  )
-  local target_line = line_index(result.lines, '+  return "hello, world"')
-
-  local jumped = press_cr_at(target_line)
-
-  eq(realpath(jumped.bufname), realpath(repo.dir .. "/" .. paths.modified))
-  eq(jumped.cursor[1], 4)
-end
-
-T["<CR>: right=head jump lands at the correct line even when the worktree has diverged from HEAD"] = function()
-  local result = open(paths.modified)
-  local target_line = line_index(result.lines, '+  return "hello, world"')
-  local expected_head_lines = head_content(paths.modified)
-
-  -- Diverge the worktree from HEAD: prepend extra uncommitted lines above the hunk. If
-  -- the jump wrongly opened the worktree file (the bug fixed here), the very same target
-  -- line would now show completely different content.
-  local diverged = { "-- extra worktree-only line 1", "-- extra worktree-only line 2" }
-  vim.list_extend(diverged, vim.fn.readfile(repo.dir .. "/" .. paths.modified))
-  vim.fn.writefile(diverged, repo.dir .. "/" .. paths.modified)
-
-  local jumped = press_cr_at(target_line)
-
-  assert_head_blob_bufname(jumped.bufname, paths.modified)
-  eq(jumped.cursor[1], 4)
-
-  local blob_lines = child.lua([[return vim.api.nvim_buf_get_lines(0, 0, -1, false)]])
-  eq(blob_lines, expected_head_lines)
-  eq(blob_lines[4], '  return "hello, world"')
-end
-
-T["<CR> on the diff --git header line is a no-op"] = function()
-  local result = open(paths.modified)
-  local unified_win = result.win
-  local unified_buf = result.buf
-
-  press_cr_at(1)
-
-  local still_here = child.lua([[
-    return { win = vim.api.nvim_get_current_win(), buf = vim.api.nvim_get_current_buf() }
-  ]])
-  eq(still_here.win, unified_win)
-  eq(still_here.buf, unified_buf)
-end
-
-T["open(): binary entries render a single placeholder line"] = function()
-  local lines = open_binary()
-  eq(lines, { "binary file" })
-end
-
-T["open(): deleted files render without error"] = function()
-  local ok = child.lua(
-    [[
-      local path = ...
-      local ok = pcall(function() view:open(entries[path], spec) end)
-      return ok
-    ]],
-    { paths.deleted }
-  )
-  eq(ok, true)
-
-  local result = open(paths.deleted)
-  eq(result.lines[1], "diff --git a/" .. paths.deleted .. " b/" .. paths.deleted)
-  eq(vim.tbl_contains(result.lines, "-local M = {}"), true)
-end
-
-T["open(): renamed files render without error, using old_path in the header"] = function()
-  local result = open(paths.renamed_to)
-  eq(result.lines[1], "diff --git a/" .. paths.renamed_from .. " b/" .. paths.renamed_to)
-end
-
-T["close(): wipes owned buffers and closes its window, leaving ctx.anchor untouched"] = function()
-  local first = open(paths.modified)
-  open(paths.new)
+  local ns = child.lua_get("view.ns")
 
   child.lua([[view:close()]])
 
-  local buf_valid = child.lua([[return vim.api.nvim_buf_is_valid(...)]], { first.buf })
-  eq(buf_valid, false)
+  eq(child.lua("return vim.api.nvim_buf_is_valid(...)", { result.buf }), true, "never wiped")
+  eq(child.lua("return #vim.api.nvim_buf_get_extmarks(...)", { result.buf, ns, 0, -1, {} }), 0)
+  eq(mapped(buf_maparg(child, result.buf, "<leader>v")), false)
+end
 
-  -- docs/refactor-v1.md R2: close() destroys every window this view owns...
-  local win_valid = child.lua([[return vim.api.nvim_win_is_valid(...)]], { first.win })
-  eq(win_valid, false)
+T["close(): owned scratch buffers are wiped and the window is closed, leaving ctx.anchor untouched"] = function()
+  local deleted = open(paths.deleted)
 
-  -- ...and leaves whatever it never owned (ctx.anchor) completely alone.
-  local anchor_valid = child.lua([[return vim.api.nvim_win_is_valid(_G.ctx.anchor)]])
-  eq(anchor_valid, true)
+  child.lua([[view:close()]])
+
+  eq(child.lua("return vim.api.nvim_buf_is_valid(...)", { deleted.buf }), false)
+  eq(child.lua("return vim.api.nvim_win_is_valid(...)", { deleted.win }), false)
+  eq(child.lua_get("vim.api.nvim_win_is_valid(_G.ctx.anchor)"), true)
+end
+
+T["release_real_buf(): switching from the real worktree buffer to an owned buffer clears its overlay + keymaps immediately (not just at close())"] = function()
+  local worktree_result = open(paths.modified)
+  local ns = child.lua_get("view.ns")
+
+  open(paths.deleted) -- switches the SAME window to an owned blob buffer
+
+  eq(
+    child.lua("return #vim.api.nvim_buf_get_extmarks(...)", { worktree_result.buf, ns, 0, -1, {} }),
+    0,
+    "the real buffer's overlay is gone the moment the view moves on, not just at close()"
+  )
+  eq(mapped(buf_maparg(child, worktree_result.buf, "<leader>v")), false)
 end
 
 ---------------------------------------------------------------------------------------
--- keymaps.diff on the unified buffer: before this fix it only ever carried `v`
--- (toggle_viewed); `s`/`q`/`<leader>e` (toggle_mode/close/focus_panel) are new.
---
--- keymaps.universal (docs/design.md "Interface", the two-layer model): the unified buffer
--- is always difit-owned, so -- like the side-by-side blob buffers -- it gets keymaps.diff
--- AND keymaps.universal, not just the former.
+-- keymaps: the real-buffer rule (design.md) -- worktree mode gets ONLY keymaps.universal,
+-- never keymaps.diff's single-key shortcuts. Difit-owned buffers (deleted/head blobs,
+-- binary) get both, exactly like ui/sidebyside.lua's own owned buffers.
 ---------------------------------------------------------------------------------------
 
-T["open(): the unified buffer gets keymaps.diff's toggle_mode/close/focus_panel in addition to v"] = function()
-  local result = open(paths.modified)
-
-  for _, key in ipairs({ "v", "s", "<leader>e", "q" }) do
-    eq(mapped(buf_maparg(child, result.buf, key)), true, key .. " missing on the unified buffer")
-  end
-end
-
-T["open(): the unified buffer also gets keymaps.universal's leader-prefixed keys"] = function()
+T["open(): worktree mode's real buffer gets keymaps.universal only, never keymaps.diff"] = function()
   local result = open(paths.modified)
 
   for _, key in ipairs({ "<leader>v", "<leader>s", "<leader>e" }) do
+    eq(mapped(buf_maparg(child, result.buf, key)), true, key .. " missing on the real buffer")
+  end
+  for _, key in ipairs({ "v", "s", "q" }) do
     eq(
       mapped(buf_maparg(child, result.buf, key)),
-      true,
-      key .. " missing on the unified buffer (keymaps.universal)"
+      false,
+      key .. " must not be mapped on a real buffer"
     )
   end
 end
 
-T["keymaps.universal.toggle_mode = false disables only that key, leaving keymaps.diff's own toggle_mode intact"] = function()
+T["open(): a difit-owned buffer gets keymaps.diff's v/s/<leader>e/q in addition to keymaps.universal"] = function()
+  local result = open(paths.deleted)
+
+  for _, key in ipairs({ "v", "s", "<leader>e", "q", "<leader>v", "<leader>s" }) do
+    eq(mapped(buf_maparg(child, result.buf, key)), true, key .. " missing on an owned buffer")
+  end
+end
+
+T["open(): keymaps are set with nowait, on both the real buffer and owned buffers"] = function()
+  local real = open(paths.modified)
+  for _, key in ipairs({ "<leader>v", "<leader>s", "<leader>e" }) do
+    eq(buf_maparg(child, real.buf, key).nowait, 1)
+  end
+
+  local owned = open(paths.deleted)
+  for _, key in ipairs({ "v", "s", "<leader>e", "q", "<leader>v" }) do
+    eq(buf_maparg(child, owned.buf, key).nowait, 1)
+  end
+end
+
+T["keymaps.universal.toggle_mode = false disables only that key, leaving keymaps.diff's own toggle_mode intact on an owned buffer"] = function()
   child.lua(
     [[require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })]]
   )
 
-  local result = open(paths.modified)
+  local result = open(paths.deleted)
 
   eq(mapped(buf_maparg(child, result.buf, "<leader>s")), false, "keymaps.universal.toggle_mode")
   eq(mapped(buf_maparg(child, result.buf, "s")), true, "keymaps.diff.toggle_mode is unaffected")
@@ -452,17 +496,7 @@ T["keymaps.universal.toggle_mode = false disables only that key, leaving keymaps
   )
 end
 
-T["open(): keymaps.diff maps on the unified buffer are set with nowait"] = function()
-  local result = open(paths.modified)
-
-  eq(buf_maparg(child, result.buf, "v").nowait, 1)
-  eq(buf_maparg(child, result.buf, "s").nowait, 1)
-  eq(buf_maparg(child, result.buf, "<leader>e").nowait, 1)
-  eq(buf_maparg(child, result.buf, "q").nowait, 1)
-  eq(buf_maparg(child, result.buf, "<leader>v").nowait, 1)
-end
-
-T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = function()
+T["toggle_mode/focus_panel/close actions fire when their keys are pressed on an owned buffer"] = function()
   child.lua([[
     _G.__calls = { toggle_mode = 0, focus_panel = 0, close = 0 }
     _G.ctx.actions.toggle_mode = function()
@@ -476,7 +510,7 @@ T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = fu
     end
   ]])
 
-  open(paths.modified)
+  open(paths.deleted)
 
   child.type_keys("s")
   child.type_keys([[\e]]) -- the literal keys `<leader>e` sends with the default mapleader
@@ -485,10 +519,29 @@ T["toggle_mode/focus_panel/close actions fire when their keys are pressed"] = fu
   eq(child.lua_get("_G.__calls"), { toggle_mode = 1, focus_panel = 1, close = 1 })
 end
 
+T["universal actions (leader-prefixed) fire from the real worktree buffer"] = function()
+  child.lua([[
+    _G.__calls = { toggle_mode = 0, focus_panel = 0 }
+    _G.ctx.actions.toggle_mode = function()
+      _G.__calls.toggle_mode = _G.__calls.toggle_mode + 1
+    end
+    _G.ctx.actions.focus_panel = function()
+      _G.__calls.focus_panel = _G.__calls.focus_panel + 1
+    end
+  ]])
+
+  open(paths.modified)
+
+  child.type_keys([[\s]])
+  child.type_keys([[\e]])
+
+  eq(child.lua_get("_G.__calls"), { toggle_mode = 1, focus_panel = 1 })
+end
+
 ---------------------------------------------------------------------------------------
--- Blob-loading error honesty (docs/refactor-v1.md R4): a REAL git failure (a sha that
--- doesn't resolve to an object) must notify once instead of silently degrading to an
--- empty/truncated render indistinguishable from ordinary "nothing to show" cases.
+-- Blob-loading / hunks error honesty (docs/refactor-v1.md R4): a REAL git failure (a sha
+-- that doesn't resolve to an object) must notify once instead of silently degrading to
+-- an empty/truncated render indistinguishable from ordinary "nothing to show" cases.
 ---------------------------------------------------------------------------------------
 
 local BOGUS_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -503,7 +556,7 @@ local function install_notify_capture(child)
   ]])
 end
 
-T["<CR>: a bogus head_sha notifies WARN once and still opens an empty read-only blob"] = function()
+T["show_head_blob(): a bogus head_sha notifies WARN once and still opens an empty read-only blob"] = function()
   child.lua(
     [[
       local path, sha = ...
@@ -511,33 +564,259 @@ T["<CR>: a bogus head_sha notifies WARN once and still opens an empty read-only 
     ]],
     { paths.modified, BOGUS_SHA }
   )
-
-  local result = open(paths.modified)
-  local target_line = line_index(result.lines, '+  return "hello, world"')
-
   install_notify_capture(child)
-  local jumped = press_cr_at(target_line)
 
-  assert_head_blob_bufname(jumped.bufname, paths.modified)
-  local blob_lines = child.lua([[return vim.api.nvim_buf_get_lines(0, 0, -1, false)]])
-  eq(blob_lines, { "" }, "UI still renders (empty) instead of erroring")
+  local result = open(paths.modified, "spec_head")
+
+  eq(result.buftype, "nofile")
+  eq(result.lines, { "" }, "UI still renders (empty) instead of erroring")
 
   local notes = child.lua_get("_G.__notifications")
   eq(#notes, 1)
   eq(notes[1].level, vim.log.levels.WARN)
 end
 
-T["open(): a bogus merge_base notifies WARN once and still renders just the header line"] = function()
+T["show_deleted(): a bogus base_sha notifies WARN once and still opens an empty, fully DifitOverlayDelete blob"] = function()
+  child.lua(
+    [[
+      local path, sha = ...
+      entries[path].base_sha = sha
+    ]],
+    { paths.deleted, BOGUS_SHA }
+  )
+  install_notify_capture(child)
+
+  local result = open(paths.deleted)
+
+  eq(result.lines, { "" })
+  eq(hl_rows(result.marks, "DifitOverlayDelete"), { 0 })
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].level, vim.log.levels.WARN)
+end
+
+T["open(): a bogus merge_base notifies WARN once and still renders the real buffer with no overlay"] = function()
   child.lua([[spec.merge_base = ...]], { BOGUS_SHA })
   install_notify_capture(child)
 
   local result = open(paths.modified)
 
-  eq(result.lines, { "diff --git a/" .. paths.modified .. " b/" .. paths.modified })
+  eq(result.buftype, "", "the real file itself still opens fine")
+  eq(#result.marks, 0, "no overlay -- hunks defaulted to {} instead of erroring")
 
   local notes = child.lua_get("_G.__notifications")
   eq(#notes, 1)
   eq(notes[1].level, vim.log.levels.WARN)
+end
+
+---------------------------------------------------------------------------------------
+-- Overlay anchoring edge cases (empirically verified against real `git diff -U3`
+-- output -- see the shell transcript referenced in the PR/commit description; summarized
+-- per case below). Each builds its own tiny throwaway repo: the anchoring math
+-- (`compute_overlay`/`render_overlay`) is identical whether the target buffer is a real
+-- worktree file or a read-only blob, so these all use `right = "head"` for simplicity --
+-- nothing here depends on the worktree also having this content.
+---------------------------------------------------------------------------------------
+
+--- `helpers.Repo:write` (via `vim.fn.writefile(..., "b")`) never adds a trailing newline
+--- (see tests/test_e2e.lua's own note on the same quirk) -- fine for the standard fixture,
+--- but it would silently corrupt these purpose-built edge cases: a non-empty `after`
+--- whose last line happens to equal `before`'s last line would still show as a spurious
+--- delete+add pair, since one copy has a trailing newline (mid-file in `before`) and the
+--- other doesn't (last line of the file). Appending an extra "" line forces `writefile` to
+--- emit a real trailing newline instead (confirmed empirically: `{"a","b",""}` writes
+--- `"a\nb\n"`), i.e. an ordinary file with no `\ No newline at end of file` marker at all.
+--- Left alone for a genuinely EMPTY `after` (`{}`) -- that must stay a true 0-byte file.
+---@param lines string[]
+---@return string[]
+local function with_trailing_newline(lines)
+  if #lines == 0 then
+    return lines
+  end
+  local out = vim.deepcopy(lines)
+  table.insert(out, "")
+  return out
+end
+
+--- Build a single-file repo (`f.lua`, `before` on `main`, `after` on `feature`), open it
+--- through a fresh `unified.new(ctx)` view in HEAD mode, and return the resulting overlay
+--- marks alongside a `cleanup()` the caller must call afterwards.
+---@param before string[]
+---@param after string[]
+---@return { lines: string[], marks: table[] } result
+---@return fun() cleanup
+local function overlay_for_change(before, after)
+  local r = helpers.new_repo()
+  r:write("f.lua", with_trailing_newline(before))
+  r:commit("chore: base")
+  r:branch("feature")
+  r:write("f.lua", with_trailing_newline(after))
+  r:commit("feat: change")
+
+  local c = helpers.new_child(r.dir)
+  c.lua([[
+    local git2 = require("difit.git")
+    local unified2 = require("difit.ui.unified")
+
+    local repo2 = git2.repo_identity(vim.fn.getcwd())
+    local base_sha2 = vim.trim(vim.fn.system({ "git", "-C", repo2.toplevel, "rev-parse", "main" }))
+    local entries = git2.diff_files(repo2, base_sha2, "head", { include_untracked = true })
+
+    _G.entry2 = entries[1]
+    _G.spec2 = {
+      repo = repo2,
+      base_ref = "main",
+      merge_base = base_sha2,
+      right = "head",
+      review_key = { kind = "branch", repo = repo2.id, base = "main", head = "feature" },
+    }
+    _G.ctx2 = {
+      anchor = vim.api.nvim_get_current_win(),
+      claim = nil,
+      actions = {
+        toggle_viewed = function() end,
+        toggle_mode = function() end,
+        focus_panel = function() end,
+        close = function() end,
+      },
+    }
+    _G.view2 = unified2.new(_G.ctx2)
+  ]])
+
+  local result = c.lua([[
+    view2:open(entry2, spec2)
+    local buf = vim.api.nvim_get_current_buf()
+    return {
+      lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+      marks = vim.api.nvim_buf_get_extmarks(buf, view2.ns, 0, -1, { details = true }),
+    }
+  ]])
+
+  return result, function()
+    c.stop()
+    r:destroy()
+  end
+end
+
+-- git diff -U3 for L1..L10 -> L1,L2,L3,L4,L8,L9,L10 (delete L5,L6,L7 mid-file):
+--   @@ -2,9 +2,6 @@
+--    L2
+--    L3
+--    L4
+--   -L5
+--   -L6
+--   -L7
+--    L8
+--    L9
+--    L10
+-- new_start=2 (context lines still land at real rows 1,2,3); the run flushes right
+-- before "L8" (now at 1-based line 5, row 4) -- exactly where L5..L7 used to be.
+T["overlay edge case: pure deletion in the middle of the file anchors exactly where the text was removed"] = function()
+  local numbered = {}
+  for i = 1, 10 do
+    numbered[i] = "L" .. i
+  end
+  local after = { "L1", "L2", "L3", "L4", "L8", "L9", "L10" }
+
+  local result, cleanup = overlay_for_change(numbered, after)
+  eq(result.lines, after)
+
+  local runs = delete_runs(result.marks)
+  eq(#runs, 1)
+  eq(runs[1].row, 4)
+  eq(runs[1].above, true)
+  eq(runs[1].lines, { "L5", "L6", "L7" })
+  eq(add_rows(result.marks), {})
+
+  cleanup()
+end
+
+-- git diff -U3 for L1..L10 -> L4..L10 (delete the first 3 lines):
+--   @@ -1,6 +1,3 @@
+--   -L1
+--   -L2
+--   -L3
+--    L4
+--    L5
+--    L6
+-- new_start=1: the run flushes at raw_row = new_start - 1 = 0 BEFORE any real line has
+-- been consumed -- row 0 falls out naturally here, no clamping needed (contrast with the
+-- "whole file emptied" case below, where new_start itself is 0 and clamping IS needed).
+T["overlay edge case: deletion at the very top of the file anchors at row 0"] = function()
+  local numbered = {}
+  for i = 1, 10 do
+    numbered[i] = "L" .. i
+  end
+  local after = { "L4", "L5", "L6", "L7", "L8", "L9", "L10" }
+
+  local result, cleanup = overlay_for_change(numbered, after)
+  eq(result.lines, after)
+
+  local runs = delete_runs(result.marks)
+  eq(#runs, 1)
+  eq(runs[1].row, 0)
+  eq(runs[1].above, true)
+  eq(runs[1].lines, { "L1", "L2", "L3" })
+
+  cleanup()
+end
+
+-- git diff -U3 for L1..L10 -> L1..L7 (delete the last 3 lines):
+--   @@ -5,6 +5,3 @@
+--    L5
+--    L6
+--    L7
+--   -L8
+--   -L9
+--   -L10
+-- new_start=5, new_count=3: after the 3 context lines cur_new reaches 8, one past the
+-- new file's last real line (7) -- raw_row (7) exceeds the last valid row (6), so the
+-- run clamps to the last line with virt_lines_above = false (renders BELOW it).
+T["overlay edge case: deletion at EOF anchors on the last line, rendered below it"] = function()
+  local numbered = {}
+  for i = 1, 10 do
+    numbered[i] = "L" .. i
+  end
+  local after = { "L1", "L2", "L3", "L4", "L5", "L6", "L7" }
+
+  local result, cleanup = overlay_for_change(numbered, after)
+  eq(result.lines, after)
+
+  local runs = delete_runs(result.marks)
+  eq(#runs, 1)
+  eq(runs[1].row, 6, "clamped to the last real line (0-based row 6 == line 7)")
+  eq(runs[1].above, false, "renders BELOW the last line, not overlapping it")
+  eq(runs[1].lines, { "L8", "L9", "L10" })
+
+  cleanup()
+end
+
+-- git diff -U3 for L1,L2,L3 -> "" (the file still exists, tracked, but is now 0 bytes):
+--   @@ -1,3 +0,0 @@
+--   -L1
+--   -L2
+--   -L3
+-- Confirmed empirically (never guessed): with -U3, git reports "+0,0" -- new_start = 0,
+-- i.e. "before line 1" -- ONLY when the new side has literally zero lines; anything short
+-- of that always carries at least one line of surrounding context (see the top-of-file
+-- case above, which still gets new_start = 1). `cur_new - 1 == -1` here, genuinely
+-- needing the row-0 clamp (contrast with the top-of-file case, where row 0 falls out
+-- without clamping). The buffer itself still has exactly one (empty) line -- Neovim
+-- buffers are never truly 0 lines -- so the anchor is valid at row 0.
+T["overlay edge case: the whole file emptied (new_start == 0) clamps to row 0"] = function()
+  local result, cleanup = overlay_for_change({ "L1", "L2", "L3" }, {})
+
+  eq(result.lines, { "" })
+
+  local runs = delete_runs(result.marks)
+  eq(#runs, 1)
+  eq(runs[1].row, 0)
+  eq(runs[1].above, true)
+  eq(runs[1].lines, { "L1", "L2", "L3" })
+  eq(add_rows(result.marks), {})
+
+  cleanup()
 end
 
 return T

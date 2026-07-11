@@ -27,14 +27,26 @@
 
 local M = {}
 
+--- Shorten a blob sha for buffer names (both diff views key content-addressed buffer
+--- names off of this -- `ui/sidebyside.lua`'s left/head blobs, `ui/unified.lua`'s deleted/
+--- head blobs). A `nil` sha (nothing to load, e.g. an added file's empty base side) stays
+--- `nil` rather than becoming the string `"nil"`, so callers can still fall back to a
+--- distinct placeholder name (e.g. "empty") for that case.
+---@param sha string?
+---@return string?
+function M.short_sha(sha)
+  return sha and sha:sub(1, 7) or nil
+end
+
 ---@class difit.ui.scratch.Opts
 ---@field lines string[]?     -- content to write; applied ONLY when this call creates a
 -- fresh buffer, never re-applied when an existing one with
--- the same name is reused (callers whose name embeds
--- content identity, e.g. a blob sha, rely on this to make
--- reuse content-safe; callers whose name does NOT embed
--- content identity, e.g. unified's per-path patch buffer,
--- instead re-fill content themselves on every call)
+-- the same name is reused -- every caller of `opts.lines`
+-- (both diff views' blob buffers, keyed off the exact sha
+-- being loaded via `M.short_sha`; their fixed "binary"/
+-- "deleted"/"empty" placeholders, whose content is a
+-- constant for that name) relies on this to make reuse
+-- content-safe by construction
 ---@field modifiable boolean? -- when `lines` is absent, explicitly set the initial
 -- `modifiable` state (used by callers, like the panel, that
 -- manage their own content/modifiable toggling directly)

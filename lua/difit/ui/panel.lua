@@ -491,11 +491,11 @@ function M.open(session)
   -- that autocmd watches for. Harmless when this module is driven standalone (see
   -- tests/test_panel.lua) -- nothing reads `vim.w[win].difit` outside init.lua.
   vim.w[win].difit = true
-  -- Defense in depth (Neovim 0.12+): `ui/unified.lua`'s jump-to-file target-window
-  -- resolution already checks bufname prefixes to avoid landing a real file in this
-  -- window, but 'winfixbuf' makes Neovim itself refuse any `:edit`/`:buffer` that would
-  -- replace this window's buffer -- so a future code path that forgets that check still
-  -- can't silently destroy the tree.
+  -- Defense in depth (Neovim 0.12+): both diff views already build their own windows via
+  -- explicit `ctx.anchor`/`ctx.claim` handles and never touch "the current window" (docs/
+  -- refactor-v1.md R2), so nothing should ever `:edit`/`:buffer` a real file straight into
+  -- this one -- but 'winfixbuf' makes Neovim itself refuse that outright, so a future code
+  -- path that gets this wrong still can't silently destroy the tree.
   vim.wo[win].winfixbuf = true
 
   local panel = setmetatable({

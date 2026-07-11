@@ -81,10 +81,16 @@ Kills the root cause of the E1513/window-leak class of bugs.
 - codediff's C/FFI diff engine, LRU blob cache, live `TextChanged` re-diff loop,
   TabLeave suspend/resume, getter/setter accessor sprawl.
 
-## Notes for the future inline-overlay unified view (v2)
+## Notes for the future inline-overlay unified view (v2) -- IMPLEMENTED
 
-codediff's rendering model is the blueprint: real buffer holds only new-side content;
-deletions are `virt_lines` extmarks with char-level highlights pre-baked into chunk
-runs; one namespace per concern; full clear-and-redraw per render; `vim.diff()` can
-supply hunks without the C engine. R2's `View` contract (open/close/owned windows) is
-the seam it will plug into.
+codediff's rendering model was the blueprint, now implemented in `ui/unified.lua`: the
+real buffer (worktree file, HEAD blob, or deleted-file blob) holds the actual content;
+"+" lines get a line-level `DifitOverlayAdd` extmark; each contiguous run of "-" lines
+becomes ONE `virt_lines` extmark (`DifitOverlayDelete` chunks) anchored where the text
+used to sit, with two anchoring edge cases confirmed against real `git diff -U3` output
+(a deletion landing before the buffer's first/last real line clamps to row 0 or the last
+line respectively -- see the comments on `ui/unified.lua`'s `compute_overlay` and the
+edge-case tests in `tests/test_unified.lua`); one dedicated namespace per view instance;
+full clear-and-redraw per render. R2's `View` contract (open/close/owned windows) was
+exactly the seam it plugged into -- no changes to that contract were needed. The old
+`git.hunks`-fed patch-text buffer and its `<CR>` jump-to-file machinery are gone.

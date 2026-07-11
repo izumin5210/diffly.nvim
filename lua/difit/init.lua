@@ -609,8 +609,8 @@ end
 --- viewed mark for the current buffer's file when that buffer is a real worktree/HEAD file
 --- belonging to the current tabpage's session. difit-owned buffers (`difit://...`) already
 --- get their own `config.keymaps.diff.toggle_viewed` mapping straight from the view
---- modules, so this is specifically for real file buffers (e.g. the side-by-side right
---- window, or a file opened via the unified view's jump-to-file).
+--- modules, so this is specifically for real file buffers (worktree mode's real buffer in
+--- either the side-by-side right window or the unified window alike).
 function M.toggle_viewed_current()
   local entry = current_entry()
   if not entry then

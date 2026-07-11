@@ -229,15 +229,19 @@ local function assert_sidebyside_layout(child, path)
 end
 
 --- Assert the viewer tabpage looks like a healthy unified layout: the panel window still
---- shows a `difit://panel/...` buffer, plus exactly one `difit://unified/...` window and
---- nothing else.
+--- shows a `difit://panel/...` buffer, plus exactly one unified window showing `path` and
+--- nothing else. Unlike the pre-overlay design, the unified window's buffer is the REAL
+--- file in worktree mode (docs/refactor-v1.md's now-implemented inline-overlay note) --
+--- not a `difit://unified/...` scratch buffer -- so this asserts `path`'s own name instead,
+--- mirroring `assert_sidebyside_layout`'s right-hand check.
 ---@param child table
-local function assert_unified_layout(child)
+---@param path string
+local function assert_unified_layout(child, path)
   local snap = layout_snapshot(child)
   eq(snap.mode, "unified")
   eq(vim.startswith(snap.panel_bufname, "difit://panel/"), true)
   eq(snap.win_count, 2, "panel + the unified window, nothing orphaned")
-  eq(vim.startswith(snap.unified_bufname or "", "difit://unified/"), true)
+  eq(vim.endswith(snap.unified_bufname or "", "/" .. path), true)
 end
 
 ---------------------------------------------------------------------------------------
@@ -421,9 +425,9 @@ T["6. a detected PR shows `(PR #N)` in the header and keys viewed state separate
   restore_gh()
 end
 
--- 7. `s` switches to unified mode; `<CR>` jumps from it -----------------------------------
+-- 7. `s` switches to unified mode, which shows the real file inline with its overlay -----
 
-T["7. `s` switches to unified mode and <CR> jumps to the real file"] = function()
+T["7. `s` switches to unified mode, showing the real file inline with its overlay"] = function()
   set_size(child, 24, 100)
   child.cmd("Difit")
 
@@ -435,33 +439,38 @@ T["7. `s` switches to unified mode and <CR> jumps to the real file"] = function(
   child.type_keys("s")
   eq(session_field(child, "mode"), "unified")
 
+  -- Unlike every other difit-owned buffer in these screenshots, the unified window now
+  -- shows the REAL worktree file (docs/refactor-v1.md's inline-overlay note) at its actual
+  -- absolute path -- which embeds `vim.fn.tempname()`'s random component, same as the
+  -- tabline problem `set_size` already works around, just via the default ruler/statusline
+  -- instead. `%t` (tail-of-filename only) keeps the golden deterministic without losing
+  -- anything this test actually cares about (the buffer's own name is asserted below).
+  child.o.statusline = "%<%t %m"
   expect_screenshot(child)
 
   -- `set_mode` always builds a fresh view whose own `close()` destroys the outgoing
   -- view's windows (docs/refactor-v1.md R2), so the only non-panel window left in the tab
   -- is the unified one, and pressing `s` already focused it (unified.lua's `open()`
-  -- always takes focus for itself) -- so the current window/buffer already *is* the
-  -- unified view; jump straight from it.
-  local target_lnum = child.lua_get([[
-    (function()
-      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-      for i, l in ipairs(lines) do
-        if l == '+  return "hello, world"' then
-          return i
-        end
-      end
-    end)()
+  -- always takes focus for itself). Unlike the old patch-buffer design, that window now
+  -- shows the real worktree file directly (docs/refactor-v1.md's now-implemented
+  -- inline-overlay note) -- no jump needed -- with the +/- diff painted on top of it via
+  -- its own dedicated extmark namespace.
+  local state = child.lua([[
+    local entry = __difit_entry()
+    local view = entry.session._view
+    local buf = vim.api.nvim_win_get_buf(view.win)
+    return {
+      bufname = vim.api.nvim_buf_get_name(buf),
+      filetype = vim.bo[buf].filetype,
+      modifiable = vim.bo[buf].modifiable,
+      overlay_marks = #vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {}),
+    }
   ]])
-  eq(type(target_lnum), "number")
 
-  child.api.nvim_win_set_cursor(0, { target_lnum, 0 })
-  child.type_keys("<CR>")
-
-  local jumped = child.lua_get([[
-    { bufname = vim.api.nvim_buf_get_name(0), cursor = vim.api.nvim_win_get_cursor(0) }
-  ]])
-  eq(vim.endswith(jumped.bufname, "/" .. paths.modified), true)
-  eq(jumped.cursor[1], 4)
+  eq(vim.endswith(state.bufname, "/" .. paths.modified), true)
+  eq(state.filetype, "lua", "the real file keeps its own filetype -- LSP/syntax works")
+  eq(state.modifiable, true)
+  eq(state.overlay_marks > 0, true, "the +/- overlay is drawn on top of the real buffer")
 end
 
 -- 8. `BufWritePost` refreshes the panel after the debounce --------------------------------
@@ -603,61 +612,13 @@ T["a user's real-file split survives a refresh and a mode switch; the outgoing v
   eq(#remaining, 3, "exactly panel + user split + the fresh unified window remain")
 end
 
--- Regression (finding 2): target_window must never hijack a difit-owned window (e.g. the
--- panel) that happens to be Vim's "previous window" ------------------------------------
-
-T["target_window regression: panel-focused mode switch then <CR> in unified never lands the real file in the panel"] = function()
-  set_size(child, 24, 100)
-  child.cmd("Difit")
-
-  set_cursor(child, 5) -- src/mod.lua
-  child.type_keys("<CR>")
-  focus_panel(child) -- panel current; Vim's "previous window" is the sidebyside right window
-
-  -- Mode switch while the panel is focused: unified.lua's `ensure_window()` runs
-  -- `vsplit` while the panel is the current window, which makes the panel Vim's
-  -- "previous window" (`CTRL-W p`) from this point on -- exactly the trap
-  -- `target_window()` must not fall into.
-  child.type_keys("s")
-  eq(session_field(child, "mode"), "unified")
-
-  local target_lnum = child.lua_get([[
-    (function()
-      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-      for i, l in ipairs(lines) do
-        if l == '+  return "hello, world"' then
-          return i
-        end
-      end
-    end)()
-  ]])
-  eq(type(target_lnum), "number")
-
-  child.api.nvim_win_set_cursor(0, { target_lnum, 0 })
-  child.type_keys("<CR>")
-
-  eq(
-    vim.startswith(
-      child.lua_get(
-        [[vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(__difit_entry().panel.win))]]
-      ),
-      "difit://panel/"
-    ),
-    true,
-    "the panel window must still show the panel buffer, not the real file"
-  )
-
-  local jumped = child.lua_get([[
-    {
-      bufname = vim.api.nvim_buf_get_name(0),
-      win = vim.api.nvim_get_current_win(),
-      cursor = vim.api.nvim_win_get_cursor(0),
-    }
-  ]])
-  eq(vim.endswith(jumped.bufname, "/" .. paths.modified), true)
-  eq(jumped.cursor[1], 4)
-  eq(jumped.win ~= child.lua_get([[__difit_entry().panel.win]]), true)
-end
+-- Regression (finding 2, OBSOLETE as of the inline-overlay unified view): this used to
+-- guard `ui/unified.lua`'s own `target_window()` helper, which resolved a window to jump
+-- a real file INTO when `<CR>` was pressed on a patch-buffer line. docs/refactor-v1.md's
+-- inline-overlay rewrite deleted that whole jump mechanism -- the unified window already
+-- IS the real file in worktree mode, so there is nothing left to jump to, and no
+-- "previous window" ambiguity for it to fall into. See tests/test_unified.lua for the
+-- current window-ownership coverage (`ensure_window`/`ctx.claim`/`ctx.anchor`).
 
 -- Regression (finding 5): auto-advance fires only on MARKING, never on un-marking --------
 
@@ -770,6 +731,12 @@ T["<leader>v (keymaps.universal.toggle_viewed) pressed IN THE PANEL marks the ro
 end
 
 T["q in the unified buffer (keymaps.diff.close) closes the entire viewer"] = function()
+  -- `right = "head"` so the unified window is a difit-owned HEAD blob (gets
+  -- `keymaps.diff`'s bare `q`) rather than the real worktree file -- worktree mode's real
+  -- buffer only ever gets `keymaps.universal` (no local `q`; see tests/test_unified.lua's
+  -- "real buffer rule" coverage), by the same design as `ui/sidebyside.lua`'s own
+  -- worktree right-hand window.
+  child.lua([[require("difit.config").setup({ right = "head" })]])
   child.cmd("Difit")
 
   child.type_keys("s") -- panel's own toggle_mode key -> unified, focuses the new view
@@ -816,29 +783,33 @@ T["round-trip regression: side-by-side <-> unified is reachable from every entry
   -- (a) panel `s` -> unified -> panel `s` -> back to side-by-side.
   focus_panel(child)
   child.type_keys("s")
-  assert_unified_layout(child)
+  assert_unified_layout(child, paths.modified)
 
   focus_panel(child)
   child.type_keys("s")
   assert_sidebyside_layout(child, paths.modified)
 
-  -- (b) from the unified buffer itself, `s` -> side-by-side (first get back into unified
-  -- via the panel, then press `s` from inside the unified buffer -- unified's own
-  -- `open()` already focuses itself, so no `focus_panel` before this second `s`).
+  -- (b) from the unified buffer itself, `<leader>s` -> side-by-side (first get back into
+  -- unified via the panel, then press `<leader>s` from inside the unified buffer --
+  -- unified's own `open()` already focuses itself, so no `focus_panel` before this second
+  -- toggle). In worktree mode (the default here) the unified window IS the real file, so
+  -- only `keymaps.universal`'s leader-prefixed toggle applies -- unlike the pre-overlay
+  -- design, bare `s` (`keymaps.diff`) is never mapped there (see tests/test_unified.lua's
+  -- "real buffer rule" coverage).
   focus_panel(child)
   child.type_keys("s")
-  assert_unified_layout(child)
+  assert_unified_layout(child, paths.modified)
 
-  child.type_keys("s") -- keymaps.diff.toggle_mode, pressed from inside the unified buffer
+  child.type_keys([[\s]]) -- keymaps.universal.toggle_mode, pressed from inside the unified buffer
   assert_sidebyside_layout(child, paths.modified)
 
   -- (c) from the side-by-side real right buffer, `<leader>s` -> unified -> (in the
-  -- unified buffer) `s` -> side-by-side. `open()`/`set_mode` already leave focus on the
-  -- real right buffer in worktree mode, so no extra navigation is needed here.
+  -- unified buffer) `<leader>s` -> side-by-side. `open()`/`set_mode` already leave focus
+  -- on the real right buffer in worktree mode, so no extra navigation is needed here.
   child.type_keys([[\s]]) -- keymaps.universal.toggle_mode
-  assert_unified_layout(child)
+  assert_unified_layout(child, paths.modified)
 
-  child.type_keys("s") -- keymaps.diff.toggle_mode, from inside the unified buffer
+  child.type_keys([[\s]]) -- keymaps.universal.toggle_mode, from inside the unified buffer
   assert_sidebyside_layout(child, paths.modified)
 end
 
@@ -1093,7 +1064,7 @@ T["registry: switching mode in one concurrent review never touches the other's w
   eq(session_field(child, "current_path"), repo2_path)
   focus_panel(child)
   child.type_keys("s") -- toggle_mode fires ONLY in viewer2
-  assert_unified_layout(child)
+  assert_unified_layout(child, repo2_path)
 
   -- viewer1's own layout/windows are byte-for-byte the same as before viewer2 ever
   -- switched modes -- nothing about viewer2's `set_mode` reached across.

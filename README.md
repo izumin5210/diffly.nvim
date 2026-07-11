@@ -12,7 +12,9 @@ across viewer sessions for the same pull request.
   branch (or a detected GitHub pull request), with status letters, `+`/`-` counts, folding,
   and directory compression.
 - Diff display selectable between side-by-side (native Neovim diff mode) and unified
-  (single-column patch view).
+  (single column). Both show the real file — not a synthetic patch buffer — so you get the
+  file's own syntax highlighting and LSP in either mode; unified overlays the diff on top
+  with extmarks (deleted lines render as read-only virtual lines).
 - Per-file **viewed** marks, persisted per PR (or per branch pair), shared across viewer
   sessions, worktrees, and clones of the same repo — but never carried over to a different
   PR. Marks invalidate automatically (GitHub-style) when either side of the diff changes.
@@ -81,11 +83,11 @@ collide with a real file's own, unrelated keymaps).
 | `<leader>s` | Toggle side-by-side ⇔ unified                         |
 | `<leader>e` | Focus the panel                                       |
 
-Works everywhere: the panel, the side-by-side blob windows, the unified view, and real
-file buffers currently shown in the viewer (the side-by-side view's worktree right-hand
-window) — the one place these keys matter most, since real buffers get no local shortcuts
-at all. There is no universal `close`: closing a real file buffer isn't "closing the
-review".
+Works everywhere: the panel, difit-owned blob buffers, and real file buffers currently
+shown in the viewer — worktree-mode side-by-side's right-hand window, and worktree-mode
+unified's single window alike — the one place these keys matter most, since real buffers
+get no local shortcuts at all. There is no universal `close`: closing a real file buffer
+isn't "closing the review".
 
 #### File panel
 
@@ -100,15 +102,15 @@ review".
 
 #### difit diff buffers
 
-Difit-owned buffers only (the side-by-side blob windows and the unified view) — never
-real file buffers, which get only the universal layer above.
+Difit-owned buffers only — the side-by-side blob windows, and unified's own blob buffers
+(HEAD mode, or a deleted file's read-only content) — never real file buffers, which get
+only the universal layer above.
 
-| Key    | Action                                                           |
-| ------ | --------------------------------------------------------------------- |
-| `v`    | Toggle viewed for the current file                                      |
-| `s`    | Toggle side-by-side ⇔ unified                                            |
-| `q`    | Close the review UI                                                      |
-| `<CR>` | *(unified view only, hardcoded)* jump to the corresponding real-file line |
+| Key | Action                              |
+| --- | ------------------------------------ |
+| `v` | Toggle viewed for the current file   |
+| `s` | Toggle side-by-side ⇔ unified         |
+| `q` | Close the review UI                   |
 
 `<Plug>` mappings are also available if you'd rather bind your own keys (e.g. to reach
 these actions from buffers difit doesn't map by default):
