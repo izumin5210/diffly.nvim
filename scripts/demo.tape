@@ -6,6 +6,7 @@
 # if yours differs.
 Output assets/demo.gif
 
+Set Theme "Catppuccin Frappe"
 # A Nerd Font installed on this machine -- vhs's bundled JetBrains Mono has no nerd
 # glyphs, so file icons render as tofu without this.
 Set FontFamily "HackGen35 Console NF"
