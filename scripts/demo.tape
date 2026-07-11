@@ -6,6 +6,9 @@
 # if yours differs.
 Output assets/demo.gif
 
+# A Nerd Font installed on this machine -- vhs's bundled JetBrains Mono has no nerd
+# glyphs, so file icons render as tofu without this.
+Set FontFamily "HackGen35 Console NF"
 Set FontSize 14
 Set Width 1400
 Set Height 820
