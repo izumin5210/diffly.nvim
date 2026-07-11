@@ -4,7 +4,7 @@ A [difit](https://github.com/yoshiko-pg/difit)-inspired diff viewer for Neovim: 
 file-tree diff viewer (like diffview.nvim) with per-file **viewed** marks that persist
 across viewer sessions for the same pull request.
 
-![difit.nvim demo — marking files viewed with auto-advance, switching diff modes, and sweeping lockfiles](assets/demo.gif)
+![difit.nvim demo — reviewing a Go branch: unified inline-overlay diff with a live gopls hover card, marking files viewed with auto-advance, and sweeping generated files](assets/demo.gif)
 
 ## Features
 
