@@ -15,6 +15,7 @@ M.defaults = {
       toggle_mode = "s", -- side-by-side <-> unified
       close = "q",
       fold = "za",
+      toggle_hide_viewed = "H", -- hide/show already-viewed rows (display only; see ui/panel.lua)
     },
     -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to `keymaps.universal`
     -- below -- never in real file buffers. See ui/sidebyside.lua's `View:owned_buffer` /
@@ -37,6 +38,11 @@ M.defaults = {
       toggle_viewed = "<leader>v",
       toggle_mode = "<leader>s",
       focus_panel = "<leader>e",
+      -- Plain file navigation (docs/plan.md-style: ALWAYS all files, never filtered by the
+      -- panel's `toggle_hide_viewed` -- that's a display concern; skipping viewed files
+      -- during navigation is what `v`'s auto-advance is already for).
+      next_file = "]f",
+      prev_file = "[f",
     },
   },
 }

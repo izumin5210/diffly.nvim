@@ -48,3 +48,11 @@ end, { desc = "difit: toggle side-by-side/unified" })
 vim.keymap.set("n", "<Plug>(difit-focus-panel)", function()
   require("difit").focus()
 end, { desc = "difit: focus the panel" })
+
+vim.keymap.set("n", "<Plug>(difit-next-file)", function()
+  require("difit").next_file()
+end, { desc = "difit: open the next file" })
+
+vim.keymap.set("n", "<Plug>(difit-prev-file)", function()
+  require("difit").prev_file()
+end, { desc = "difit: open the previous file" })

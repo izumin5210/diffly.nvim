@@ -876,6 +876,108 @@ T["bonus: <Plug>(difit-toggle-mode) and <Plug>(difit-focus-panel) work as user-m
 end
 
 ---------------------------------------------------------------------------------------
+-- `]f`/`[f` (keymaps.universal.next_file/prev_file): plain file navigation, distinct
+-- from `v`'s "next UN-VIEWED file" -- covers ALL files (fixture file_order: gone.lua <
+-- mod.lua < new.lua < renamed.lua, rows 4-7, matching the header comment above), works
+-- from both the real side-by-side buffer and the panel itself, wraps at both ends, and
+-- is reachable via <Plug> too. `H` (keymaps.panel.toggle_hide_viewed) is a pure display
+-- filter on the panel -- covered separately below.
+---------------------------------------------------------------------------------------
+
+T["]f/[f from the side-by-side real buffer cycle through the fixture's files, following bufname/panel cursor, and wrap"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- focus lands on the real worktree right buffer
+  eq(session_field(child, "current_path"), paths.modified)
+  local prev_bufname = child.lua_get("vim.api.nvim_buf_get_name(0)")
+
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.new)
+  eq(panel_cursor_row(child), 6)
+  local bufname = child.lua_get("vim.api.nvim_buf_get_name(0)")
+  eq(bufname ~= prev_bufname, true, "bufname changed to the next file")
+  eq(
+    vim.endswith(bufname, "/" .. paths.new),
+    true,
+    "src/new.lua exists in the worktree -- shown as the real file"
+  )
+  prev_bufname = bufname
+
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.renamed_to)
+  eq(panel_cursor_row(child), 7)
+  bufname = child.lua_get("vim.api.nvim_buf_get_name(0)")
+  eq(bufname ~= prev_bufname, true, "bufname changed again")
+  eq(vim.endswith(bufname, "/" .. paths.renamed_to), true)
+
+  child.type_keys("]f") -- wraps from the last file (renamed.lua) back to the first (gone.lua)
+  eq(session_field(child, "current_path"), paths.deleted)
+  eq(panel_cursor_row(child), 4)
+
+  child.type_keys("[f") -- wraps back to the last file
+  eq(session_field(child, "current_path"), paths.renamed_to)
+  eq(panel_cursor_row(child), 7)
+end
+
+T["]f from the panel opens the next file (relative to the row under the cursor) and moves the panel's own cursor there"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua row
+  child.type_keys("]f")
+
+  eq(session_field(child, "current_path"), paths.new)
+  eq(panel_cursor_row(child), 6)
+end
+
+T["bonus: <Plug>(difit-next-file) and <Plug>(difit-prev-file) work as user-mappable Plug targets"] = function()
+  child.cmd("Difit")
+  child.lua([[
+    vim.keymap.set("n", "<F5>", "<Plug>(difit-next-file)")
+    vim.keymap.set("n", "<F6>", "<Plug>(difit-prev-file)")
+  ]])
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>") -- move away from the panel; current_path = src/mod.lua
+  eq(session_field(child, "current_path"), paths.modified)
+
+  child.type_keys("<F5>")
+  eq(session_field(child, "current_path"), paths.new)
+
+  child.type_keys("<F6>")
+  eq(session_field(child, "current_path"), paths.modified)
+end
+
+T["H in the panel hides a viewed file and shows it again"] = function()
+  child.cmd("Difit")
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("v") -- mark viewed (auto-advance moves the diff on, panel stays put)
+  eq(is_viewed(child, paths.modified), true)
+
+  focus_panel(child)
+  child.type_keys("H")
+
+  local hidden_lines = panel_lines(child)
+  for _, l in ipairs(hidden_lines) do
+    eq(l:find("mod.lua", 1, true), nil, "the viewed file's row is hidden")
+  end
+  eq(hidden_lines[2]:find("hidden", 1, true) ~= nil, true, "header gains the hidden-filter suffix")
+
+  child.type_keys("H")
+
+  local shown_lines = panel_lines(child)
+  local found = false
+  for _, l in ipairs(shown_lines) do
+    if l:find("mod.lua", 1, true) then
+      found = true
+    end
+  end
+  eq(found, true, "the file's row is shown again")
+  eq(shown_lines[2]:find("hidden", 1, true), nil, "header suffix is gone once the filter is off")
+end
+
+---------------------------------------------------------------------------------------
 -- R1 (docs/refactor-v1.md): the session registry replacing the old M._session/M._panel/
 -- M._viewer_tab singletons. Covers the four scenarios called out for this phase: focusing
 -- an existing review instead of duplicating it, `:Difit close` from inside the viewer

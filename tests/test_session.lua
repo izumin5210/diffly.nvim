@@ -198,6 +198,26 @@ local function next_unviewed(child, after_path)
 end
 
 ---@param child table
+---@param after_path string?
+---@return string|nil
+local function next_file(child, after_path)
+  if after_path == nil then
+    return denil(child.lua_get("_G.__session:next_file()"))
+  end
+  return denil(child.lua("return _G.__session:next_file(...)", { after_path }))
+end
+
+---@param child table
+---@param before_path string?
+---@return string|nil
+local function prev_file(child, before_path)
+  if before_path == nil then
+    return denil(child.lua_get("_G.__session:prev_file()"))
+  end
+  return denil(child.lua("return _G.__session:prev_file(...)", { before_path }))
+end
+
+---@param child table
 ---@return {viewed: integer, total: integer}
 local function progress(child)
   return child.lua_get("_G.__session:progress()")
@@ -475,6 +495,63 @@ T["next_unviewed()/progress(): skip viewed files, wrap around, nil once everythi
   eq(next_unviewed(child, nil), nil)
 
   vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+-- 4b. next_file()/prev_file() -------------------------------------------------------------
+
+T["next_file()/prev_file(): cycle through ALL files (including viewed), wrap in both directions, nil-from-start/end"] = function()
+  local repo, paths = helpers.fixture_branch_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  -- Same tree.file_order() source as next_unviewed: gone.lua, mod.lua, new.lua, renamed.lua.
+  local order = { paths.deleted, paths.modified, paths.new, paths.renamed_to }
+  eq(entry_paths(child), order)
+
+  -- nil means "from the start"/"from the end".
+  eq(next_file(child, nil), order[1])
+  eq(prev_file(child, nil), order[4])
+
+  -- Ordinary forward/backward steps.
+  eq(next_file(child, order[1]), order[2])
+  eq(next_file(child, order[2]), order[3])
+  eq(prev_file(child, order[3]), order[2])
+  eq(prev_file(child, order[2]), order[1])
+
+  -- Wraps around at both ends.
+  eq(next_file(child, order[4]), order[1], "wraps from the last file back to the first")
+  eq(prev_file(child, order[1]), order[4], "wraps from the first file back to the last")
+
+  -- Marking a file viewed must not remove it from next_file/prev_file's traversal --
+  -- unlike next_unviewed, plain navigation always includes viewed files.
+  eq(toggle_viewed(child, order[1]), true)
+  eq(next_file(child, order[4]), order[1], "next_file still visits a viewed file")
+  eq(prev_file(child, order[2]), order[1], "prev_file still visits a viewed file")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["next_file()/prev_file(): nil when there are no files"] = function()
+  local repo = helpers.new_repo()
+  repo:write("a.txt", "1\n")
+  repo:commit("chore: base")
+  repo:branch("feature") -- no further commits: the diff against main has zero entries
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  eq(entry_paths(child), {})
+
+  eq(next_file(child, nil), nil)
+  eq(prev_file(child, nil), nil)
+
   child.stop()
   repo:destroy()
 end

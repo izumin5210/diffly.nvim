@@ -20,6 +20,7 @@ local M = {}
 ---@field session difit.Session
 ---@field folded table<string, boolean>          -- dir path -> folded?
 ---@field row_nodes table<integer, difit.TreeNode> -- 1-indexed buffer line -> node
+---@field hide_viewed boolean  -- display-only filter (toggle_hide_viewed); never persisted
 local Panel = {}
 Panel.__index = Panel
 
@@ -198,6 +199,38 @@ local function restore_cursor(panel, path, total_lines)
   pcall(vim.api.nvim_win_set_cursor, panel.win, { target_lnum, 0 })
 end
 
+--- `session.entries`, minus already-viewed files when `hide_viewed` is on -- what the
+--- tree actually gets built from. Filtering the flat entry list (rather than pruning the
+--- tree afterwards) is what makes now-empty directories vanish on their own: `tree.build`
+--- never creates a directory node with no file underneath it, so there is nothing extra to
+--- prune here.
+---@param panel difit.Panel
+---@return difit.FileEntry[]
+local function visible_entries(panel)
+  if not panel.hide_viewed then
+    return panel.session.entries
+  end
+  return vim.tbl_filter(function(entry)
+    return not panel.session:is_viewed(entry.path)
+  end, panel.session.entries)
+end
+
+--- `"N/total viewed"`, plus a compact `" (hidden)"` suffix while `hide_viewed` is on.
+--- Progress counts are always GLOBAL (every file in the review), never just the rows
+--- currently on screen -- the filter is a display concern only, per design.md's
+--- "Interaction" note that navigation/progress must stay filter-independent.
+---@param session difit.Session
+---@param hide_viewed boolean
+---@return string
+local function progress_text(session, hide_viewed)
+  local progress = session:progress()
+  local text = string.format("%d/%d viewed", progress.viewed, progress.total)
+  if hide_viewed then
+    text = text .. " (hidden)"
+  end
+  return text
+end
+
 --- Re-reads `session.entries`/`session:progress()`/`session:is_viewed()` and redraws
 --- the whole buffer. Rebuilds the row -> node map every time so keymaps always resolve
 --- against what's actually on screen (folds shift row numbers).
@@ -209,7 +242,10 @@ function Panel:render()
   -- Snapshot which node the cursor is logically on, against the OLD row_nodes, before
   -- rebuilding anything below -- this is what lets the cursor follow that same node to
   -- its new row further down, even though row numbers are about to be recomputed from
-  -- scratch.
+  -- scratch. Also what makes the currently-selected row disappearing (e.g. it just got
+  -- marked viewed while `hide_viewed` is on) degrade gracefully: `restore_cursor` below
+  -- already clamps to the nearest still-valid row when `cursor_path` is gone from the
+  -- rebuilt `row_nodes`.
   local cursor_path
   if vim.api.nvim_win_is_valid(self.win) then
     local node = self.row_nodes[vim.api.nvim_win_get_cursor(self.win)[1]]
@@ -222,14 +258,13 @@ function Panel:render()
   local icons_enabled = config.get().icons
 
   local lines = { header_text(session) }
-  local progress = session:progress()
-  lines[2] = string.format("%d/%d viewed", progress.viewed, progress.total)
+  lines[2] = progress_text(session, self.hide_viewed)
 
   local extmarks = {
     { line = 0, col_start = 0, col_end = #lines[1], hl_group = "DifitPanelHeader" },
   }
 
-  local root = tree.build(session.entries)
+  local root = tree.build(visible_entries(self))
   local rows = tree.flatten(root, self.folded)
   local row_nodes = {}
 
@@ -424,6 +459,58 @@ local function on_close(panel)
   panel:close()
 end
 
+--- Reference point for `]f`/`[f` when pressed IN the panel: the row under the cursor,
+--- same as every other panel-local action (`on_open`/`on_toggle_viewed`/`on_fold`) --
+--- falling back to `session.current_path` only when the cursor isn't parked on a file row
+--- at all (the header/progress lines, a dir row, or an empty tree), so the keys still do
+--- something sensible instead of silently no-op-ing there.
+---@param panel difit.Panel
+---@return string|nil
+local function reference_path(panel)
+  local node = current_node(panel)
+  if node and node.type == "file" then
+    return node.path
+  end
+  return panel.session.current_path
+end
+
+--- `]f`/`[f` in the panel: ALWAYS all files, `hide_viewed` or not (design.md's
+--- "Interaction" rule -- the filter is a display concern, never a navigation one; skipping
+--- viewed files during navigation is what `v`'s auto-advance is already for). Unlike
+--- `on_toggle_viewed`'s auto-advance, this always moves the cursor via `Panel:set_cursor`
+--- (not a raw `nvim_win_set_cursor`) since the target may currently be hidden behind a
+--- fold -- or, with the filter on, simply may not be about to become a row at all until
+--- `hide_viewed` is turned back off, in which case `set_cursor` is already documented to
+--- no-op rather than error.
+---@param panel difit.Panel
+local function on_next_file(panel)
+  local target = panel.session:next_file(reference_path(panel))
+  if target then
+    panel.session:open_file(target)
+    panel:set_cursor(target)
+  end
+end
+
+---@param panel difit.Panel
+local function on_prev_file(panel)
+  local target = panel.session:prev_file(reference_path(panel))
+  if target then
+    panel.session:open_file(target)
+    panel:set_cursor(target)
+  end
+end
+
+--- `H`: toggle whether already-viewed files are hidden from the tree, then re-render.
+--- Display-only -- `hide_viewed` lives only on this `difit.Panel` instance, is never
+--- persisted, and never affects navigation (`next_unviewed`/`next_file`/`prev_file` all
+--- read `session` state, never panel rows) or the header's progress counts (always global,
+--- see `progress_text`).
+---@param panel difit.Panel
+local function on_toggle_hide_viewed(panel)
+  panel.hide_viewed = not panel.hide_viewed
+  panel:render()
+end
+
 ---@param panel difit.Panel
 local function set_keymaps(panel)
   local actions = {
@@ -433,6 +520,7 @@ local function set_keymaps(panel)
     refresh = on_refresh,
     toggle_mode = on_toggle_mode,
     close = on_close,
+    toggle_hide_viewed = on_toggle_hide_viewed,
   }
 
   local keymaps = config.get().keymaps.panel
@@ -451,15 +539,21 @@ local function set_keymaps(panel)
   -- because the cursor happens to be here. toggle_viewed/toggle_mode reuse the EXACT same
   -- handlers as the panel's own `v`/`s` above (identical row-under-cursor/auto-advance
   -- semantics, not a re-implementation); focus_panel is `panel:focus()`, a harmless no-op
-  -- since this fires from the panel buffer itself. Applied AFTER `keymaps.panel` above, so
-  -- a user-configured lhs collision between the two groups resolves to the universal
-  -- binding, same deterministic order as the owned diff buffers.
+  -- since this fires from the panel buffer itself. next_file/prev_file (`]f`/`[f`) get
+  -- their own panel-local handlers too (`on_next_file`/`on_prev_file` above) rather than
+  -- reusing `init.lua`'s `build_actions` version: the panel has no `path` to hand them the
+  -- way a diff/real-file buffer's keymap closure does, so it resolves its own reference
+  -- point off the row under the cursor instead (see `reference_path`). Applied AFTER
+  -- `keymaps.panel` above, so a user-configured lhs collision between the two groups
+  -- resolves to the universal binding, same deterministic order as the owned diff buffers.
   local universal_actions = {
     toggle_viewed = on_toggle_viewed,
     toggle_mode = on_toggle_mode,
     focus_panel = function(p)
       p:focus()
     end,
+    next_file = on_next_file,
+    prev_file = on_prev_file,
   }
   local universal = config.get().keymaps.universal
   for name, fn in pairs(universal_actions) do
@@ -532,6 +626,7 @@ function M.open(session)
     session = session,
     folded = {},
     row_nodes = {},
+    hide_viewed = false,
   }, Panel)
 
   set_keymaps(panel)

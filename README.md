@@ -82,12 +82,19 @@ collide with a real file's own, unrelated keymaps).
 | `<leader>v` | Toggle viewed for the current file (auto-advances)   |
 | `<leader>s` | Toggle side-by-side ⇔ unified                         |
 | `<leader>e` | Focus the panel                                       |
+| `]f`        | Open the next file (ALL files, not just un-viewed ones) |
+| `[f`        | Open the previous file (ditto)                        |
 
 Works everywhere: the panel, difit-owned blob buffers, and real file buffers currently
 shown in the viewer — worktree-mode side-by-side's right-hand window, and worktree-mode
 unified's single window alike — the one place these keys matter most, since real buffers
 get no local shortcuts at all. There is no universal `close`: closing a real file buffer
 isn't "closing the review".
+
+`]f`/`[f` always cycle through every file in the review, regardless of the panel's `H`
+filter below (see [File panel](#file-panel)) — the filter only changes what's *drawn* in
+the tree, never what's *reachable*. Skipping already-viewed files while moving forward is
+what `<leader>v`/`v`'s auto-advance is already for.
 
 #### File panel
 
@@ -99,6 +106,12 @@ isn't "closing the review".
 | `s`    | Toggle side-by-side ⇔ unified                                    |
 | `q`    | Close the review UI                                             |
 | `za`   | Toggle fold (mirrors native `za`)                                |
+| `H`    | Toggle hiding already-viewed files (display only — see below)   |
+
+`H` only changes what the tree *shows*: progress counts (`3/12 viewed`) stay global, and
+navigation (`]f`/`[f`, `<leader>v`'s auto-advance) is entirely unaffected. While active,
+the progress line gains a `(hidden)` suffix, e.g. `3/12 viewed (hidden)`. Directories that
+end up with no un-viewed files left disappear along with their contents.
 
 #### difit diff buffers
 
@@ -119,6 +132,8 @@ these actions from buffers difit doesn't map by default):
 vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
 vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
 vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
+vim.keymap.set("n", "]f", "<Plug>(difit-next-file)")
+vim.keymap.set("n", "[f", "<Plug>(difit-prev-file)")
 ```
 
 ## Configuration
@@ -141,12 +156,19 @@ require("difit").setup({
       toggle_mode = "s",    -- side-by-side <-> unified
       close = "q",
       fold = "za",
+      toggle_hide_viewed = "H", -- hide/show already-viewed rows (display only)
     },
     -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to keymaps.universal
     diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
     -- the universal layer: works everywhere (panel, owned diff buffers, AND real file
     -- buffers shown in the viewer); real file buffers get ONLY this group
-    universal = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
+    universal = {
+      toggle_viewed = "<leader>v",
+      toggle_mode = "<leader>s",
+      focus_panel = "<leader>e",
+      next_file = "]f", -- open the next file (ALL files, unaffected by keymaps.panel's H)
+      prev_file = "[f", -- open the previous file (ditto)
+    },
   },
 })
 ```

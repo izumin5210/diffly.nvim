@@ -281,12 +281,24 @@ function Session:is_viewed(path)
   return state.is_viewed(self.state, entry)
 end
 
+--- `tree.file_order(tree.build(self.entries))`, the single source every navigation
+--- method below walks. Computed fresh on every call rather than cached: `self.entries`
+--- only ever changes via `refresh()` (rare, user-triggered), and every caller here already
+--- tolerates a stale `after_path`/`before_path` that no longer appears in the current
+--- order (falls back to "from the start/end" -- see `next_file`/`prev_file`), so there is
+--- no correctness reason to cache it, only a marginal one.
+---@param self difit.Session
+---@return string[]
+local function file_order(self)
+  return tree.file_order(tree.build(self.entries))
+end
+
 --- Next un-viewed file after `after_path`, in `tree.file_order` order, wrapping around
 --- once. Returns nil when there are no entries, or every entry is already viewed.
 ---@param after_path string?
 ---@return string|nil
 function Session:next_unviewed(after_path)
-  local order = tree.file_order(tree.build(self.entries))
+  local order = file_order(self)
   local n = #order
   if n == 0 then
     return nil
@@ -310,6 +322,59 @@ function Session:next_unviewed(after_path)
     end
   end
   return nil
+end
+
+--- Next file after `after_path`, in `tree.file_order` order (same source as
+--- `next_unviewed`), wrapping around once -- unlike `next_unviewed`, viewed files are
+--- included: this backs plain `]f`-style navigation ("show me the next file"), not "find
+--- something left to review". `after_path == nil` -- or a path no longer among
+--- `self.entries`, e.g. a stale reference after a `refresh()` dropped it -- means "from
+--- the start". Returns nil when there are no files.
+---@param after_path string?
+---@return string|nil
+function Session:next_file(after_path)
+  local order = file_order(self)
+  local n = #order
+  if n == 0 then
+    return nil
+  end
+
+  local start_idx = 0
+  if after_path then
+    for i, path in ipairs(order) do
+      if path == after_path then
+        start_idx = i
+        break
+      end
+    end
+  end
+
+  return order[(start_idx % n) + 1]
+end
+
+--- Previous file before `before_path`, mirroring `next_file` in the opposite direction.
+--- `before_path == nil` (or not found) means "from the end". Returns nil when there are
+--- no files.
+---@param before_path string?
+---@return string|nil
+function Session:prev_file(before_path)
+  local order = file_order(self)
+  local n = #order
+  if n == 0 then
+    return nil
+  end
+
+  local start_idx = n + 1
+  if before_path then
+    for i, path in ipairs(order) do
+      if path == before_path then
+        start_idx = i
+        break
+      end
+    end
+  end
+
+  return order[((start_idx - 2) % n) + 1]
 end
 
 ---@return {viewed: integer, total: integer}

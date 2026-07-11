@@ -115,6 +115,25 @@ local function toggle_viewed_and_advance(entry, path)
   end
 end
 
+--- Open `target` (if any) through `entry`'s session and sync the panel's cursor to it --
+--- the shared tail `build_actions`' `next_file`/`prev_file` and the top-level
+--- `M.next_file`/`M.prev_file` (the `<Plug>(difit-next-file)`/`<Plug>(difit-prev-file)`
+--- backing functions) both need once `session:next_file`/`prev_file` has resolved a
+--- target: `session:open_file` moves the view, and `Panel:set_cursor` keeps the panel in
+--- sync without stealing focus, mirroring `toggle_viewed_and_advance`'s own auto-advance
+--- tail below. A no-op when `target` is nil (no files in the review at all).
+---@param entry difit.init.Entry
+---@param target string?
+local function open_and_sync_cursor(entry, target)
+  if not target then
+    return
+  end
+  entry.session:open_file(target)
+  if entry.panel then
+    entry.panel:set_cursor(target)
+  end
+end
+
 ---@param tab integer
 local function close_tabpage_safe(tab)
   if not vim.api.nvim_tabpage_is_valid(tab) then
@@ -387,6 +406,23 @@ local function build_actions(tab)
         close_entry(tab)
       end
     end,
+    -- `path` is the reference point (the file the buffer this key was pressed in is
+    -- currently showing, i.e. `session.current_path` in practice -- see
+    -- `ui/keymaps.lua`'s `universal_spec`); `session:next_file`/`prev_file` already treat
+    -- a stale/missing reference as "from the start/end", so no extra fallback is needed
+    -- here the way the panel's own `]f`/`[f` handlers need one (ui/panel.lua).
+    next_file = function(path)
+      local entry = resolve_live_entry(tab, "next_file")
+      if entry then
+        open_and_sync_cursor(entry, entry.session:next_file(path))
+      end
+    end,
+    prev_file = function(path)
+      local entry = resolve_live_entry(tab, "prev_file")
+      if entry then
+        open_and_sync_cursor(entry, entry.session:prev_file(path))
+      end
+    end,
   }
 end
 
@@ -526,6 +562,28 @@ function M.toggle_mode()
   end
   local next_mode = entry.session.mode == "sidebyside" and "unified" or "sidebyside"
   entry.session:set_mode(next_mode)
+end
+
+--- Open the next file (ALL files, not just un-viewed ones -- see `Session:next_file`):
+--- the backing function for `<Plug>(difit-next-file)` and `keymaps.universal.next_file`
+--- (via `build_actions`, for buffers that already have a `path` reference to hand it).
+--- Reference point is `session.current_path` -- there is no buffer-local "which file is
+--- this" to resolve here, unlike `M.toggle_viewed_current`, since a `<Plug>` mapping isn't
+--- tied to any one difit buffer.
+function M.next_file()
+  local entry = current_entry()
+  if entry then
+    open_and_sync_cursor(entry, entry.session:next_file(entry.session.current_path))
+  end
+end
+
+--- Open the previous file, mirroring `M.next_file` in the opposite direction: the backing
+--- function for `<Plug>(difit-prev-file)` and `keymaps.universal.prev_file`.
+function M.prev_file()
+  local entry = current_entry()
+  if entry then
+    open_and_sync_cursor(entry, entry.session:prev_file(entry.session.current_path))
+  end
 end
 
 --- Remove persisted viewed-state: `all=true` wipes every review's file, otherwise just

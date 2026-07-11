@@ -98,6 +98,7 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
         toggle_mode = "s",    -- side-by-side <-> unified
         close = "q",
         fold = "za",
+        toggle_hide_viewed = "H", -- hide/show already-viewed rows (display)
       },
       -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to
       -- keymaps.universal
@@ -105,7 +106,13 @@ defaults, exactly as declared in `lua/difit/config.lua`: >lua
       -- the universal layer: works everywhere (panel, owned diff buffers, AND
       -- real file buffers shown in the viewer); real file buffers get ONLY
       -- this group
-      universal = { toggle_viewed = "<leader>v", toggle_mode = "<leader>s", focus_panel = "<leader>e" },
+      universal = {
+        toggle_viewed = "<leader>v",
+        toggle_mode = "<leader>s",
+        focus_panel = "<leader>e",
+        next_file = "]f", -- open the next file (ALL files, unaffected by H)
+        prev_file = "[f", -- open the previous file (ditto)
+      },
     },
   }
 <
@@ -140,6 +147,8 @@ Universal (all difit windows) ~
                the next un-viewed file when `auto_advance` is enabled).
   <leader>s    Toggle between side-by-side and unified diff modes.
   <leader>e    Focus the panel (same as `:Difit focus`).
+  ]f           Open the next file (ALL files, not just un-viewed ones).
+  [f           Open the previous file (ditto).
 
   Works everywhere: the panel, difit-owned blob buffers, and real file
   buffers currently shown in the viewer -- worktree-mode side-by-side's
@@ -152,6 +161,12 @@ Universal (all difit windows) ~
   closes -- a real file buffer never keeps difit's keymaps once the viewer
   stops showing it.
 
+  `]f`/`[f` always cycle through every file in the review, regardless of
+  the panel's `H` filter (see below) -- the filter only changes what the
+  tree *draws*, never what is reachable. Skipping already-viewed files
+  while moving forward is what `<leader>v`/`v`'s auto-advance is already
+  for.
+
 File panel ~
   <CR>    Open the file under the cursor (or toggle a directory's fold).
   v       Toggle the file under the cursor as viewed/un-viewed. When
@@ -162,6 +177,12 @@ File panel ~
   q       Close the review UI (same as `:Difit close`).
   za      Toggle the fold of the directory under the cursor (or its parent,
           when the cursor is on a file row) -- mirrors native `za`.
+  H       Toggle hiding already-viewed files. Display only: progress counts
+          (`3/12 viewed`) stay global, and navigation (`]f`/`[f`, `v`'s
+          auto-advance) is entirely unaffected. While active, the progress
+          line gains a `(hidden)` suffix, e.g. `3/12 viewed (hidden)`.
+          Directories left with no un-viewed files disappear along with
+          their contents.
 
 difit diff buffers ~
 Difit-owned buffers only -- the side-by-side blob windows, and unified's own
@@ -175,18 +196,24 @@ real file buffers, which get only the universal layer above.
                                                  *<Plug>(difit-toggle-viewed)*
                                                     *<Plug>(difit-toggle-mode)*
                                                    *<Plug>(difit-focus-panel)*
-Three `<Plug>` mappings are available for binding your own keys, e.g. to
+                                                     *<Plug>(difit-next-file)*
+                                                     *<Plug>(difit-prev-file)*
+Five `<Plug>` mappings are available for binding your own keys, e.g. to
 reach these actions from buffers difit doesn't map by default:
   <Plug>(difit-toggle-viewed)    Toggle the viewed mark for the file backing
                                  the current buffer, when that buffer belongs
                                  to the currently open review.
   <Plug>(difit-toggle-mode)      Toggle between side-by-side and unified.
   <Plug>(difit-focus-panel)      Focus the panel (same as `:Difit focus`).
+  <Plug>(difit-next-file)        Open the next file (same as `]f`).
+  <Plug>(difit-prev-file)        Open the previous file (same as `[f`).
 
 None has a default binding; map them yourself if wanted: >lua
   vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
   vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
   vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
+  vim.keymap.set("n", "]f", "<Plug>(difit-next-file)")
+  vim.keymap.set("n", "[f", "<Plug>(difit-prev-file)")
 <
 
 ==============================================================================

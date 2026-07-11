@@ -29,6 +29,8 @@ local FAKE_SESSION_SETUP = [[
     open_file = {},
     toggle_viewed = {},
     next_unviewed = {},
+    next_file = {},
+    prev_file = {},
     set_mode = {},
     refresh = 0,
     close = 0,
@@ -103,6 +105,50 @@ local FAKE_SESSION_SETUP = [[
   function _G.session:next_unviewed(after_path)
     table.insert(_G.calls.next_unviewed, after_path)
     return self._next_unviewed_answer
+  end
+
+  -- Real `tree.file_order(tree.build(...))` ordering (mirrors `lua/difit/session.lua`'s
+  -- own `next_file`/`prev_file`) rather than another scripted stub: these two need to
+  -- actually cycle through `entries` in a realistic order for the wrap/reference-point
+  -- assertions below to mean anything.
+  function _G.session:next_file(after_path)
+    table.insert(_G.calls.next_file, after_path)
+    local tree = require("difit.tree")
+    local order = tree.file_order(tree.build(self.entries))
+    local n = #order
+    if n == 0 then
+      return nil
+    end
+    local start_idx = 0
+    if after_path then
+      for i, p in ipairs(order) do
+        if p == after_path then
+          start_idx = i
+          break
+        end
+      end
+    end
+    return order[(start_idx % n) + 1]
+  end
+
+  function _G.session:prev_file(before_path)
+    table.insert(_G.calls.prev_file, before_path)
+    local tree = require("difit.tree")
+    local order = tree.file_order(tree.build(self.entries))
+    local n = #order
+    if n == 0 then
+      return nil
+    end
+    local start_idx = n + 1
+    if before_path then
+      for i, p in ipairs(order) do
+        if p == before_path then
+          start_idx = i
+          break
+        end
+      end
+    end
+    return order[((start_idx - 2) % n) + 1]
   end
 
   function _G.session:progress()
@@ -418,6 +464,112 @@ T["keymaps.universal.toggle_mode = false disables only that key on the panel, le
   eq(mapped(buf_maparg("<leader>s")), false, "keymaps.universal.toggle_mode")
   eq(mapped(buf_maparg("s")), true, "keymaps.panel.toggle_mode is unaffected")
   eq(mapped(buf_maparg("<leader>v")), true, "other universal keys are unaffected")
+end
+
+---------------------------------------------------------------------------------------
+-- ]f/[f (keymaps.universal.next_file/prev_file) in the panel: unlike the universal
+-- toggle_viewed/toggle_mode keys above (which reuse the panel's OWN `v`/`s` handlers
+-- verbatim), these get panel-local handlers that reference the ROW UNDER THE CURSOR
+-- (not `session.current_path`), same idiom as `on_open`/`on_fold` -- see
+-- `reference_path` in ui/panel.lua. file_order for this fixture (dirs first, then files,
+-- alphabetical; matches EXPECTED_LINES row order above): docs/guide.md (row 4),
+-- lua/difit/gone.lua (6), lua/difit/new.lua (7), lua/difit/renamed.lua (8),
+-- lua/difit/state.lua (9), README.md (10).
+---------------------------------------------------------------------------------------
+
+T["]f (keymaps.universal.next_file) in the panel opens the next file relative to the cursor's row and moves the cursor there, wrapping at the end"] = function()
+  set_cursor(4) -- docs/guide.md
+  child.type_keys("]f")
+
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/gone.lua" })
+  eq(cursor(), { 6, 0 })
+  eq(child.lua_get("_G.session.current_path"), "lua/difit/gone.lua")
+
+  set_cursor(10) -- README.md, the last file in file_order
+  child.type_keys("]f")
+
+  eq(child.lua_get("_G.calls.open_file")[2], "docs/guide.md", "wraps back to the first file")
+  eq(cursor(), { 4, 0 })
+end
+
+T["[f (keymaps.universal.prev_file) in the panel opens the previous file relative to the cursor's row, wrapping at the start"] = function()
+  set_cursor(6) -- lua/difit/gone.lua
+  child.type_keys("[f")
+
+  eq(child.lua_get("_G.calls.open_file"), { "docs/guide.md" })
+  eq(cursor(), { 4, 0 })
+
+  child.type_keys("[f") -- cursor is now on docs/guide.md, the first file in file_order
+
+  eq(child.lua_get("_G.calls.open_file")[2], "README.md", "wraps back to the last file")
+  eq(cursor(), { 10, 0 })
+end
+
+T["]f in the panel falls back to session.current_path when the cursor isn't on a file row"] = function()
+  child.lua([[_G.session.current_path = "lua/difit/new.lua"]])
+  set_cursor(1) -- header row: current_node() has no file node here
+
+  child.type_keys("]f")
+
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/renamed.lua" })
+end
+
+---------------------------------------------------------------------------------------
+-- H (keymaps.panel.toggle_hide_viewed): a display-only filter, never touching
+-- navigation (next_unviewed/next_file/prev_file) or the header's progress counts.
+---------------------------------------------------------------------------------------
+
+T["H (keymaps.panel.toggle_hide_viewed) hides already-viewed rows and adds a header suffix; pressing again restores them"] = function()
+  eq(lines()[9], "    [✓] M state.lua  +42 −3", "sanity: state.lua starts viewed and visible")
+
+  child.type_keys("H")
+
+  local got = lines()
+  eq(got[2], "1/6 viewed (hidden)", "progress counts stay global; only the wording gains a suffix")
+  for _, l in ipairs(got) do
+    eq(l:find("state.lua", 1, true), nil, "the viewed file's row is gone")
+  end
+
+  child.type_keys("H")
+
+  eq(lines(), EXPECTED_LINES, "toggling back restores the exact original rows/header")
+end
+
+T["marking a file viewed while hide_viewed is on makes its row vanish too; auto-advance still works and the cursor lands on a valid row"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.type_keys("H") -- hide_viewed on: state.lua's row disappears
+
+  set_cursor(4) -- docs/guide.md (still visible: not viewed yet)
+  child.type_keys("v")
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
+  -- next_unviewed is session state, not panel rows -- entirely unaffected by the filter.
+  eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
+  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+
+  local got = lines()
+  for _, l in ipairs(got) do
+    eq(l:find("guide.md", 1, true), nil, "the just-viewed file's row is gone too, now hidden")
+  end
+
+  local total_lines = #got
+  local cur = cursor()
+  eq(cur[1] >= 1 and cur[1] <= total_lines, true, "cursor stays on a valid row")
+  eq(
+    child.lua_get("_G.panel.row_nodes[" .. cur[1] .. "].path"),
+    "lua/difit/new.lua",
+    "auto-advance's own cursor-move landed on the right (still-visible) row"
+  )
+end
+
+T["keymaps.panel.toggle_hide_viewed = false disables the H mapping"] = function()
+  child.lua([[
+    require("difit.config").setup({ keymaps = { panel = { toggle_hide_viewed = false } } })
+    _G.panel = require("difit.ui.panel").open(_G.session)
+  ]])
+
+  eq(mapped(buf_maparg("H")), false, "keymaps.panel.toggle_hide_viewed")
+  eq(mapped(buf_maparg("v")), true, "other panel keys are unaffected")
 end
 
 T["buffer is not modifiable outside render"] = function()

@@ -25,6 +25,8 @@ local M = {}
 ---@field toggle_mode fun()
 ---@field focus_panel fun()
 ---@field close fun()
+---@field next_file fun(path: string)
+---@field prev_file fun(path: string)
 
 --- docs/refactor-v1.md R2: the explicit window-ownership contract both diff views' `M.new`
 --- takes in place of ever reading "the current window". `anchor` is the window to split
@@ -157,6 +159,22 @@ function M.universal_spec(actions, path)
       key = cfg.focus_panel,
       callback = function()
         actions.focus_panel()
+      end,
+    },
+    -- `path` is this buffer's own file -- for a difit-owned diff buffer or the real
+    -- worktree/HEAD buffer alike, that's exactly `session.current_path` (see
+    -- `init.lua`'s `build_actions`), so no extra "what am I looking at" lookup is needed
+    -- here the way the panel's own `]f`/`[f` handlers need one (see ui/panel.lua).
+    next_file = {
+      key = cfg.next_file,
+      callback = function()
+        actions.next_file(path)
+      end,
+    },
+    prev_file = {
+      key = cfg.prev_file,
+      callback = function()
+        actions.prev_file(path)
       end,
     },
   }
