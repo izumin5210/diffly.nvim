@@ -1,0 +1,418 @@
+*difit.txt*   A difit-inspired diff viewer for Neovim
+
+==============================================================================
+CONTENTS                                                      *difit-contents*
+
+  1. Introduction .......................... |difit-introduction|
+  2. Commands ............................... |difit-commands|
+  3. Configuration ........................... |difit-config|
+  4. Keymaps ................................. |difit-keymaps|
+  5. Large files .............................. |difit-large-files|
+  6. Viewed-state semantics .................. |difit-viewed-state|
+  7. Bulk viewed marking ..................... |difit-bulk-viewed|
+  8. GitHub integration ...................... |difit-github|
+
+==============================================================================
+1. Introduction                                           *difit-introduction*
+
+                                                                       *difit*
+difit.nvim is a `difit <https://github.com/yoshiko-pg/difit>`-inspired diff
+viewer: a file-tree diff viewer (like diffview.nvim) with per-file "viewed"
+marks that persist across viewer sessions for the same pull request.
+
+Diffs are always computed from local git: the current branch (or its
+checked-out state) is compared against `merge-base(base, HEAD)`. A GitHub
+pull request, when one is detected for the current branch, is used only as
+metadata: to resolve the base branch and to key the viewed state -- reviewing
+someone else's PR still means checking it out first (e.g. `gh pr checkout`).
+
+Diffs display either side-by-side (native Neovim diff mode) or unified
+(single column, `<leader>s`/`s` toggles between them -- see
+|difit-keymaps|). Both show the real file -- not a synthetic patch buffer --
+so either mode gets the file's own syntax highlighting and LSP; unified
+overlays the diff on top of it with extmarks, and deleted lines render as
+read-only virtual lines rather than real ones. The buffer is editable in
+worktree mode (the default), in both modes alike.
+
+`setup()` is entirely optional; the plugin works with its defaults untouched.
+Call it only to override them: >lua
+  require("difit").setup({
+    right = "worktree",
+    panel = { width = 40 },
+  })
+<
+
+==============================================================================
+2. Commands                                                   *difit-commands*
+
+                                                                      *:Difit*
+:Difit [{base}]         Open the review UI in a dedicated tabpage, comparing
+                        the current branch against {base} (or the resolved
+                        default base branch; see |difit-viewed-state| for how
+                        the base is picked). If the UI is already open,
+                        focuses its tabpage instead of opening a second one.
+
+:Difit close            Close the review UI: saves viewed state, closes the
+                        dedicated tabpage, and returns to the tabpage `:Difit`
+                        was originally invoked from.
+
+:Difit toggle           `:Difit close` if open, otherwise the same as a bare
+                        `:Difit`.
+
+:Difit refresh          Recompute the diff (same as pressing the panel's
+                        `refresh` key, see |difit-keymaps|). Also runs
+                        automatically on `BufWritePost`/`FocusGained`.
+
+:Difit focus            Focus the panel window (same as
+                        |<Plug>(difit-focus-panel)|, or the `focus_panel` key
+                        in |difit-keymaps|). A no-op with a notice when no
+                        review is open.
+
+:Difit sweep [{name}]   Sweep a `viewed_patterns` group (same as the panel's
+                        `S` key): with no {name}, 0 configured groups notify
+                        that none are set, exactly 1 sweeps immediately, and
+                        2+ prompt via |vim.ui.select()|; {name} (which may
+                        contain spaces) sweeps that one group directly,
+                        matching an exact name first then a unique prefix.
+                        See |difit-bulk-viewed|.
+
+:Difit clean            Prompt to delete the *current* review's persisted
+                        viewed state (the key the currently open review uses,
+                        or the key that would be resolved if none is open).
+
+:Difit clean all        Prompt to delete every persisted viewed-state file
+                        for every review, across all repos.
+
+Completion offers the subcommands above plus the repo's local branch names,
+so `:Difit <Tab>` can be used either to pick a subcommand or to jump straight
+to reviewing against a specific base branch. `:Difit sweep <Tab>` completes
+differently: it offers the current review's configured `viewed_patterns`
+group names instead (spaces backslash-escaped), and only when a review is
+open on the current tabpage.
+
+==============================================================================
+3. Configuration                                                *difit-config*
+
+Pass any subset of these to |difit.setup()| (called as
+`require("difit").setup({...})`); unset fields keep their default. Full
+defaults, exactly as declared in `lua/difit/config.lua`: >lua
+  {
+    base = nil,             -- string|nil: base branch override
+    right = "worktree",     -- "worktree"|"head"
+    include_untracked = true,
+    max_file_size = 1024 * 1024, -- bytes; false disables the guard (see below)
+    auto_advance = true,    -- jump to next un-viewed file after marking
+    icons = true,           -- use mini.icons / nvim-web-devicons when present
+    viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (S/sweep)
+    panel = { width = 35 },
+    keymaps = {
+      panel = {
+        open = "<CR>",      -- open file diff / toggle fold on a dir row
+        toggle_viewed = "v",
+        refresh = "R",
+        toggle_mode = "s",    -- side-by-side <-> unified
+        close = "q",
+        fold = "za",
+        toggle_hide_viewed = "H", -- hide/show already-viewed rows (display)
+        sweep = "S",             -- sweep a viewed_patterns group (prompts if 2+)
+        toggle_viewed_subtree = "V", -- bulk-toggle every file under a dir row
+      },
+      -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to
+      -- keymaps.universal
+      diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+      -- the universal layer: works everywhere (panel, owned diff buffers, AND
+      -- real file buffers shown in the viewer); real file buffers get ONLY
+      -- this group
+      universal = {
+        toggle_viewed = "<leader>v",
+        toggle_mode = "<leader>s",
+        focus_panel = "<leader>e",
+        next_file = "]f", -- open the next file (ALL files, unaffected by H)
+        prev_file = "[f", -- open the previous file (ditto)
+      },
+    },
+  }
+<
+Notes:
+- `base`: overridden per-invocation by `:Difit {base}`; when both are unset,
+  the base is auto-detected (a GitHub PR's base branch when one exists for
+  the current branch, otherwise `origin/HEAD`/`main`/`master`).
+- `right`: which side of the diff the right-hand pane shows. `"worktree"`
+  (default) shows uncommitted edits immediately and lets you edit + `:w`
+  straight from the diff; `"head"` compares against the last commit instead.
+- `include_untracked`: whether untracked files show up as added ("A") files.
+- `max_file_size`: guards against loading a huge text file's full content into
+  a diff view; see |difit-large-files|.
+- `icons`: silently does nothing when neither `mini.icons` nor
+  `nvim-web-devicons` is installed.
+- `viewed_patterns`: glob pattern GROUPS for `S`/`:Difit sweep`'s bulk-toggle;
+  see |difit-bulk-viewed|. Empty by default -- `S`/`:Difit sweep` notify that
+  nothing is configured until this is set.
+- Setting any keymap value to `false` disables that mapping.
+
+==============================================================================
+4. Keymaps                                                     *difit-keymaps*
+
+No global keymaps are defined. All of the following are buffer-local and
+configurable via `keymaps.universal`/`keymaps.panel`/`keymaps.diff` (see
+|difit-config|).
+
+difit.nvim uses a two-layer keymap model, modeled on diffview.nvim: a
+UNIVERSAL layer of leader-prefixed keys that work identically in every difit
+context -- the panel, difit-owned diff buffers, and real file buffers shown
+in the viewer alike -- plus LOCAL single-key shortcuts that only apply where
+the buffer is difit-owned (so they can never collide with a real file's own,
+unrelated keymaps).
+
+Universal (all difit windows) ~
+  <leader>v    Toggle the current file as viewed/un-viewed (auto-advances to
+               the next un-viewed file when `auto_advance` is enabled).
+  <leader>s    Toggle between side-by-side and unified diff modes.
+  <leader>e    Focus the panel (same as `:Difit focus`).
+  ]f           Open the next file (ALL files, not just un-viewed ones).
+  [f           Open the previous file (ditto).
+
+  Works everywhere: the panel, difit-owned blob buffers, and real file
+  buffers currently shown in the viewer -- worktree-mode side-by-side's
+  right-hand window, and worktree-mode unified's single window alike -- the
+  one place these keys matter most, since real buffers get no local
+  shortcuts at all. There is no universal `close`: closing a real file
+  buffer isn't "closing the review". On a real file buffer these maps are
+  applied only while it is the one currently open in the view, and are
+  removed again the moment the view opens a different file or the review
+  closes -- a real file buffer never keeps difit's keymaps once the viewer
+  stops showing it.
+
+  `]f`/`[f` always cycle through every file in the review, regardless of
+  the panel's `H` filter (see below) -- the filter only changes what the
+  tree *draws*, never what is reachable. Skipping already-viewed files
+  while moving forward is what `<leader>v`/`v`'s auto-advance is already
+  for.
+
+File panel ~
+  <CR>    Open the file under the cursor (or toggle a directory's fold).
+  v       Toggle the file under the cursor as viewed/un-viewed. When
+          `auto_advance` is enabled (the default), the cursor and diff jump
+          to the next un-viewed file.
+  R       Refresh: recompute the diff against the same base.
+  s       Toggle between side-by-side and unified diff modes.
+  q       Close the review UI (same as `:Difit close`).
+  za      Toggle the fold of the directory under the cursor (or its parent,
+          when the cursor is on a file row) -- mirrors native `za`.
+  H       Toggle hiding already-viewed files. Display only: progress counts
+          (`3/12 viewed`) stay global, and navigation (`]f`/`[f`, `v`'s
+          auto-advance) is entirely unaffected. While active, the progress
+          line gains a `(hidden)` suffix, e.g. `3/12 viewed (hidden)`.
+          Directories left with no un-viewed files disappear along with
+          their contents.
+  S       Sweep a `viewed_patterns` group (tri-state; prompts via
+          |vim.ui.select()| when 2+ groups are configured; see
+          |difit-bulk-viewed|). Same effect as `:Difit sweep`.
+  V       On a directory row: bulk-toggle every file in that subtree
+          (tri-state; see |difit-bulk-viewed|). On a file row: identical to
+          `v`.
+
+difit diff buffers ~
+Difit-owned buffers only -- the side-by-side blob windows, and unified's own
+blob buffers (HEAD mode, or a deleted file's read-only content) -- never
+real file buffers, which get only the universal layer above.
+  v            Toggle the current file as viewed/un-viewed (same key and
+               semantics as the panel's `v`).
+  s            Toggle between side-by-side and unified diff modes.
+  q            Close the review UI (same as `:Difit close`/the panel's `q`).
+
+                                                 *<Plug>(difit-toggle-viewed)*
+                                                    *<Plug>(difit-toggle-mode)*
+                                                   *<Plug>(difit-focus-panel)*
+                                                     *<Plug>(difit-next-file)*
+                                                     *<Plug>(difit-prev-file)*
+Five `<Plug>` mappings are available for binding your own keys, e.g. to
+reach these actions from buffers difit doesn't map by default:
+  <Plug>(difit-toggle-viewed)    Toggle the viewed mark for the file backing
+                                 the current buffer, when that buffer belongs
+                                 to the currently open review.
+  <Plug>(difit-toggle-mode)      Toggle between side-by-side and unified.
+  <Plug>(difit-focus-panel)      Focus the panel (same as `:Difit focus`).
+  <Plug>(difit-next-file)        Open the next file (same as `]f`).
+  <Plug>(difit-prev-file)        Open the previous file (same as `[f`).
+
+None has a default binding; map them yourself if wanted: >lua
+  vim.keymap.set("n", "<leader>gv", "<Plug>(difit-toggle-viewed)")
+  vim.keymap.set("n", "<leader>gs", "<Plug>(difit-toggle-mode)")
+  vim.keymap.set("n", "<leader>gp", "<Plug>(difit-focus-panel)")
+  vim.keymap.set("n", "]f", "<Plug>(difit-next-file)")
+  vim.keymap.set("n", "[f", "<Plug>(difit-prev-file)")
+<
+
+==============================================================================
+5. Large files                                             *difit-large-files*
+
+Images and other binary files never load their content -- both diff modes
+always render a placeholder for them, regardless of size. `max_file_size`
+(|difit-config|, 1 MiB by default) extends the same idea to huge TEXT files:
+opening one shows a placeholder instead of loading it into a buffer, styled
+like the binary one -- >
+  file too large (2.3 MiB > 1.0 MiB) -- press L to load
+<
+with a buffer-local `L` key to load it anyway, for the rest of that view
+(side-by-side and unified each track this separately; switching modes or
+`:Difit close` resets it -- it is never persisted).
+
+Only actually loading a file's content into a diff view is guarded:
+- Panel counts (status letter, `+`/`-`) come from `git diff --numstat`, which
+  stays cheap regardless of file size, so panel rows are entirely unaffected.
+- Marking a file viewed (`v`/`<leader>v`/`V`/`S`) never requires loading it
+  first -- viewed state is tracked independently of what the view currently
+  renders.
+- Binary detection always takes precedence: a binary entry never shows size
+  text or an `L` key, since there is nothing further to load.
+
+Set `max_file_size = false` to disable the guard entirely.
+
+==============================================================================
+6. Viewed-state semantics                                 *difit-viewed-state*
+
+Marking files "viewed" is manual only -- nothing is auto-marked on scroll --
+and is shared between the panel, the diff buffers, and real file buffers: `v`
+(panel/diff buffers), `<leader>v` (the universal layer, `keymaps.universal`,
+which also works on the panel and diff buffers), and
+`<Plug>(difit-toggle-viewed)` all record the same mark.
+
+Key ~
+Viewed marks are persisted keyed by:
+- `owner/repo#number`, when a GitHub PR for the current branch is detected
+  via `gh`; or otherwise
+- the repo identity plus the `base..head` branch pair.
+
+These two keyspaces never mix: opening the same branch pair through a PR one
+day and without `gh` the next tracks viewed state separately, by design (see
+docs/design.md). Repo identity is the normalized remote URL when one exists
+(so state is shared across worktrees and clones of the same remote),
+otherwise the worktree's toplevel path.
+
+Invalidation ~
+Marking a file records the pair of blob SHAs (base side, right-hand side) it
+had at that moment. If either side's blob no longer matches at render time --
+because either branch moved on -- the file counts as un-viewed again,
+GitHub-style. Files nobody touched keep their mark across any number of new
+commits on either side.
+
+Persistence ~
+State lives under `stdpath('data') .. '/difit'`, one JSON file per review key
+(named after a hash of the key, see `lua/difit/state.lua`). Use `:Difit
+clean` / `:Difit clean all` to remove it; there is no automatic
+garbage-collection.
+
+==============================================================================
+7. Bulk viewed marking                                     *difit-bulk-viewed*
+
+Marking files "viewed" stays manual-trigger-only (see |difit-viewed-state|
+above) -- nothing is ever marked as a side effect of scrolling, opening, or
+refreshing a diff. `S`/`:Difit sweep [{name}]` and `V` are simply two more
+explicit triggers, for marking (or unmarking) several files in one step
+instead of one `v` press per file -- e.g. lockfiles and generated output
+nobody reads line-by-line.
+
+viewed_patterns ~
+An ORDERED list of pattern GROUPS, matched against every file currently in
+the diff. Each item is either:
+- a plain glob STRING -- every such string collects into one implicit group
+  named `"default"`, positioned wherever the FIRST string appears in the
+  list (this is the pre-groups shape, still fully supported); or
+- a TABLE `{ name = "...", patterns = {...} }` for an explicitly named
+  group, so unrelated batches (e.g. lockfiles vs. generated output) can be
+  swept independently.
+
+Within a group, glob semantics are unchanged from before groups existed:
+- A pattern with NO "/" matches the entry's BASENAME, anywhere in the tree --
+  `"*.lock"` matches `yarn.lock`, `packages/api/Gemfile.lock`, etc.
+- A pattern CONTAINING "/" matches the full toplevel-relative path instead --
+  `"dist/**"` matches everything under a top-level `dist/`, but not
+  `packages/api/dist/bundle.js`.
+- Patterns are compiled with `vim.glob.to_lpeg` (the same glob dialect
+  Neovim's LSP client uses): `**` crosses directory boundaries, a single `*`
+  does not.
+
+Example: >lua
+  require("difit").setup({
+    viewed_patterns = {
+      {
+        name = "lock files",
+        patterns = { "*.lock", "*.sum" }, -- yarn.lock, go.sum, ...
+      },
+      {
+        name = "generated files",
+        patterns = { "*.snap", "dist/**", "**/generated/**" },
+      },
+    },
+  })
+<
+Backward compatible: a flat list of strings still works exactly as before --
+`viewed_patterns = { "*.lock", "dist/**" }` -- collapsing into one implicit
+`"default"` group, so existing configs need no changes.
+
+An invalid pattern never raises: it is skipped, and warned about once per
+Neovim session (not once per sweep). Two groups sharing the same name merge
+into the first occurrence's group the same way, also warned once.
+
+Choosing a group ~
+`S` / `:Difit sweep` (with no {name}):
+- 0 groups configured -- notifies that `viewed_patterns` isn't set; nothing
+  happens.
+- exactly 1 group configured -- sweeps it immediately, no prompt.
+- 2+ groups configured -- prompts via |vim.ui.select()| (`prompt = "Sweep
+  pattern group:"`), so a picker plugin that has replaced Neovim's builtin
+  `vim.ui.select` (telescope, fzf-lua, dressing.nvim, ...) applies
+  automatically. The first entry is always `all groups (N files, M
+  unviewed)` -- the union of every group, a file matched by more than one
+  group counted only once -- followed by each configured group as `<name>
+  (N files, M unviewed)`. Cancelling out of the prompt changes nothing.
+
+`:Difit sweep {name}` sweeps that one group directly, skipping the prompt
+entirely: it matches an exact name first, then falls back to a UNIQUE
+prefix (so `:Difit sweep lock` works when `"lock files"` is the only
+configured group starting with `"lock"`). A name containing spaces works
+either typed by hand (`:Difit sweep lock files`) or via `<Tab>` completion,
+which offers the live review's group names with embedded spaces
+backslash-escaped (see |difit-commands|). An unresolved name reports which
+groups ARE configured instead of silently doing nothing.
+
+Tri-state toggle ~
+A pattern-group sweep (`S`/`:Difit sweep [{name}]`) and `V` on a directory
+row (every file in that subtree) share the same tri-state rule: if at least
+one file in the swept scope is currently un-viewed, the WHOLE BATCH is
+marked viewed; only once EVERY file in scope is already viewed does
+sweeping it again unmark them all. Repeating the same action is therefore a
+clean toggle, not a one-way ratchet. `V` on a file row is not a batch at all
+-- it behaves exactly like `v`.
+
+Each batch persists with a single save (not one write per file) and reports a
+compact result scoped to what was actually swept, e.g. `difit: marked 5
+files as viewed (lock files)` / `difit: unmarked 5 files (all groups)`.
+Progress (`3/12 viewed`) updates exactly like any other mark.
+
+`V` on a directory sees that subtree's FULL file list regardless of the
+panel's `H` filter or any folds -- both are display concerns only, same as
+everywhere else in the panel (see |difit-keymaps|).
+
+`config.auto_advance` applies to a batch exactly like `v`: a batch that
+MARKED files jumps to the next un-viewed file afterward (`]f`-style,
+resolved from the start of file order, since a batch has no single "current"
+file to resume from); a batch that UNMARKED files never advances.
+
+==============================================================================
+8. GitHub integration                                           *difit-github*
+
+The `gh` CLI is entirely optional. When it is missing, not authenticated, or
+the current branch has no associated pull request, difit.nvim silently falls
+back to the branch-pair key described in |difit-viewed-state| -- nothing
+about opening or reviewing a diff depends on `gh` being present.
+
+When `gh` *is* available and a PR is detected, it is used for two independent
+things: as a fallback source for the base branch (still beaten by `:Difit
+{base}` or `config.base`), and as the viewed-state key. The diff itself is
+always generated from local git against your current worktree/HEAD --
+reviewing someone else's PR still requires checking it out locally first
+(e.g. via `gh pr checkout`).
+
+ vim:tw=78:ts=8:noet:ft=help:norl:

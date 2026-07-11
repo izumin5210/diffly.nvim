@@ -1,0 +1,16 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aquaproj/aqua/main/json-schema/aqua-yaml.json
+# aqua - Declarative CLI Version Manager
+# https://aquaproj.github.io/
+# checksum:
+#   enabled: true
+#   require_checksum: true
+#   supported_envs:
+#   - all
+registries:
+- type: standard
+  ref: v4.534.0 # renovate: depName=aquaproj/aqua-registry
+packages:
+# ttyd and ffmpeg are NOT here: neither ships darwin binaries the aqua registry can
+# use -- install them with your OS package manager (e.g. `brew install ttyd ffmpeg`).
+- name: charmbracelet/vhs@v0.11.0
