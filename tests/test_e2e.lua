@@ -140,6 +140,26 @@ local function panel_is_current_win(child)
   return child.lua_get([[vim.api.nvim_get_current_win() == __difit_entry().panel.win]])
 end
 
+--- 1-indexed row numbers carrying a `DifitCurrentFile` extmark in the panel buffer --
+--- mirrors tests/test_panel.lua's own `current_file_rows` helper, queried against the
+--- real session/panel here instead of a fake one.
+---@param child table
+---@return integer[]
+local function current_file_rows(child)
+  return child.lua_get([[
+    (function()
+      local marks = vim.api.nvim_buf_get_extmarks(__difit_entry().panel.buf, -1, 0, -1, { details = true })
+      local rows = {}
+      for _, m in ipairs(marks) do
+        if m[4].hl_group == "DifitCurrentFile" then
+          table.insert(rows, m[2] + 1)
+        end
+      end
+      return rows
+    end)()
+  ]])
+end
+
 ---@param child table
 ---@param expr string @Lua expression relative to the current tabpage's `entry.session`
 local function session_field(child, expr)
@@ -1056,6 +1076,29 @@ T["]f from the panel opens the next file (relative to the row under the cursor) 
 
   eq(session_field(child, "current_path"), paths.new)
   eq(panel_cursor_row(child), 6)
+end
+
+-- Regression/staleness guard for the panel's DifitCurrentFile row highlight
+-- (docs/architecture.md "Panel"): `Session:open_file` must notify subscribers on a path
+-- change so the panel re-renders and the highlight follows navigation, rather than
+-- staying stuck on whatever row was open before `]f`/`[f`/`<CR>`/auto-advance.
+T["]f moves the panel's DifitCurrentFile row highlight to the newly opened file, not just the diff"] = function()
+  child.cmd("Difit")
+
+  -- `:Difit` auto-opens the first un-viewed file (src/gone.lua, row 4 -- see the fixture
+  -- header comment above), so the highlight already sits there before any keypress.
+  eq(session_field(child, "current_path"), paths.deleted)
+  eq(current_file_rows(child), { 4 })
+
+  set_cursor(child, 5) -- src/mod.lua row (moves the CURSOR only; current_path is still gone.lua)
+  child.type_keys("]f")
+
+  eq(session_field(child, "current_path"), paths.new)
+  eq(
+    current_file_rows(child),
+    { 6 },
+    "the highlight followed ]f to src/new.lua's row; gone.lua's row no longer carries it"
+  )
 end
 
 T["bonus: <Plug>(difit-next-file) and <Plug>(difit-prev-file) work as user-mappable Plug targets"] = function()

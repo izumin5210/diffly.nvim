@@ -122,7 +122,11 @@ Three layers, all buffer-local **and `nowait`**:
   when a parser exists, else `'syntax'`.
 - **Panel**: plain lines + extmark highlights, rebuilt per render; cursor follows the
   node it was on across background refreshes; `winfixwidth` + an `ensure_width` check
-  keep the configured width through window churn.
+  keep the configured width through window churn. The row matching `session.current_path`
+  gets a whole-row `DifitCurrentFile` background extmark at a below-default priority, so
+  segment/viewed foreground groups still show through on top of it; `Session:open_file`
+  notifies subscribers only when `current_path` actually changes, which is what keeps this
+  highlight from going stale after `]f`/`[f`/`<CR>`/auto-advance.
 - **Large-file guard** (`ui/size_guard.lua`, `config.max_file_size`): lazily, at
   `open()` time for the one entry being opened, both views check whether the content they
   are about to load (sidebyside: base blob + right side; unified: whichever single side
