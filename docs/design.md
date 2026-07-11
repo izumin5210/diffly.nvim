@@ -4,7 +4,9 @@ A [difit](https://github.com/yoshiko-pg/difit)-inspired diff viewer for Neovim: 
 diff viewer (like diffview.nvim) with per-file `viewed` marks that persist across viewer
 sessions for the same PR.
 
-Status: design agreed on 2026-07-08. Not yet implemented.
+Status: design agreed on 2026-07-08; implemented (see docs/plan.md for the build plan and
+docs/refactor-v1.md for the post-v1-review refactoring). Sections below are kept in sync
+with the code as behavior evolves.
 
 ## Goals (v1)
 

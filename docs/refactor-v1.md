@@ -4,6 +4,11 @@ Synthesized from the v1 review findings plus architecture studies of diffview.nv
 codediff.nvim (esmuellert/codediff.nvim). Goal: remove the structural debt found during
 v1 development before tagging v1. Behavior-preserving except where flagged.
 
+Status: fully executed — R1 (session registry), R2+R3 (view window ownership + ctx
+seams), R4 (cleanup) landed as separate refactor commits, and the inline-overlay note at
+the bottom was implemented as the unified view shortly after. Kept as a record of the
+architecture decisions and of what was deliberately rejected.
+
 ## Phases
 
 Phases run sequentially (they touch overlapping files). Tests must be green after each.
