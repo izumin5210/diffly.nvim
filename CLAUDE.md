@@ -71,3 +71,7 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 
 Conventional Commits (`feat:`/`fix:`/`refactor:`/`docs:`/...), feature branches, draft
 PRs. Small commits per logical unit.
+
+Releases are automated with [tagpr](https://github.com/Songmu/tagpr): git tags are the
+only version source (no in-repo version file), and merging tagpr's release PR cuts the
+tag, CHANGELOG, and GitHub Release. See `docs/releasing.md` — never tag by hand.

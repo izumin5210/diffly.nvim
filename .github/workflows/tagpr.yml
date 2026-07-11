@@ -1,0 +1,23 @@
+# Release automation via tagpr (https://github.com/Songmu/tagpr).
+# On every push to main, tagpr keeps a single "release" PR up to date; merging that PR
+# bumps the version, updates CHANGELOG.md, creates the git tag, and cuts a GitHub Release.
+# See docs/releasing.md for the operator flow and one-time repository setup.
+name: tagpr
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release commit and create the tag/release
+      pull-requests: write # open and update the release PR
+      issues: read # read the major/minor labels that decide the bump
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Songmu/tagpr@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
