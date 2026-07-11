@@ -13,7 +13,7 @@
 local git = require("difit.git")
 local ui_keymaps = require("difit.ui.keymaps")
 local scratch = require("difit.ui.scratch")
-local size_guard = require("difit.ui.size_guard")
+local guard = require("difit.ui.guard")
 
 local M = {}
 
@@ -66,9 +66,11 @@ end
 --- this module directly (see the calls in `set_right_worktree`/`clear_universal_keymaps`
 --- below).
 ---@field universal_keys string[]?  -- keys applied to `universal_buf`, ditto
----@field force_loaded table<string, boolean> -- paths whose size guard (config.max_file_size,
---- ui/size_guard.lua) has been bypassed for the rest of THIS view instance's lifetime --
---- resets on a mode switch/close (a fresh view instance) rather than persisting
+---@field force_loaded table<string, boolean> -- paths whose size OR generated-file guard
+--- (config.max_file_size/config.collapse_generated, ui/guard.lua) has been bypassed for
+--- the rest of THIS view instance's lifetime -- one shared set for both guards (forcing
+--- past either bypasses the other too), resets on a mode switch/close (a fresh view
+--- instance) rather than persisting
 local View = {}
 View.__index = View
 
@@ -283,7 +285,7 @@ function View:show_binary(entry)
   vim.api.nvim_win_set_buf(self.right_win, bufnr)
 end
 
---- Oversized entries (`config.max_file_size` -- see `ui/size_guard.lua`): the same
+--- Oversized entries (`config.max_file_size` -- see `ui/guard.lua`): the same
 --- shared-placeholder shape as `show_binary` (both windows, `keymaps.diff` +
 --- `keymaps.universal`, no `diffthis`), but with the actual/limit sizes in the message and
 --- a buffer-local `L` key that force-loads this exact path for the rest of this view
@@ -304,12 +306,29 @@ function View:show_oversized(entry, spec, actual, limit)
     scratch.name("oversized", self.ctx.anchor, string.format("%s@%d", entry.path, actual))
   local bufnr = self:owned_buffer(
     name,
-    { size_guard.message(actual, limit) },
+    { guard.message(actual, limit) },
     { entry_path = entry.path }
   )
   vim.api.nvim_win_set_buf(self.left_win, bufnr)
   vim.api.nvim_win_set_buf(self.right_win, bufnr)
-  size_guard.apply_force_load_keymap(bufnr, self, entry, spec)
+  guard.apply_force_load_keymap(bufnr, self, entry, spec)
+end
+
+--- Generated entries (`config.collapse_generated` -- see `ui/guard.lua`/
+--- `lua/difit/generated.lua`): the same shared-placeholder shape as `show_oversized`
+--- (both windows, `keymaps.diff` + `keymaps.universal`, no `diffthis`, a force-load `L`
+--- key), but with a fixed message (no size to report) -- so, unlike `show_oversized`'s
+--- buffer name, this one needs no content-addressed suffix; the message never changes for
+--- a given path.
+---@param entry difit.FileEntry
+---@param spec difit.DiffSpec
+function View:show_generated(entry, spec)
+  self:clear_universal_keymaps()
+  local name = scratch.name("generated", self.ctx.anchor, entry.path)
+  local bufnr = self:owned_buffer(name, { guard.generated_message() }, { entry_path = entry.path })
+  vim.api.nvim_win_set_buf(self.left_win, bufnr)
+  vim.api.nvim_win_set_buf(self.right_win, bufnr)
+  guard.apply_force_load_keymap(bufnr, self, entry, spec)
 end
 
 --- Focus the right window and land on the first change, mirroring the plan's
@@ -320,9 +339,14 @@ function View:focus_right_first_change()
   pcall(vim.cmd, "normal! gg]c")
 end
 
---- Binary takes precedence over the size guard unconditionally (config.lua's
---- `max_file_size` doc): a binary entry never shows size text or gets an `L` key, since
---- there's nothing further to "load" -- the binary placeholder IS the final render.
+--- Binary takes precedence over both content-hiding guards unconditionally (config.lua's
+--- `max_file_size` doc): a binary entry never shows size/generated text or gets an `L`
+--- key, since there's nothing further to "load" -- the binary placeholder IS the final
+--- render. Between the other two, the size guard runs first (docs/architecture.md
+--- "Rendering"): an oversized file's content is never loaded, so the generated-file
+--- heuristics (which need to read that content) never get a chance to run for it -- an
+--- accepted divergence from a hypothetical "check generated first" ordering, since running
+--- heuristics would defeat the size guard's entire point.
 ---@param entry difit.FileEntry
 ---@param spec difit.DiffSpec
 function View:open(entry, spec)
@@ -335,11 +359,19 @@ function View:open(entry, spec)
     return
   end
 
-  local limit = size_guard.limit()
-  if limit and not self.force_loaded[entry.path] then
-    local oversized = size_guard.exceeds(size_guard.sidebyside_sizes(spec.repo, entry, spec), limit)
-    if oversized then
-      self:show_oversized(entry, spec, oversized, limit)
+  if not self.force_loaded[entry.path] then
+    local limit = guard.limit()
+    if limit then
+      local oversized = guard.exceeds(guard.sidebyside_sizes(spec.repo, entry, spec), limit)
+      if oversized then
+        self:show_oversized(entry, spec, oversized, limit)
+        self:focus_right_first_change()
+        return
+      end
+    end
+
+    if guard.is_generated(spec.repo, entry, spec) then
+      self:show_generated(entry, spec)
       self:focus_right_first_change()
       return
     end

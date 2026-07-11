@@ -9,6 +9,10 @@ local eq = MiniTest.expect.equality
 
 --- Build a difit.DiffSpec + difit.FileEntry[] pair for the fixture repo (main...feature)
 --- entirely inside the child, using the same git plumbing the real session would use.
+--- `spec.generated_attrs` is populated exactly the way `session.lua`'s `load_generated_attrs`
+--- does (a batched `git check-attr linguist-generated` over every entry), since this
+--- helper bypasses `difit.Session` entirely -- tests exercising `.gitattributes`
+--- overrides need it present, same as production.
 ---@param child table
 ---@param right "worktree"|"head"
 ---@return table @{ spec = difit.DiffSpec, entries = difit.FileEntry[] }
@@ -17,15 +21,25 @@ local function build(child, right)
     [[
       local right = ...
       local git = require("difit.git")
+      local config = require("difit.config")
       local repo = git.repo_identity(vim.fn.getcwd())
       local merge_base = git.merge_base(repo, "main", "feature")
       local entries = git.diff_files(repo, merge_base, right, { include_untracked = true })
+      local generated_attrs = {}
+      if config.get().collapse_generated then
+        local paths = {}
+        for _, e in ipairs(entries) do
+          table.insert(paths, e.path)
+        end
+        generated_attrs = git.check_attrs(repo, "linguist-generated", paths) or {}
+      end
       local spec = {
         repo = repo,
         base_ref = "main",
         merge_base = merge_base,
         right = right,
         review_key = { kind = "branch", repo = repo.id, base = "main", head = "feature" },
+        generated_attrs = generated_attrs,
       }
       return { spec = spec, entries = entries }
     ]],
@@ -520,7 +534,7 @@ T["regression: an outgoing unified view's close() must not steal sidebyside's wi
 end
 
 ---------------------------------------------------------------------------------------
--- Large-file guard (config.max_file_size, ui/size_guard.lua): an entry whose content
+-- Large-file guard (config.max_file_size, ui/guard.lua): an entry whose content
 -- would exceed the configured limit renders a placeholder styled like the binary one
 -- (both windows, no diffthis) instead of loading it, with a `L` key to force-load it for
 -- the rest of this view instance. Binary detection always takes precedence.
@@ -602,6 +616,133 @@ T["binary entries take precedence over the size guard -- no size text, no L key"
 
   eq(win_buflines(child, "left_win"), { "binary file" })
   eq(mapped(buf_maparg(child, buf_of(child, "left_win"), "L")), false)
+end
+
+---------------------------------------------------------------------------------------
+-- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/difit/generated.lua):
+-- GitHub-parity collapsing of vendored/lockfile/codegen output. Shares the exact same
+-- placeholder/`L`-key mechanics as the large-file guard above; only the message and the
+-- detection source (a `.gitattributes linguist-generated` override, else content
+-- heuristics) differ.
+---------------------------------------------------------------------------------------
+
+---@param child table
+---@param enabled boolean
+local function set_collapse_generated(child, enabled)
+  child.lua("require('difit.config').setup({ collapse_generated = ... })", { enabled })
+end
+
+T["generated file (heuristic match): both windows share a placeholder with the generated text instead of the real content"] = function()
+  repo:write("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  repo:commit("chore: add package-lock.json")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "package-lock.json")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(win_diff(child, "left_win"), false)
+  eq(win_diff(child, "right_win"), false)
+
+  local left_buf = buf_of(child, "left_win")
+  local right_buf = buf_of(child, "right_win")
+  eq(left_buf, right_buf)
+
+  local lines = win_buflines(child, "left_win")
+  eq(#lines, 1)
+  eq(lines[1], "Generated files are not rendered by default -- press L to load")
+end
+
+T["generated file: pressing L force-loads the real diff, and it stays loaded on reopen"] = function()
+  repo:write("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  repo:commit("chore: add package-lock.json")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "package-lock.json")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+  eq(win_buflines(child, "left_win")[1]:find("press L to load", 1, true) ~= nil, true)
+
+  child.type_keys("L")
+
+  eq(vim.endswith(win_bufname(child, "right_win"), "/package-lock.json"), true)
+  eq(win_diff(child, "left_win"), true, "diffthis re-enabled once the real content loads")
+
+  -- Reopening later must not show the placeholder again -- `force_loaded` persists for the
+  -- rest of this view instance, same guarantee the size guard makes.
+  view_open(child, built.spec, entry)
+  eq(vim.endswith(win_bufname(child, "right_win"), "/package-lock.json"), true)
+end
+
+T["generated file: collapse_generated = false disables the guard entirely"] = function()
+  set_collapse_generated(child, false)
+  repo:write("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  repo:commit("chore: add package-lock.json")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "package-lock.json")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(vim.endswith(win_bufname(child, "right_win"), "/package-lock.json"), true)
+  eq(win_diff(child, "left_win"), true)
+end
+
+T[".gitattributes linguist-generated=false forces a real render despite a matching heuristic"] = function()
+  repo:write("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  repo:write(".gitattributes", { "package-lock.json -linguist-generated" })
+  repo:commit("chore: add package-lock.json with an override")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "package-lock.json")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  eq(vim.endswith(win_bufname(child, "right_win"), "/package-lock.json"), true)
+  eq(win_diff(child, "left_win"), true)
+end
+
+T[".gitattributes linguist-generated forces a placeholder on an otherwise-innocent file"] = function()
+  repo:write(".gitattributes", { paths.modified .. " linguist-generated" })
+  repo:commit("chore: mark modified file as generated")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  local lines = win_buflines(child, "left_win")
+  eq(#lines, 1)
+  eq(lines[1], "Generated files are not rendered by default -- press L to load")
+end
+
+T["size guard takes precedence over the generated-file guard: an oversized generated-looking file shows the size message"] = function()
+  set_max_file_size(child, 16)
+  repo:write(
+    "package-lock.json",
+    { "{", '  "name": "fixture, made long enough to exceed the tiny limit"', "}" }
+  )
+  repo:commit("chore: add oversized package-lock.json")
+
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, "package-lock.json")
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  local lines = win_buflines(child, "left_win")
+  eq(#lines, 1)
+  eq(
+    lines[1]:find("file too large", 1, true) ~= nil,
+    true,
+    "size message wins, not the generated one"
+  )
+  eq(lines[1]:find("Generated files", 1, true) ~= nil, false)
 end
 
 ---------------------------------------------------------------------------------------

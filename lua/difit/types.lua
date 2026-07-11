@@ -20,6 +20,9 @@
 ---@field merge_base string  -- merge-base commit SHA (left side of every diff)
 ---@field right "worktree"|"head"
 ---@field review_key difit.ReviewKey
+---@field generated_attrs table<string, string>  -- path -> raw `git check-attr
+--- linguist-generated` value (absent key == "unspecified"); batched once per session
+--- build/refresh by `session.lua`, consumed by `ui/guard.lua`'s `M.is_generated`
 
 ---@class difit.FileEntry
 ---@field path string          -- current path, relative to toplevel

@@ -377,6 +377,118 @@ T["blob_size(): nil for a sha that doesn't resolve to an object"] = function()
   repo:destroy()
 end
 
+-- 8c. check_attrs() ------------------------------------------------------------------------
+
+T["check_attrs(): reports set/unset/false/unspecified for a committed .gitattributes"] = function()
+  local repo = helpers.new_repo()
+  repo:write("set.txt", "a\n")
+  repo:write("unset.txt", "b\n")
+  repo:write("explicit-false.txt", "c\n")
+  repo:write("unspecified.txt", "d\n")
+  repo:write(".gitattributes", {
+    "set.txt linguist-generated",
+    "unset.txt -linguist-generated",
+    "explicit-false.txt linguist-generated=false",
+  })
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  local attrs, err = git.check_attrs(
+    id,
+    "linguist-generated",
+    { "set.txt", "unset.txt", "explicit-false.txt", "unspecified.txt" }
+  )
+  eq(err, nil)
+  eq(attrs["set.txt"], "set")
+  eq(attrs["unset.txt"], "unset")
+  eq(attrs["explicit-false.txt"], "false")
+  -- "unspecified" (no matching .gitattributes rule) is represented by an ABSENT key, not
+  -- the literal string "unspecified" -- callers (ui/guard.lua's M.is_generated) treat a
+  -- nil lookup as "run the heuristics instead".
+  eq(attrs["unspecified.txt"], nil)
+
+  repo:destroy()
+end
+
+T["check_attrs(): an explicit custom value (e.g. linguist-generated=true) is reported verbatim"] = function()
+  local repo = helpers.new_repo()
+  repo:write("custom.txt", "a\n")
+  repo:write(".gitattributes", { "custom.txt linguist-generated=true" })
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  local attrs = git.check_attrs(id, "linguist-generated", { "custom.txt" })
+  eq(attrs["custom.txt"], "true")
+
+  repo:destroy()
+end
+
+T["check_attrs(): an UNCOMMITTED edit to .gitattributes takes effect immediately"] = function()
+  local repo = helpers.new_repo()
+  repo:write("f.txt", "a\n")
+  repo:write(".gitattributes", { "f.txt linguist-generated" })
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  eq(git.check_attrs(id, "linguist-generated", { "f.txt" })["f.txt"], "set")
+
+  -- Rewrite .gitattributes on disk WITHOUT committing (or even staging) the change --
+  -- check-attr's default behavior (no `--cached`) reads the working tree, not the index/
+  -- HEAD, so this must be visible right away. This is a deliberate divergence from
+  -- upstream linguist itself, which queries the INDEX (`priority: [:index]` in its rugged
+  -- source) -- documented in git.lua's own doc comment on `M.check_attrs`.
+  repo:write(".gitattributes", { "f.txt -linguist-generated" })
+  eq(git.check_attrs(id, "linguist-generated", { "f.txt" })["f.txt"], "unset")
+
+  repo:destroy()
+end
+
+T["check_attrs(): a path with no .gitattributes at all is unspecified (absent key), never an error"] = function()
+  local repo = helpers.new_repo()
+  repo:write("f.txt", "a\n")
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  local attrs, err = git.check_attrs(id, "linguist-generated", { "f.txt", "nonexistent/path.txt" })
+  eq(err, nil)
+  eq(attrs["f.txt"], nil)
+  eq(attrs["nonexistent/path.txt"], nil)
+
+  repo:destroy()
+end
+
+T["check_attrs(): empty paths list short-circuits to an empty table without invoking git"] = function()
+  local repo = helpers.new_repo()
+  local id = git.repo_identity(repo.dir)
+
+  eq(git.check_attrs(id, "linguist-generated", {}), {})
+
+  repo:destroy()
+end
+
+T["check_attrs(): a path with a space doesn't shift the -z token stream for its neighbors"] = function()
+  -- .gitattributes patterns can't straightforwardly match a path containing a literal
+  -- space (git's own pattern syntax has no clean escape for it), so this doesn't assert
+  -- anything about "a dir/f.txt" itself -- it plants it BETWEEN two attributed files and
+  -- checks both still report the RIGHT value, which would drift the moment `check_attrs`'s
+  -- `(i - 1) * 3 + 3` token-offset arithmetic misaligned around an embedded space.
+  local repo = helpers.new_repo()
+  repo:write("before.txt", "a\n")
+  repo:write("a dir/f.txt", "b\n")
+  repo:write("after.txt", "c\n")
+  repo:write(".gitattributes", { "before.txt linguist-generated", "after.txt -linguist-generated" })
+  repo:commit("chore: base")
+
+  local id = git.repo_identity(repo.dir)
+  local attrs =
+    git.check_attrs(id, "linguist-generated", { "before.txt", "a dir/f.txt", "after.txt" })
+  eq(attrs["before.txt"], "set")
+  eq(attrs["a dir/f.txt"], nil)
+  eq(attrs["after.txt"], "unset")
+
+  repo:destroy()
+end
+
 -- 9. hunks() ------------------------------------------------------------------------------
 
 T["hunks(): modified file hunks reconstruct the new content and match git's headers"] = function()

@@ -111,6 +111,7 @@ local repo, paths, child
 local function setup_child()
   child.lua([[
     _G.git = require("difit.git")
+    _G.config = require("difit.config")
     _G.unified = require("difit.ui.unified")
 
     _G.repo = git.repo_identity(vim.fn.getcwd())
@@ -122,12 +123,25 @@ local function setup_child()
       _G.entries[e.path] = e
     end
 
+    -- Mirrors `session.lua`'s `load_generated_attrs`: this test harness bypasses
+    -- `difit.Session` entirely, so `.gitattributes`-override tests need the same batched
+    -- lookup populated by hand.
+    local generated_attrs = {}
+    if config.get().collapse_generated then
+      local paths = {}
+      for path in pairs(_G.entries) do
+        table.insert(paths, path)
+      end
+      generated_attrs = git.check_attrs(repo, "linguist-generated", paths) or {}
+    end
+
     _G.spec = {
       repo = repo,
       base_ref = "main",
       merge_base = base_sha,
       right = "worktree",
       review_key = { kind = "branch", repo = repo.id, base = "main", head = "feature" },
+      generated_attrs = generated_attrs,
     }
     _G.spec_head = vim.tbl_extend("force", {}, spec, { right = "head" })
 
@@ -383,7 +397,7 @@ T["open(): renamed files open the real (new-path) file without error"] = functio
 end
 
 ---------------------------------------------------------------------------------------
--- Large-file guard (config.max_file_size, ui/size_guard.lua): an entry whose content
+-- Large-file guard (config.max_file_size, ui/guard.lua): an entry whose content
 -- would exceed the configured limit renders a placeholder styled like `show_binary`'s
 -- (owned buffer, no overlay) instead of loading it, with a `L` key to force-load it for
 -- the rest of this view instance. Binary detection always takes precedence.
@@ -448,6 +462,116 @@ T["open(): binary entries take precedence over the size guard -- no size text, n
 
   eq(result.lines, { "binary file" })
   eq(mapped(buf_maparg(child, result.buf, "L")), false)
+end
+
+---------------------------------------------------------------------------------------
+-- Generated-file guard (config.collapse_generated, ui/guard.lua/lua/difit/generated.lua):
+-- shares the size guard's exact placeholder/`L`-key mechanics; only the message and
+-- detection source (`.gitattributes linguist-generated`, else content heuristics) differ.
+---------------------------------------------------------------------------------------
+
+---@param child table
+---@param enabled boolean
+local function set_collapse_generated(child, enabled)
+  child.lua("require('difit.config').setup({ collapse_generated = ... })", { enabled })
+end
+
+--- Add `path` (with `lines` content) to the repo and commit it, then rebuild the child's
+--- entries/spec/view (`setup_child` again) so the newly-added file is picked up --
+--- `_G.entries`/`_G.spec` are a one-time snapshot taken in `pre_case`, before any
+--- test-specific repo mutation a case below performs.
+---@param path string
+---@param lines string[]
+local function add_file_and_rebuild(path, lines)
+  repo:write(path, lines)
+  repo:commit("chore: add " .. path)
+  setup_child()
+end
+
+T["open(): a generated file (heuristic match) renders a placeholder with the generated text instead of its real content"] = function()
+  add_file_and_rebuild("package-lock.json", { "{", '  "name": "fixture"', "}" })
+
+  local result = open("package-lock.json")
+
+  eq(result.buftype, "nofile")
+  eq(result.modifiable, false)
+  eq(result.lines, { "Generated files are not rendered by default -- press L to load" })
+  eq(#result.marks, 0, "no overlay for a placeholder")
+end
+
+T["open(): pressing L on the generated placeholder force-loads the file, and it stays loaded on reopen"] = function()
+  add_file_and_rebuild("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  local placeholder = open("package-lock.json")
+  eq(placeholder.lines[1]:find("press L to load", 1, true) ~= nil, true)
+
+  child.type_keys("L")
+
+  local state = child.lua([[
+    local buf = vim.api.nvim_get_current_buf()
+    return { bufname = vim.api.nvim_buf_get_name(buf), buftype = vim.bo[buf].buftype }
+  ]])
+  eq(vim.endswith(state.bufname, "/package-lock.json"), true, "the real worktree file is now shown")
+  eq(state.buftype, "", "a real file buffer now, not the placeholder scratch")
+
+  local second = open("package-lock.json")
+  eq(vim.endswith(second.bufname, "/package-lock.json"), true)
+end
+
+T["open(): collapse_generated = false disables the guard entirely"] = function()
+  set_collapse_generated(child, false)
+  add_file_and_rebuild("package-lock.json", { "{", '  "name": "fixture"', "}" })
+
+  local result = open("package-lock.json")
+
+  eq(result.buftype, "", "the real file loads normally, not a placeholder")
+  eq(vim.endswith(result.bufname, "/package-lock.json"), true)
+end
+
+T[".gitattributes linguist-generated=false forces a real render despite a matching heuristic"] = function()
+  repo:write("package-lock.json", { "{", '  "name": "fixture"', "}" })
+  repo:write(".gitattributes", { "package-lock.json -linguist-generated" })
+  repo:commit("chore: add package-lock.json with an override")
+  setup_child()
+
+  local result = open("package-lock.json")
+
+  eq(result.buftype, "", "the real file loads normally, not a placeholder")
+  eq(vim.endswith(result.bufname, "/package-lock.json"), true)
+end
+
+T[".gitattributes linguist-generated forces a placeholder on an otherwise-innocent file"] = function()
+  repo:write(".gitattributes", { paths.modified .. " linguist-generated" })
+  repo:commit("chore: mark modified file as generated")
+  setup_child()
+
+  local result = open(paths.modified)
+
+  eq(result.lines, { "Generated files are not rendered by default -- press L to load" })
+end
+
+T["open(): binary entries take precedence over the generated-file guard -- no generated text, no L key"] = function()
+  local result = open_binary()
+
+  eq(result.lines, { "binary file" })
+  eq(mapped(buf_maparg(child, result.buf, "L")), false)
+end
+
+T["open(): the size guard takes precedence over the generated-file guard for an oversized generated-looking file"] = function()
+  set_max_file_size(child, 16)
+  add_file_and_rebuild(
+    "package-lock.json",
+    { "{", '  "name": "fixture, made long enough to exceed the tiny limit"', "}" }
+  )
+
+  local result = open("package-lock.json")
+
+  eq(#result.lines, 1)
+  eq(
+    result.lines[1]:find("file too large", 1, true) ~= nil,
+    true,
+    "size message wins, not the generated one"
+  )
+  eq(result.lines[1]:find("Generated files", 1, true) ~= nil, false)
 end
 
 ---------------------------------------------------------------------------------------
