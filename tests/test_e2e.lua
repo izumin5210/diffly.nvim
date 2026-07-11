@@ -978,6 +978,120 @@ T["H in the panel hides a viewed file and shows it again"] = function()
 end
 
 ---------------------------------------------------------------------------------------
+-- viewed_patterns / S (sweep) / V (subtree): bulk viewed-marking, explicit-trigger only
+-- (README.md/doc/difit.txt's "no automatic marking" note still holds -- this feature is
+-- just another manual trigger, same spirit as `v`). Uses a purpose-built repo, `tcd`-ed
+-- into like the R1 "two concurrent reviews" tests below, rather than the shared
+-- `fixture_branch_repo` -- a lockfile-style glob needs to pick out exactly ONE file,
+-- distinct from "every file under src/", to prove the pattern (not just "mark everything")
+-- is actually doing the matching.
+---------------------------------------------------------------------------------------
+
+--- main with one commit, `feature` adding both a generated-style lockfile and an
+--- unrelated source file -- entries sort by path: "src/app.lua" (row 4, under dir "src"
+--- at row 3), "yarn.lock" (row 5).
+---@return difit.test.Repo
+local function lock_pattern_repo()
+  local r = helpers.new_repo()
+  r:write("README.md", "base\n")
+  r:commit("chore: base")
+  r:branch("feature")
+  r:write("yarn.lock", "lockfile v1\n")
+  r:write("src/app.lua", "return {}\n")
+  r:commit("feat: add app.lua + a generated lockfile")
+  return r
+end
+
+T["viewed_patterns: S marks matching files, updates progress, and auto-advances; S again unmarks them"] = function()
+  local lock_repo = lock_pattern_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(lock_repo.dir))
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+
+  child.cmd("Difit")
+  eq(panel_lines(child)[2], "0/2 viewed")
+  eq(session_field(child, "current_path"), "src/app.lua", "the only un-viewed file auto-opens")
+  eq(panel_is_current_win(child), true, "sanity: panel already has focus right after :Difit opens")
+
+  child.type_keys("S")
+
+  eq(is_viewed(child, "yarn.lock"), true)
+  eq(is_viewed(child, "src/app.lua"), false, "the pattern only matches the lockfile")
+  eq(panel_lines(child)[2], "1/2 viewed")
+  eq(
+    session_field(child, "current_path"),
+    "src/app.lua",
+    "auto-advance (marking batch): next_unviewed(nil) re-resolves the only remaining un-viewed file"
+  )
+
+  focus_panel(child)
+  child.type_keys("S") -- "*.lock" only ever matches yarn.lock, and it's now fully viewed -> unmark
+
+  eq(is_viewed(child, "yarn.lock"), false)
+  eq(panel_lines(child)[2], "0/2 viewed")
+
+  lock_repo:destroy()
+end
+
+T["viewed_patterns: V on the src dir marks its files; V again unmarks them"] = function()
+  local lock_repo = lock_pattern_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(lock_repo.dir))
+
+  child.cmd("Difit")
+  focus_panel(child)
+  set_cursor(child, 3) -- "src" dir row
+  child.type_keys("V")
+
+  eq(is_viewed(child, "src/app.lua"), true)
+  eq(is_viewed(child, "yarn.lock"), false, "V on a dir only touches that subtree")
+  eq(panel_lines(child)[2], "1/2 viewed")
+
+  focus_panel(child) -- the marking batch's auto-advance moved focus to yarn.lock's diff
+  set_cursor(child, 3)
+  child.type_keys("V")
+
+  eq(is_viewed(child, "src/app.lua"), false)
+  eq(panel_lines(child)[2], "0/2 viewed")
+
+  lock_repo:destroy()
+end
+
+T["`:Difit sweep` works from the diff buffer, same effect as pressing S in the panel"] = function()
+  local lock_repo = lock_pattern_repo()
+  child.cmd("tcd " .. vim.fn.fnameescape(lock_repo.dir))
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+
+  child.cmd("Difit")
+  set_cursor(child, 4) -- src/app.lua
+  child.type_keys("<CR>") -- move focus onto the real diff buffer, away from the panel
+  eq(panel_is_current_win(child), false)
+
+  child.cmd("Difit sweep")
+
+  eq(is_viewed(child, "yarn.lock"), true)
+  eq(panel_lines(child)[2], "1/2 viewed")
+
+  lock_repo:destroy()
+end
+
+T["`:Difit sweep` notifies when viewed_patterns is not configured, without marking anything"] = function()
+  child.cmd("Difit")
+
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  child.cmd("Difit sweep")
+
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].msg, "difit: viewed_patterns is not configured")
+  eq(is_viewed(child, paths.modified), false)
+end
+
+---------------------------------------------------------------------------------------
 -- R1 (docs/refactor-v1.md): the session registry replacing the old M._session/M._panel/
 -- M._viewer_tab singletons. Covers the four scenarios called out for this phase: focusing
 -- an existing review instead of duplicating it, `:Difit close` from inside the viewer

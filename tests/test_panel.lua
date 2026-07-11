@@ -28,7 +28,15 @@ local FAKE_SESSION_SETUP = [[
   _G.calls = {
     open_file = {},
     toggle_viewed = {},
+    toggle_viewed_batch = {},
+    sweep_patterns = 0,
     next_unviewed = {},
+    -- `table.insert(list, nil)` is invisible to `#list` (Lua can't distinguish "absent"
+    -- from "present but nil" in the array part), which the batch actions below rely on:
+    -- their auto-advance calls `next_unviewed(nil)` ("from the start" -- no single file to
+    -- resume from after a scattered batch). This separate counter is the only way tests
+    -- can reliably assert "next_unviewed WAS/WAS NOT called" once a nil argument is in play.
+    next_unviewed_count = 0,
     next_file = {},
     prev_file = {},
     set_mode = {},
@@ -77,6 +85,7 @@ local FAKE_SESSION_SETUP = [[
     current_path = nil,
     _progress = { viewed = 1, total = 6 },
     _next_unviewed_answer = nil,
+    _sweep_paths = {}, -- what sweep_patterns() below "matches"; tests set this directly
   }
 
   function _G.session:subscribe(fn)
@@ -98,11 +107,57 @@ local FAKE_SESSION_SETUP = [[
     return _G.viewed[path]
   end
 
+  -- Same tri-state rule as `lua/difit/session.lua`'s real `Session:toggle_viewed_batch`:
+  -- mark every un-viewed path in the batch if any is un-viewed, else unmark them all.
+  -- Fires the subscriber list ONCE per call (never once per path), mirroring the real
+  -- method's ONE-save/ONE-notify contract.
+  function _G.session:toggle_viewed_batch(paths)
+    table.insert(_G.calls.toggle_viewed_batch, paths)
+
+    local any_unviewed = false
+    for _, p in ipairs(paths) do
+      if not _G.viewed[p] then
+        any_unviewed = true
+        break
+      end
+    end
+
+    local marked, unmarked = 0, 0
+    if any_unviewed then
+      for _, p in ipairs(paths) do
+        if not _G.viewed[p] then
+          _G.viewed[p] = true
+          marked = marked + 1
+        end
+      end
+    else
+      for _, p in ipairs(paths) do
+        _G.viewed[p] = false
+        unmarked = unmarked + 1
+      end
+    end
+
+    for _, fn in ipairs(_G.subscribers) do
+      fn()
+    end
+
+    return { marked = marked, unmarked = unmarked, matched = #paths }
+  end
+
+  -- `_sweep_paths` stands in for real `viewed_patterns` matching (tested against the real
+  -- glob semantics in tests/test_session.lua) -- this fake only needs to prove panel.lua
+  -- calls `sweep_patterns()` and reacts to its result correctly.
+  function _G.session:sweep_patterns()
+    _G.calls.sweep_patterns = _G.calls.sweep_patterns + 1
+    return self:toggle_viewed_batch(self._sweep_paths)
+  end
+
   function _G.session:is_viewed(path)
     return _G.viewed[path] == true
   end
 
   function _G.session:next_unviewed(after_path)
+    _G.calls.next_unviewed_count = _G.calls.next_unviewed_count + 1
     table.insert(_G.calls.next_unviewed, after_path)
     return self._next_unviewed_answer
   end
@@ -227,6 +282,30 @@ end
 ---@return boolean
 local function mapped(m)
   return m ~= nil and next(m) ~= nil and m.buffer == 1
+end
+
+--- Replace `vim.notify` inside the child with one that records every call, so tests can
+--- assert on `on_sweep`/`on_toggle_viewed_subtree`'s compact result messages -- mirrors
+--- tests/test_session.lua's helper of the same purpose.
+local function install_notify_capture()
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+end
+
+---@return table[]
+local function notifications()
+  return child.lua_get("_G.__notifications")
+end
+
+--- What the fake session's `sweep_patterns()` "matches" -- stands in for real
+--- `viewed_patterns` glob matching (tested for real in tests/test_session.lua).
+---@param paths string[]
+local function set_sweep_paths(paths)
+  child.lua("_G.session._sweep_paths = ...", { paths })
 end
 
 local T = MiniTest.new_set({
@@ -569,6 +648,205 @@ T["keymaps.panel.toggle_hide_viewed = false disables the H mapping"] = function(
   ]])
 
   eq(mapped(buf_maparg("H")), false, "keymaps.panel.toggle_hide_viewed")
+  eq(mapped(buf_maparg("v")), true, "other panel keys are unaffected")
+end
+
+---------------------------------------------------------------------------------------
+-- V (keymaps.panel.toggle_viewed_subtree): tri-state bulk toggle over a directory's
+-- files, single-file passthrough to `v` on a file row. "lua/difit" (row 5) has
+-- state.lua (viewed) plus gone/new/renamed (un-viewed), in `entries` iteration order --
+-- see FAKE_SESSION_SETUP's comment on `toggle_viewed_batch` for why path SET ORDER below
+-- matches that array's literal order, not tree/alphabetical order.
+---------------------------------------------------------------------------------------
+
+local LUA_DIFIT_SUBTREE = {
+  "lua/difit/state.lua",
+  "lua/difit/new.lua",
+  "lua/difit/gone.lua",
+  "lua/difit/renamed.lua",
+}
+
+T["V on a dir row marks every un-viewed file under it in one batch call"] = function()
+  set_cursor(5) -- lua/difit
+  child.type_keys("V")
+
+  eq(child.lua_get("_G.calls.toggle_viewed_batch"), { LUA_DIFIT_SUBTREE })
+  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/difit/renamed.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/difit/state.lua']"), true, "already-viewed file stays viewed")
+
+  local got = lines()
+  eq(got[6], "    [✓] D gone.lua  +0 −7")
+  eq(got[7], "    [✓] A new.lua  +10 −0")
+  eq(got[8], "    [✓] R lua/difit/old_name.lua → lua/difit/renamed.lua  +2 −1")
+end
+
+T["V again unmarks the whole subtree once every file in it is viewed"] = function()
+  set_cursor(5)
+  child.type_keys("V") -- marks new/gone/renamed (state.lua already viewed)
+  child.type_keys("V") -- all four now viewed -> unmark all four
+
+  eq(#child.lua_get("_G.calls.toggle_viewed_batch"), 2)
+  eq(child.lua_get("_G.viewed['lua/difit/state.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/difit/renamed.lua']"), false)
+end
+
+T["V on a file row behaves exactly like v (single toggle, never a batch call)"] = function()
+  set_cursor(9) -- lua/difit/state.lua
+  child.type_keys("V")
+
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/difit/state.lua" })
+  eq(child.lua_get("_G.calls.toggle_viewed_batch"), {})
+end
+
+T["V with hide_viewed on still batches the full subtree, including the currently-hidden viewed file"] = function()
+  child.type_keys("H") -- hide_viewed on: state.lua's row disappears; "lua/difit" stays at row 5
+
+  set_cursor(5) -- lua/difit (dir row itself is unaffected by the filter)
+  child.type_keys("V")
+
+  eq(
+    child.lua_get("_G.calls.toggle_viewed_batch"),
+    { LUA_DIFIT_SUBTREE },
+    "the batch is computed from session.entries directly, filter-independent"
+  )
+end
+
+T["V on a dir row auto-advances to the next un-viewed file after a marking batch"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
+
+  set_cursor(5) -- lua/difit
+  child.type_keys("V")
+
+  eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
+  eq(child.lua_get("_G.calls.open_file"), { "docs/guide.md" })
+  eq(cursor(), { 4, 0 }) -- row for docs/guide.md
+end
+
+T["V again (an unmark batch) does not auto-advance"] = function()
+  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
+
+  set_cursor(5)
+  child.type_keys("V") -- marks: auto-advances (moves the cursor off row 5)
+  set_cursor(5) -- back on lua/difit's row, now every file under it is viewed
+  child.type_keys("V") -- unmark batch: must not advance again
+
+  eq(
+    child.lua_get("_G.calls.next_unviewed_count"),
+    1,
+    "only the marking batch triggered next_unviewed"
+  )
+end
+
+T["keymaps.panel.toggle_viewed_subtree = false disables the V mapping"] = function()
+  child.lua([[
+    require("difit.config").setup({ keymaps = { panel = { toggle_viewed_subtree = false } } })
+    _G.panel = require("difit.ui.panel").open(_G.session)
+  ]])
+
+  eq(mapped(buf_maparg("V")), false, "keymaps.panel.toggle_viewed_subtree")
+  eq(mapped(buf_maparg("v")), true, "other panel keys are unaffected")
+end
+
+---------------------------------------------------------------------------------------
+-- S (keymaps.panel.sweep): routes to `session:sweep_patterns()` and reports a compact
+-- result. `_G.session._sweep_paths` stands in for real `viewed_patterns` glob matching
+-- (see tests/test_session.lua for that).
+---------------------------------------------------------------------------------------
+
+T["S calls session:sweep_patterns() and marks the matched files, notifying a compact result"] = function()
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  set_sweep_paths({ "lua/difit/new.lua", "lua/difit/gone.lua" })
+  install_notify_capture()
+
+  child.type_keys("S")
+
+  eq(child.lua_get("_G.calls.sweep_patterns"), 1)
+  eq(
+    child.lua_get("_G.calls.toggle_viewed_batch"),
+    { { "lua/difit/new.lua", "lua/difit/gone.lua" } }
+  )
+  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), true)
+
+  local notes = notifications()
+  eq(#notes, 1)
+  eq(notes[1].msg, "difit: marked 2 files as viewed")
+  eq(notes[1].level, vim.log.levels.INFO)
+end
+
+T["S again unmarks once every matched file is already viewed"] = function()
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  set_sweep_paths({ "lua/difit/new.lua" })
+  install_notify_capture()
+
+  child.type_keys("S") -- marks
+  child.type_keys("S") -- unmarks
+
+  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), false)
+  local notes = notifications()
+  eq(#notes, 2)
+  eq(notes[2].msg, "difit: unmarked 1 files")
+end
+
+T["S with viewed_patterns unset notifies that it's not configured, without calling sweep_patterns()"] = function()
+  install_notify_capture()
+
+  child.type_keys("S")
+
+  eq(child.lua_get("_G.calls.sweep_patterns"), 0, "no point resolving matches for an empty option")
+  local notes = notifications()
+  eq(#notes, 1)
+  eq(notes[1].msg, "difit: viewed_patterns is not configured")
+  eq(notes[1].level, vim.log.levels.INFO)
+end
+
+T["S with viewed_patterns configured but nothing matched notifies 'no files matched'"] = function()
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  set_sweep_paths({})
+  install_notify_capture()
+
+  child.type_keys("S")
+
+  eq(child.lua_get("_G.calls.sweep_patterns"), 1)
+  local notes = notifications()
+  eq(#notes, 1)
+  eq(notes[1].msg, "difit: no files matched viewed_patterns")
+end
+
+T["S auto-advances to the next un-viewed file after a marking sweep"] = function()
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  set_sweep_paths({ "lua/difit/new.lua" })
+  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
+
+  child.type_keys("S")
+
+  eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
+  eq(child.lua_get("_G.calls.open_file"), { "docs/guide.md" })
+  eq(cursor(), { 4, 0 })
+end
+
+T["S again (an unmark sweep) does not auto-advance"] = function()
+  child.lua([[require("difit.config").setup({ viewed_patterns = { "*.lock" } })]])
+  set_sweep_paths({ "lua/difit/new.lua" })
+  child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
+
+  child.type_keys("S") -- marks; advances
+  child.type_keys("S") -- unmarks; must not advance again
+
+  eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
+end
+
+T["keymaps.panel.sweep = false disables the S mapping"] = function()
+  child.lua([[
+    require("difit.config").setup({ keymaps = { panel = { sweep = false } } })
+    _G.panel = require("difit.ui.panel").open(_G.session)
+  ]])
+
+  eq(mapped(buf_maparg("S")), false, "keymaps.panel.sweep")
   eq(mapped(buf_maparg("v")), true, "other panel keys are unaffected")
 end
 

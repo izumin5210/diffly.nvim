@@ -586,6 +586,48 @@ function M.prev_file()
   end
 end
 
+--- Backing function for `:Difit sweep`: bulk-toggle every file matching
+--- `config.get().viewed_patterns` (see `Session:sweep_patterns()`) and report a compact
+--- result. Reimplemented rather than shared with `lua/difit/ui/panel.lua`'s own `S` key
+--- handler (`on_sweep`), for the same reason `toggle_viewed_and_advance` above duplicates
+--- `on_toggle_viewed` instead of calling it: this call site has no access to the panel's
+--- own row/cursor bookkeeping, and `open_and_sync_cursor` already does the equivalent job
+--- for a diff/command-driven advance (see its own doc comment).
+function M.sweep()
+  local entry = current_entry()
+  if not entry then
+    vim.notify("difit: no review is open", vim.log.levels.WARN)
+    return
+  end
+
+  if #config.get().viewed_patterns == 0 then
+    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
+    return
+  end
+
+  local result = entry.session:sweep_patterns()
+  if result.matched == 0 then
+    vim.notify("difit: no files matched viewed_patterns", vim.log.levels.INFO)
+    return
+  end
+
+  if result.marked > 0 then
+    vim.notify(
+      string.format("difit: marked %d files as viewed", result.marked),
+      vim.log.levels.INFO
+    )
+    -- Auto-advance only after a MARKING batch, mirroring `toggle_viewed_and_advance`'s own
+    -- rule for a single file (design.md: "Marking advances to the next un-viewed file").
+    -- `after_path = nil`: a sweep can touch files scattered across the tree, so there is no
+    -- single "after" file to resume from -- start over from the beginning of file_order.
+    if config.get().auto_advance then
+      open_and_sync_cursor(entry, entry.session:next_unviewed(nil))
+    end
+  else
+    vim.notify(string.format("difit: unmarked %d files", result.unmarked), vim.log.levels.INFO)
+  end
+end
+
 --- Remove persisted viewed-state: `all=true` wipes every review's file, otherwise just
 --- the current review's (the current tabpage's open session's key, or -- when the
 --- current tabpage isn't a viewer -- a throwaway session built only to resolve that key;
@@ -652,6 +694,8 @@ function M.open(args)
     return M.clean(args[2] == "all")
   elseif first == "focus" then
     return M.focus()
+  elseif first == "sweep" then
+    return M.sweep()
   end
 
   local entry = current_entry()

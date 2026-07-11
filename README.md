@@ -18,6 +18,9 @@ across viewer sessions for the same pull request.
 - Per-file **viewed** marks, persisted per PR (or per branch pair), shared across viewer
   sessions, worktrees, and clones of the same repo — but never carried over to a different
   PR. Marks invalidate automatically (GitHub-style) when either side of the diff changes.
+- Bulk viewed marking, still explicit-trigger only: mark/unmark an entire directory
+  subtree (`V`) or every file matching configurable glob patterns (`S` / `:Difit sweep`,
+  `viewed_patterns` — e.g. lockfiles, generated output) in one step.
 - Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
   buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
 
@@ -58,6 +61,7 @@ the plugin works with its defaults untouched.
 :Difit toggle   " open, or close if already open
 :Difit refresh  " recompute the diff
 :Difit focus    " focus the panel window from wherever you currently are
+:Difit sweep    " bulk-toggle every file matching `viewed_patterns` (see below)
 :Difit clean    " remove viewed state for the current review (prompts first)
 :Difit clean all
 ```
@@ -107,11 +111,15 @@ what `<leader>v`/`v`'s auto-advance is already for.
 | `q`    | Close the review UI                                             |
 | `za`   | Toggle fold (mirrors native `za`)                                |
 | `H`    | Toggle hiding already-viewed files (display only — see below)   |
+| `S`    | Bulk-toggle every file matching `viewed_patterns` (see below)   |
+| `V`    | On a directory row: bulk-toggle every file in that subtree. On a file row: same as `v` |
 
 `H` only changes what the tree *shows*: progress counts (`3/12 viewed`) stay global, and
 navigation (`]f`/`[f`, `<leader>v`'s auto-advance) is entirely unaffected. While active,
 the progress line gains a `(hidden)` suffix, e.g. `3/12 viewed (hidden)`. Directories that
 end up with no un-viewed files left disappear along with their contents.
+
+`S` and `V` are described in full under [Bulk viewed marking](#bulk-viewed-marking).
 
 #### difit diff buffers
 
@@ -147,6 +155,7 @@ require("difit").setup({
   include_untracked = true,
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
+  viewed_patterns = {},   -- glob patterns for bulk-viewed marking (`S`/`:Difit sweep`)
   panel = { width = 35 },
   keymaps = {
     panel = {
@@ -157,6 +166,8 @@ require("difit").setup({
       close = "q",
       fold = "za",
       toggle_hide_viewed = "H", -- hide/show already-viewed rows (display only)
+      sweep = "S",                  -- bulk-toggle files matching `viewed_patterns`
+      toggle_viewed_subtree = "V",  -- bulk-toggle every file under a dir row
     },
     -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to keymaps.universal
     diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
@@ -186,6 +197,54 @@ Marking a file records the pair of blob SHAs (base side, right-hand side) it had
 moment; if either side no longer matches at render time, the file counts as un-viewed
 again (GitHub-style invalidation), while files nobody touched keep their mark across any
 number of new commits. See `:help difit-viewed-state` for the full details.
+
+## Bulk viewed marking
+
+Marking files "viewed" is still manual-trigger-only — nothing is ever marked as a side
+effect of scrolling, opening, or refreshing a diff. `S` (panel) / `:Difit sweep` and `V`
+(panel) are just two more explicit triggers, for when you want to mark (or unmark) several
+files at once instead of one `v` press per file — e.g. lockfiles and generated output you
+never intend to read line-by-line.
+
+**`viewed_patterns`** — a list of glob patterns (gitignore-inspired), matched against every
+file in the current diff:
+
+- A pattern with **no `/`** matches the entry's **basename**, anywhere in the tree —
+  `"*.lock"` matches both `yarn.lock` and `packages/api/Gemfile.lock`.
+- A pattern **containing `/`** matches the **full toplevel-relative path** instead —
+  `"dist/**"` matches everything under `dist/`, but not `packages/api/dist/bundle.js`.
+- Patterns are compiled with `vim.glob.to_lpeg` (the same glob dialect Neovim's LSP client
+  uses): `**` crosses directory boundaries, a single `*` does not.
+
+```lua
+require("difit").setup({
+  viewed_patterns = {
+    "*.lock",             -- yarn.lock, pnpm-lock.yaml, Gemfile.lock, anywhere in the tree
+    "*.snap",              -- generated test snapshots, anywhere in the tree
+    "dist/**",             -- everything under a top-level generated output dir
+    "**/generated/**",     -- everything under any "generated" dir, at any depth
+  },
+})
+```
+
+An invalid pattern is skipped (never raises) and warned about once per Neovim session, not
+once per sweep.
+
+**`S`** (panel key) / **`:Difit sweep`** bulk-toggle every file matching `viewed_patterns`.
+**`V`** (panel key), pressed on a directory row, bulk-toggles every file in that subtree
+instead — no configuration needed; pressed on a file row, it behaves exactly like `v`.
+
+Both are **tri-state**: if at least one matching/subtree file is currently un-viewed, the
+whole batch is marked viewed; only once *every* file in the batch is already viewed does
+pressing it again unmark them all. That makes repeating the same key a clean toggle rather
+than a one-way ratchet. Each batch persists with a single save and reports a compact
+result, e.g. `difit: marked 5 files as viewed` / `difit: unmarked 5 files`. Progress
+(`3/12 viewed`) updates exactly like any other mark. `V` on a directory sees the subtree's
+full file list regardless of the panel's `H` filter or folds — those are display concerns
+only, same as everywhere else in the panel.
+
+`config.auto_advance` applies after a batch exactly like `v`: a batch that **marked** files
+jumps to the next un-viewed file afterward; a batch that **unmarked** files never does.
 
 ## Development
 

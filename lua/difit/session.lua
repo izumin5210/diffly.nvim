@@ -31,6 +31,42 @@ Session.__index = Session
 -- next Neovim start (or the next test's fresh child process).
 local gh_missing_notified = false
 
+-- Same "once per Neovim session" rationale as `gh_missing_notified` above, keyed by the
+-- offending pattern string instead of a single flag: a bad entry in `config.viewed_patterns`
+-- is typically a persistent config mistake, not a one-off, so every `sweep_patterns()` call
+-- for the life of the process would otherwise re-warn on every single sweep.
+local bad_pattern_notified = {}
+
+--- Compile `pattern` (see `config.viewed_patterns`) into a matcher over an entry's path, or
+--- `nil` when the pattern fails to compile (warned about once per pattern, see
+--- `bad_pattern_notified`). A pattern with no "/" matches the entry's basename only
+--- (gitignore-style); one containing "/" matches the full toplevel-relative path.
+---@param pattern string
+---@return fun(path: string): boolean|nil matcher
+local function compile_pattern(pattern)
+  local ok, lpeg_pattern = pcall(vim.glob.to_lpeg, pattern)
+  if not ok then
+    if not bad_pattern_notified[pattern] then
+      bad_pattern_notified[pattern] = true
+      vim.notify(
+        string.format(
+          "difit: ignoring invalid viewed_patterns entry %q (%s)",
+          pattern,
+          lpeg_pattern
+        ),
+        vim.log.levels.WARN
+      )
+    end
+    return nil
+  end
+
+  local has_slash = pattern:find("/", 1, true) ~= nil
+  return function(path)
+    local subject = has_slash and path or vim.fs.basename(path)
+    return lpeg_pattern:match(subject) ~= nil
+  end
+end
+
 --- Review keys/UI store the short branch name ("main"), never the resolved
 --- remote-tracking ref ("origin/main") `resolve_ref` may have needed internally.
 ---@param ref string
@@ -279,6 +315,91 @@ function Session:is_viewed(path)
     return false
   end
   return state.is_viewed(self.state, entry)
+end
+
+--- Tri-state bulk toggle over `paths`, shared by `sweep_patterns()` and the panel's
+--- subtree `V` key: if at least one of `paths` is currently un-viewed, mark every un-viewed
+--- one of them; if they are ALL already viewed, unmark them all instead -- so repeatedly
+--- invoking the same batch (same glob patterns, same subtree) is a clean toggle rather than
+--- a one-way ratchet. Persists with exactly ONE `state.save` and notifies subscribers
+--- exactly once, regardless of how many files moved -- callers batching many files at once
+--- must not thrash disk/UI once per file the way `toggle_viewed` does for a single file.
+--- `paths` entries absent from `self.entries` (stale caller-side data) are silently
+--- ignored, mirroring `toggle_viewed`'s own no-op-on-unknown-path behavior.
+---@param paths string[]
+---@return {marked: integer, unmarked: integer, matched: integer}
+function Session:toggle_viewed_batch(paths)
+  local entries = {}
+  for _, path in ipairs(paths) do
+    local entry = self._entries_by_path[path]
+    if entry then
+      table.insert(entries, entry)
+    end
+  end
+  if #entries == 0 then
+    return { marked = 0, unmarked = 0, matched = 0 }
+  end
+
+  local any_unviewed = false
+  for _, entry in ipairs(entries) do
+    if not state.is_viewed(self.state, entry) then
+      any_unviewed = true
+      break
+    end
+  end
+
+  local marked, unmarked = 0, 0
+  if any_unviewed then
+    for _, entry in ipairs(entries) do
+      if not state.is_viewed(self.state, entry) then
+        state.mark(self.state, entry)
+        marked = marked + 1
+      end
+    end
+  else
+    for _, entry in ipairs(entries) do
+      state.unmark(self.state, entry.path)
+      unmarked = unmarked + 1
+    end
+  end
+
+  state.save(self.state)
+  self:_notify()
+
+  return { marked = marked, unmarked = unmarked, matched = #entries }
+end
+
+--- Resolve `config.get().viewed_patterns` against `self.entries` and apply the same
+--- tri-state batch toggle as `toggle_viewed_batch` (which this delegates to for the actual
+--- mark/unmark/save/notify work -- see its docs). An entry matches when ANY configured
+--- pattern matches it (see `compile_pattern`). Invalid patterns are skipped (warned once,
+--- see `bad_pattern_notified`); an empty `viewed_patterns`, or one where nothing currently
+--- in the diff matches, both fall out of `toggle_viewed_batch({})` as all-zero counts --
+--- callers distinguish "not configured" from "no matches" by checking
+--- `config.get().viewed_patterns` themselves before/after calling this.
+---@return {marked: integer, unmarked: integer, matched: integer}
+function Session:sweep_patterns()
+  local patterns = config.get().viewed_patterns or {}
+
+  local matchers = {}
+  for _, pattern in ipairs(patterns) do
+    local matcher = compile_pattern(pattern)
+    if matcher then
+      table.insert(matchers, matcher)
+    end
+  end
+
+  local paths = {}
+  for _, entry in ipairs(self.entries) do
+    for _, matcher in ipairs(matchers) do
+      if matcher(entry.path) then
+        table.insert(paths, entry.path)
+        break
+      end
+    end
+  end
+
+  return self:toggle_viewed_batch(paths)
 end
 
 --- `tree.file_order(tree.build(self.entries))`, the single source every navigation

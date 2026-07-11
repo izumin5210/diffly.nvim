@@ -5,8 +5,9 @@
 -- `session` is used ONLY through the documented interface from docs/plan.md (WP-E):
 -- fields `spec`/`entries`/`state`/`mode`/`current_path`, methods `subscribe`/
 -- `open_file`/`toggle_viewed`/`is_viewed`/`next_unviewed`/`progress`/`set_mode`/
--- `refresh`/`close`. `lua/difit/session.lua` is intentionally never `require`d here, so
--- this module stays testable against a scripted fake (see tests/test_panel.lua).
+-- `refresh`/`close`/`sweep_patterns`/`toggle_viewed_batch`. `lua/difit/session.lua` is
+-- intentionally never `require`d here, so this module stays testable against a scripted
+-- fake (see tests/test_panel.lua).
 
 local config = require("difit.config")
 local tree = require("difit.tree")
@@ -414,6 +415,25 @@ local function on_fold(panel)
   end
 end
 
+--- Move the cursor to, and open, `session:next_unviewed(after_path)` -- the auto-advance
+--- tail shared by `on_toggle_viewed` (single-file toggle, `after_path` is the just-toggled
+--- file) and the batch actions `on_sweep`/`on_toggle_viewed_subtree` below (`after_path =
+--- nil`: a batch touches files scattered across the tree, so there is no single "after"
+--- file to resume from -- start over from the beginning of `tree.file_order` instead, same
+--- as a fresh review's first auto-advance-free open would).
+---@param panel difit.Panel
+---@param after_path string?
+local function advance_to_next_unviewed(panel, after_path)
+  local nxt = panel.session:next_unviewed(after_path)
+  if nxt then
+    local lnum = row_for_path(panel, nxt)
+    if lnum and vim.api.nvim_win_is_valid(panel.win) then
+      vim.api.nvim_win_set_cursor(panel.win, { lnum, 0 })
+    end
+    panel.session:open_file(nxt)
+  end
+end
+
 ---@param panel difit.Panel
 local function on_toggle_viewed(panel)
   local node = current_node(panel)
@@ -424,21 +444,98 @@ local function on_toggle_viewed(panel)
   -- No explicit `panel:render()` here: `session:toggle_viewed` already notifies
   -- subscribers synchronously, and this panel subscribed its own re-render callback in
   -- `M.open` -- by the time `toggle_viewed` returns, `row_nodes` already reflects the
-  -- new state, which is exactly what `row_for_path` below needs.
+  -- new state, which is exactly what `advance_to_next_unviewed` below needs.
   local became_viewed = panel.session:toggle_viewed(node.path)
 
   -- Auto-advance only on MARKING a file viewed, never on un-marking it (design.md:
   -- "Marking advances to the next un-viewed file") -- otherwise un-marking a mistake
   -- would also yank the cursor/diff away from the file the user is looking at.
   if became_viewed and config.get().auto_advance then
-    local nxt = panel.session:next_unviewed(node.path)
-    if nxt then
-      local lnum = row_for_path(panel, nxt)
-      if lnum and vim.api.nvim_win_is_valid(panel.win) then
-        vim.api.nvim_win_set_cursor(panel.win, { lnum, 0 })
-      end
-      panel.session:open_file(nxt)
+    advance_to_next_unviewed(panel, node.path)
+  end
+end
+
+--- `result` from `Session:toggle_viewed_batch`/`sweep_patterns`, formatted as the same
+--- compact one-line report `init.lua`'s `M.sweep()` gives for `:Difit sweep` -- reimplemented
+--- here rather than shared across the two files for the same reason
+--- `toggle_viewed_and_advance`/`on_toggle_viewed` are already duplicated between them (see
+--- init.lua): this call site has its own panel-local cursor/row bookkeeping to run
+--- afterwards, and init.lua has none of that to share it with.
+---@param result {marked: integer, unmarked: integer, matched: integer}
+local function notify_batch_result(result)
+  if result.marked > 0 then
+    vim.notify(
+      string.format("difit: marked %d files as viewed", result.marked),
+      vim.log.levels.INFO
+    )
+  else
+    vim.notify(string.format("difit: unmarked %d files", result.unmarked), vim.log.levels.INFO)
+  end
+end
+
+--- `S`: bulk-toggle every entry matching `config.viewed_patterns` (see
+--- `Session:sweep_patterns()`). Distinguishes "the option is unset" from "it's set but
+--- nothing in this diff matches it" -- both are all-zero-counts results at the `Session`
+--- level, so the two INFO messages are resolved here rather than inferred from the count.
+---@param panel difit.Panel
+local function on_sweep(panel)
+  if #config.get().viewed_patterns == 0 then
+    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
+    return
+  end
+
+  local result = panel.session:sweep_patterns()
+  if result.matched == 0 then
+    vim.notify("difit: no files matched viewed_patterns", vim.log.levels.INFO)
+    return
+  end
+
+  notify_batch_result(result)
+  if result.marked > 0 and config.get().auto_advance then
+    advance_to_next_unviewed(panel, nil)
+  end
+end
+
+--- `V`: on a FILE row, behaves exactly like `v` (delegates to `on_toggle_viewed` verbatim,
+--- including its own single-file auto-advance). On a DIRECTORY row, bulk-toggles every file
+--- entry in that subtree via `Session:toggle_viewed_batch`.
+---
+--- Subtree membership is a plain path-prefix test against `panel.session.entries` --
+--- `entry.path` starting with `node.path .. "/"` -- rather than walking the currently
+--- RENDERED tree under this row. That's deliberate: the rendered tree is built from
+--- `visible_entries()`, which drops already-viewed files while `hide_viewed` is on, and the
+--- tri-state "all viewed -> unmark" branch of `toggle_viewed_batch` only works if it can see
+--- those already-viewed files in the first place. Folds have the same problem (a folded
+--- child directory's files never even get a row). Matching directly against `node.path` --
+--- always the real, uncompressed directory path even after `tree.build`'s single-child-chain
+--- compression, see `tree.lua`'s `collapse_chains` -- sidesteps both filters at once.
+---@param panel difit.Panel
+local function on_toggle_viewed_subtree(panel)
+  local node = current_node(panel)
+  if not node then
+    return
+  end
+  if node.type == "file" then
+    on_toggle_viewed(panel)
+    return
+  end
+
+  local prefix = node.path .. "/"
+  local paths = {}
+  for _, entry in ipairs(panel.session.entries) do
+    if vim.startswith(entry.path, prefix) then
+      table.insert(paths, entry.path)
     end
+  end
+
+  local result = panel.session:toggle_viewed_batch(paths)
+  if result.matched == 0 then
+    return
+  end
+
+  notify_batch_result(result)
+  if result.marked > 0 and config.get().auto_advance then
+    advance_to_next_unviewed(panel, nil)
   end
 end
 
@@ -521,6 +618,8 @@ local function set_keymaps(panel)
     toggle_mode = on_toggle_mode,
     close = on_close,
     toggle_hide_viewed = on_toggle_hide_viewed,
+    sweep = on_sweep,
+    toggle_viewed_subtree = on_toggle_viewed_subtree,
   }
 
   local keymaps = config.get().keymaps.panel

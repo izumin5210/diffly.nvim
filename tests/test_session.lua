@@ -275,6 +275,47 @@ local function factory_modes(child)
   return child.lua_get("_G.__factory_modes")
 end
 
+---@param child table
+---@param patterns string[]
+local function set_viewed_patterns(child, patterns)
+  child.lua("require('difit.config').setup({ viewed_patterns = ... })", { patterns })
+end
+
+---@param child table
+---@param paths string[]
+---@return {marked: integer, unmarked: integer, matched: integer}
+local function toggle_viewed_batch(child, paths)
+  return child.lua("return _G.__session:toggle_viewed_batch(...)", { paths })
+end
+
+---@param child table
+---@return {marked: integer, unmarked: integer, matched: integer}
+local function sweep_patterns(child)
+  return child.lua_get("_G.__session:sweep_patterns()")
+end
+
+--- Spy on `require('difit.state').save` inside the child, counting calls without changing
+--- its behavior. `session.lua` holds the SAME cached module table `require()` returns, so
+--- reassigning the field here is visible to every `state.save(...)` call session.lua makes.
+---@param child table
+local function install_save_spy(child)
+  child.lua([[
+    _G.__save_count = 0
+    local state = require("difit.state")
+    local orig_save = state.save
+    state.save = function(...)
+      _G.__save_count = _G.__save_count + 1
+      return orig_save(...)
+    end
+  ]])
+end
+
+---@param child table
+---@return integer
+local function save_count(child)
+  return child.lua_get("_G.__save_count")
+end
+
 local T = MiniTest.new_set()
 
 -- 1. base resolution precedence --------------------------------------------------------
@@ -768,6 +809,251 @@ T["M.new(): resolves the base ref via a non-origin remote when only that remote 
   vim.fn.delete(dir, "rf")
   upstream_src:destroy()
   vim.fn.delete(bare_dir, "rf")
+end
+
+-- 10. sweep_patterns() / toggle_viewed_batch() ---------------------------------------------
+
+--- Purpose-built repo (not `fixture_branch_repo`, whose files don't exercise both glob
+--- forms cleanly): two "*.lock" files at different depths plus one unrelated file, so a
+--- basename pattern, a full-path pattern, and a "**" pattern each pick out a different
+--- subset. Entries sort by path: "a/b/c.lock", "other.txt", "x/c.lock".
+---@return difit.test.Repo
+local function lock_pattern_repo()
+  local repo = helpers.new_repo()
+  repo:write("base.txt", "base\n")
+  repo:commit("chore: base")
+  repo:branch("feature")
+  repo:write("a/b/c.lock", "1\n")
+  repo:write("x/c.lock", "2\n")
+  repo:write("other.txt", "3\n")
+  repo:commit("feat: add files")
+  return repo
+end
+
+T["sweep_patterns(): a pattern with no '/' matches the entry's basename anywhere in the tree"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  set_viewed_patterns(child, { "*.lock" })
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 })
+  eq(is_viewed(child, "a/b/c.lock"), true)
+  eq(is_viewed(child, "x/c.lock"), true)
+  eq(is_viewed(child, "other.txt"), false, "the pattern must not match an unrelated file")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): a pattern containing '/' matches only the full toplevel-relative path"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  set_viewed_patterns(child, { "x/*.lock" })
+  eq(sweep_patterns(child), { marked = 1, unmarked = 0, matched = 1 })
+  eq(is_viewed(child, "x/c.lock"), true)
+  eq(is_viewed(child, "a/b/c.lock"), false, "a single '*' must not cross a '/' boundary")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): '**' crosses directory boundaries (LSP glob semantics)"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  set_viewed_patterns(child, { "**/c.lock" })
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 })
+  eq(is_viewed(child, "a/b/c.lock"), true)
+  eq(is_viewed(child, "x/c.lock"), true)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): tri-state -- marks every un-viewed match, then unmarks once all match"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "*.lock" })
+
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 })
+  eq(sweep_patterns(child), { marked = 0, unmarked = 2, matched = 2 }, "all matched -> unmark all")
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 }, "toggles cleanly again")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns()/toggle_viewed_batch(): exactly ONE state.save and ONE subscriber notify per batch"] = function()
+  local repo = lock_pattern_repo()
+
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "*.lock" })
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 })
+  eq(save_count(child), 1, "sweep_patterns() must save exactly once, not once per file")
+  eq(notify_count(child), 1, "sweep_patterns() must notify subscribers exactly once")
+
+  eq(toggle_viewed_batch(child, { "a/b/c.lock", "x/c.lock", "other.txt" }), {
+    marked = 1,
+    unmarked = 0,
+    matched = 3,
+  })
+  eq(save_count(child), 2)
+  eq(notify_count(child), 2)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["toggle_viewed_batch(): tri-state over an explicit path list, with correct marked/unmarked/matched counts"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  -- Pre-mark one of the three files individually, so the batch below mixes
+  -- already-viewed and un-viewed entries -- exactly the case the tri-state rule exists for.
+  eq(toggle_viewed(child, "a/b/c.lock"), true)
+
+  local paths = { "a/b/c.lock", "x/c.lock", "other.txt" }
+  eq(toggle_viewed_batch(child, paths), { marked = 2, unmarked = 0, matched = 3 })
+  eq(is_viewed(child, "a/b/c.lock"), true)
+  eq(is_viewed(child, "x/c.lock"), true)
+  eq(is_viewed(child, "other.txt"), true)
+
+  eq(
+    toggle_viewed_batch(child, paths),
+    { marked = 0, unmarked = 3, matched = 3 },
+    "all viewed -> unmark all"
+  )
+  eq(is_viewed(child, "a/b/c.lock"), false)
+  eq(is_viewed(child, "x/c.lock"), false)
+  eq(is_viewed(child, "other.txt"), false)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): empty viewed_patterns (the default) returns all-zero counts and never saves"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  eq(sweep_patterns(child), { marked = 0, unmarked = 0, matched = 0 })
+  eq(save_count(child), 0, "an empty batch must not touch disk")
+  eq(notify_count(child), 0, "an empty batch must not notify subscribers")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): a pattern matching nothing in the current diff returns all-zero counts"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "*.does-not-exist" })
+
+  eq(sweep_patterns(child), { marked = 0, unmarked = 0, matched = 0 })
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): an invalid pattern is skipped and warned about exactly once across repeated sweeps"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  install_notify_capture(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "[invalid" })
+
+  eq(sweep_patterns(child), { marked = 0, unmarked = 0, matched = 0 })
+  eq(sweep_patterns(child), { marked = 0, unmarked = 0, matched = 0 })
+
+  local notes = notifications(child)
+  eq(#notes, 1, "the same bad pattern must only warn once, however many sweeps run")
+  eq(notes[1].level, vim.log.levels.WARN)
+  eq(notes[1].msg:find("[invalid", 1, true) ~= nil, true)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["sweep_patterns(): a valid pattern alongside an invalid one still matches, after warning once"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  install_notify_capture(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  set_viewed_patterns(child, { "[invalid", "*.lock" })
+
+  eq(sweep_patterns(child), { marked = 2, unmarked = 0, matched = 2 })
+  eq(#notifications(child), 1, "only the invalid pattern warns; the valid one just works")
+
+  child.stop()
+  repo:destroy()
+end
+
+T["toggle_viewed_batch(): paths absent from entries are silently ignored"] = function()
+  local repo = lock_pattern_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_save_spy(child)
+
+  eq(
+    toggle_viewed_batch(child, { "does/not/exist.txt" }),
+    { marked = 0, unmarked = 0, matched = 0 }
+  )
+  eq(save_count(child), 0)
+
+  child.stop()
+  repo:destroy()
 end
 
 return T

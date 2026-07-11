@@ -6,6 +6,13 @@ M.defaults = {
   include_untracked = true,
   auto_advance = true, -- jump to next un-viewed file after marking
   icons = true, -- use mini.icons / nvim-web-devicons when available
+  -- Bulk-viewed glob patterns (gitignore-inspired), triggered explicitly via the panel's
+  -- `S` key / `:Difit sweep` -- never applied automatically. A pattern with no "/" matches
+  -- an entry's basename (e.g. "*.lock" matches "yarn.lock" anywhere in the tree); a pattern
+  -- containing "/" matches the full toplevel-relative path (e.g. "dist/**" matches only
+  -- "dist/..."). Compiled via `vim.glob.to_lpeg` (LSP glob semantics: "**" crosses
+  -- directories, a single "*" does not). See `Session:sweep_patterns()`.
+  viewed_patterns = {},
   panel = { width = 35 },
   keymaps = {
     panel = {
@@ -16,6 +23,8 @@ M.defaults = {
       close = "q",
       fold = "za",
       toggle_hide_viewed = "H", -- hide/show already-viewed rows (display only; see ui/panel.lua)
+      sweep = "S", -- tri-state bulk toggle for files matching `viewed_patterns`
+      toggle_viewed_subtree = "V", -- tri-state bulk toggle for every file under a dir row
     },
     -- applied ONLY in difit-owned buffers (blob/unified), IN ADDITION to `keymaps.universal`
     -- below -- never in real file buffers. See ui/sidebyside.lua's `View:owned_buffer` /
