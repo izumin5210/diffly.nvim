@@ -1,10 +1,10 @@
--- Tests for lua/difit/ui/scratch.lua: the shared find-or-create
--- helper for `difit://` scratch buffers that replaces the logic previously triplicated
+-- Tests for lua/diffly/ui/scratch.lua: the shared find-or-create
+-- helper for `diffly://` scratch buffers that replaces the logic previously triplicated
 -- across ui/panel.lua, ui/sidebyside.lua, and ui/unified.lua. No child Neovim is needed
 -- here: MiniTest itself already runs inside a real Neovim process capable of creating
 -- buffers (mirrors tests/test_panel.lua's standalone `hl.setup()` case).
 
-local scratch = require("difit.ui.scratch")
+local scratch = require("diffly.ui.scratch")
 
 local eq = MiniTest.expect.equality
 
@@ -15,7 +15,7 @@ local T = MiniTest.new_set({
     -- `vim.fn.bufnr(name)` lookups in later cases from ever seeing a stale buffer.
     post_case = function()
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.api.nvim_buf_get_name(buf):match("^difit://") then
+        if vim.api.nvim_buf_get_name(buf):match("^diffly://") then
           pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end
       end
@@ -23,9 +23,9 @@ local T = MiniTest.new_set({
   },
 })
 
-T["name(): builds difit://<kind>/<session_id>/<rest>"] = function()
-  eq(scratch.name("panel", 7), "difit://panel/7")
-  eq(scratch.name("unified", 3, "src/mod.lua"), "difit://unified/3/src/mod.lua")
+T["name(): builds diffly://<kind>/<session_id>/<rest>"] = function()
+  eq(scratch.name("panel", 7), "diffly://panel/7")
+  eq(scratch.name("unified", 3, "src/mod.lua"), "diffly://unified/3/src/mod.lua")
 end
 
 T["name(): two different session ids never collide for the same kind/rest"] = function()

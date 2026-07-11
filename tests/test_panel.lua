@@ -1,7 +1,7 @@
--- Tests for lua/difit/ui/panel.lua + lua/difit/ui/hl.lua (WP-H). Panel rendering and
+-- Tests for lua/diffly/ui/panel.lua + lua/diffly/ui/hl.lua (WP-H). Panel rendering and
 -- keymaps run in a child Neovim (real buffers/windows/keymaps are needed); panel.lua is
--- driven only through the documented `difit.Session` interface (see docs/architecture.md),
--- so a scripted fake session -- never `lua/difit/session.lua` -- stands in here and
+-- driven only through the documented `diffly.Session` interface (see docs/architecture.md),
+-- so a scripted fake session -- never `lua/diffly/session.lua` -- stands in here and
 -- records every call into `_G.calls` for the assertions below.
 
 local helpers = dofile("tests/helpers.lua")
@@ -16,13 +16,13 @@ local function new_tempdir()
 end
 
 -- Fixture entries chosen to exercise: a compressible root file (depth 0), a
--- single-file directory ("docs", depth 1 child), a multi-child directory ("lua/difit",
+-- single-file directory ("docs", depth 1 child), a multi-child directory ("lua/diffly",
 -- depth 1 children covering every status letter), and a pre-viewed file (state.lua) so
 -- rendering the `[ ]`/`[✓]` split doesn't need any keypress. Row numbers below (used by
 -- `set_cursor`) assume this exact fixture and no folds:
 --   1 header, 2 progress,
 --   3 docs, 4 docs/guide.md,
---   5 lua/difit, 6 gone.lua, 7 new.lua, 8 renamed.lua, 9 state.lua,
+--   5 lua/diffly, 6 gone.lua, 7 new.lua, 8 renamed.lua, 9 state.lua,
 --   10 README.md
 local FAKE_SESSION_SETUP = [[
   _G.calls = {
@@ -45,24 +45,24 @@ local FAKE_SESSION_SETUP = [[
     subscribe = 0,
   }
   _G.subscribers = {}
-  _G.viewed = { ["lua/difit/state.lua"] = true }
+  _G.viewed = { ["lua/diffly/state.lua"] = true }
 
   local entries = {
     { path = "README.md", status = "M", untracked = false, binary = false, additions = 1, deletions = 1 },
     { path = "docs/guide.md", status = "A", untracked = false, binary = false, additions = 5, deletions = 0 },
     {
-      path = "lua/difit/state.lua",
+      path = "lua/diffly/state.lua",
       status = "M",
       untracked = false,
       binary = false,
       additions = 42,
       deletions = 3,
     },
-    { path = "lua/difit/new.lua", status = "A", untracked = false, binary = false, additions = 10, deletions = 0 },
-    { path = "lua/difit/gone.lua", status = "D", untracked = false, binary = false, additions = 0, deletions = 7 },
+    { path = "lua/diffly/new.lua", status = "A", untracked = false, binary = false, additions = 10, deletions = 0 },
+    { path = "lua/diffly/gone.lua", status = "D", untracked = false, binary = false, additions = 0, deletions = 7 },
     {
-      path = "lua/difit/renamed.lua",
-      old_path = "lua/difit/old_name.lua",
+      path = "lua/diffly/renamed.lua",
+      old_path = "lua/diffly/old_name.lua",
       status = "R",
       untracked = false,
       binary = false,
@@ -106,7 +106,7 @@ local FAKE_SESSION_SETUP = [[
     return _G.viewed[path]
   end
 
-  -- Same tri-state rule as `lua/difit/session.lua`'s real `Session:toggle_viewed_batch`:
+  -- Same tri-state rule as `lua/diffly/session.lua`'s real `Session:toggle_viewed_batch`:
   -- mark every un-viewed path in the batch if any is un-viewed, else unmark them all.
   -- Fires the subscriber list ONCE per call (never once per path), mirroring the real
   -- method's ONE-save/ONE-notify contract.
@@ -153,13 +153,13 @@ local FAKE_SESSION_SETUP = [[
     return self._next_unviewed_answer
   end
 
-  -- Real `tree.file_order(tree.build(...))` ordering (mirrors `lua/difit/session.lua`'s
+  -- Real `tree.file_order(tree.build(...))` ordering (mirrors `lua/diffly/session.lua`'s
   -- own `next_file`/`prev_file`) rather than another scripted stub: these two need to
   -- actually cycle through `entries` in a realistic order for the wrap/reference-point
   -- assertions below to mean anything.
   function _G.session:next_file(after_path)
     table.insert(_G.calls.next_file, after_path)
-    local tree = require("difit.tree")
+    local tree = require("diffly.tree")
     local order = tree.file_order(tree.build(self.entries))
     local n = #order
     if n == 0 then
@@ -179,7 +179,7 @@ local FAKE_SESSION_SETUP = [[
 
   function _G.session:prev_file(before_path)
     table.insert(_G.calls.prev_file, before_path)
-    local tree = require("difit.tree")
+    local tree = require("diffly.tree")
     local order = tree.file_order(tree.build(self.entries))
     local n = #order
     if n == 0 then
@@ -229,18 +229,18 @@ local FAKE_SESSION_SETUP = [[
     _G.calls.sweep = _G.calls.sweep + 1
   end
 
-  _G.panel = require("difit.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
+  _G.panel = require("diffly.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
 ]]
 
 local EXPECTED_LINES = {
-  "difit  main…feature/x",
+  "diffly  main…feature/x",
   "1/6 viewed",
   "▾ docs",
   "    [ ] A guide.md  +5 −0",
-  "▾ lua/difit",
+  "▾ lua/diffly",
   "    [ ] D gone.lua  +0 −7",
   "    [ ] A new.lua  +10 −0",
-  "    [ ] R lua/difit/old_name.lua → lua/difit/renamed.lua  +2 −1",
+  "    [ ] R lua/diffly/old_name.lua → lua/diffly/renamed.lua  +2 −1",
   "    [✓] M state.lua  +42 −3",
   "  [ ] M README.md  +1 −1",
 }
@@ -301,7 +301,7 @@ local function notifications()
   return child.lua_get("_G.__notifications")
 end
 
---- 1-indexed row numbers carrying a `DifitCurrentFile` extmark in the panel buffer --
+--- 1-indexed row numbers carrying a `DifflyCurrentFile` extmark in the panel buffer --
 --- queried across every namespace (rather than reaching into panel.lua's private `ns`
 --- local) so this stays a black-box assertion against the documented rendering behavior.
 ---@return integer[]
@@ -311,7 +311,7 @@ local function current_file_rows()
       local marks = vim.api.nvim_buf_get_extmarks(_G.panel.buf, -1, 0, -1, { details = true })
       local rows = {}
       for _, m in ipairs(marks) do
-        if m[4].hl_group == "DifitCurrentFile" then
+        if m[4].hl_group == "DifflyCurrentFile" then
           table.insert(rows, m[2] + 1)
         end
       end
@@ -321,7 +321,7 @@ local function current_file_rows()
 end
 
 --- Every `hl_group` of an extmark STARTING on 1-indexed row `lnum` -- used to check that
---- more than one highlight (e.g. `DifitViewed` and `DifitCurrentFile`) coexist on the same
+--- more than one highlight (e.g. `DifflyViewed` and `DifflyCurrentFile`) coexist on the same
 --- row without one clobbering the other.
 ---@param lnum integer
 ---@return string[]
@@ -349,7 +349,7 @@ local T = MiniTest.new_set({
       child = helpers.new_child(dir)
       -- Deterministic rows: no icon provider noise, and a width distinct enough from
       -- the default (35) that the width assertion can't pass by coincidence.
-      child.lua([[require("difit.config").setup({ icons = false, panel = { width = 40 } })]])
+      child.lua([[require("diffly.config").setup({ icons = false, panel = { width = 40 } })]])
       child.lua(FAKE_SESSION_SETUP)
     end,
     post_case = function()
@@ -371,15 +371,15 @@ T["viewed file shows [✓], un-viewed files show [ ]"] = function()
 end
 
 T["render() preserves the cursor's logical file across a background refresh that reshuffles rows"] = function()
-  set_cursor(7) -- lua/difit/new.lua
-  eq(child.lua_get("_G.panel.row_nodes[7].path"), "lua/difit/new.lua")
+  set_cursor(7) -- lua/diffly/new.lua
+  eq(child.lua_get("_G.panel.row_nodes[7].path"), "lua/diffly/new.lua")
 
   -- Simulate a background refresh/subscriber notification (e.g. BufWritePost) that adds
   -- a file sorting *above* the cursor's file within the same directory -- every row
-  -- number in "lua/difit" below it shifts down by one.
+  -- number in "lua/diffly" below it shifts down by one.
   child.lua([[
     table.insert(_G.session.entries, {
-      path = "lua/difit/00_early.lua",
+      path = "lua/diffly/00_early.lua",
       status = "A",
       untracked = false,
       binary = false,
@@ -392,7 +392,7 @@ T["render() preserves the cursor's logical file across a background refresh that
   local new_lnum = child.lua_get([[
     (function()
       for lnum, node in pairs(_G.panel.row_nodes) do
-        if node.path == "lua/difit/new.lua" then
+        if node.path == "lua/diffly/new.lua" then
           return lnum
         end
       end
@@ -404,12 +404,12 @@ T["render() preserves the cursor's logical file across a background refresh that
 end
 
 T["render() clamps the cursor to the nearest valid row when its file disappears"] = function()
-  set_cursor(6) -- lua/difit/gone.lua
-  eq(child.lua_get("_G.panel.row_nodes[6].path"), "lua/difit/gone.lua")
+  set_cursor(6) -- lua/diffly/gone.lua
+  eq(child.lua_get("_G.panel.row_nodes[6].path"), "lua/diffly/gone.lua")
 
   child.lua([[
     for i, e in ipairs(_G.session.entries) do
-      if e.path == "lua/difit/gone.lua" then
+      if e.path == "lua/diffly/gone.lua" then
         table.remove(_G.session.entries, i)
         break
       end
@@ -423,20 +423,20 @@ T["render() clamps the cursor to the nearest valid row when its file disappears"
 end
 
 T["toggle_viewed key calls session:toggle_viewed and auto-advances to next_unviewed"] = function()
-  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/diffly/new.lua"]])
 
   set_cursor(4) -- docs/guide.md
   child.type_keys("v")
 
   eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
   eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
-  eq(cursor(), { 7, 0 }) -- row for lua/difit/new.lua
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+  eq(cursor(), { 7, 0 }) -- row for lua/diffly/new.lua
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/new.lua" })
 end
 
 T["toggle_viewed does not auto-advance when config.auto_advance is false"] = function()
-  child.lua([[require("difit.config").setup({ auto_advance = false })]])
-  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.lua([[require("diffly.config").setup({ auto_advance = false })]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/diffly/new.lua"]])
 
   set_cursor(4) -- docs/guide.md
   child.type_keys("v")
@@ -447,12 +447,12 @@ T["toggle_viewed does not auto-advance when config.auto_advance is false"] = fun
 end
 
 T["toggle_viewed un-marking an already-viewed file does not auto-advance"] = function()
-  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/diffly/new.lua"]])
 
-  set_cursor(9) -- lua/difit/state.lua (starts viewed = true, per FAKE_SESSION_SETUP)
+  set_cursor(9) -- lua/diffly/state.lua (starts viewed = true, per FAKE_SESSION_SETUP)
   child.type_keys("v")
 
-  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/difit/state.lua" })
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/diffly/state.lua" })
   eq(
     child.lua_get("_G.calls.next_unviewed"),
     {},
@@ -464,22 +464,22 @@ T["toggle_viewed un-marking an already-viewed file does not auto-advance"] = fun
 end
 
 T["<CR> on a file row calls session:open_file"] = function()
-  set_cursor(9) -- lua/difit/state.lua
+  set_cursor(9) -- lua/diffly/state.lua
   child.type_keys("<CR>")
 
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/state.lua" })
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/state.lua" })
 end
 
 T["<CR> on a dir row folds it, hiding descendants after re-render"] = function()
-  set_cursor(5) -- lua/difit
+  set_cursor(5) -- lua/diffly
   child.type_keys("<CR>")
 
   eq(lines(), {
-    "difit  main…feature/x",
+    "diffly  main…feature/x",
     "1/6 viewed",
     "▾ docs",
     "    [ ] A guide.md  +5 −0",
-    "▸ lua/difit",
+    "▸ lua/diffly",
     "  [ ] M README.md  +1 −1",
   })
 end
@@ -525,7 +525,7 @@ end
 
 ---------------------------------------------------------------------------------------
 -- keymaps.universal on the panel (docs/design.md "Interface", the two-layer model): the
--- same leader-prefixed keys that work everywhere else in difit (owned diff buffers, real
+-- same leader-prefixed keys that work everywhere else in diffly (owned diff buffers, real
 -- file buffers -- see tests/test_sidebyside.lua/tests/test_unified.lua) must also work on
 -- the panel itself, reusing the exact same handlers as the single-key `v`/`s` above.
 ---------------------------------------------------------------------------------------
@@ -539,15 +539,15 @@ T["keymaps.universal (<leader>v/<leader>s/<leader>e) are buffer-local nowait map
 end
 
 T["<leader>v (keymaps.universal.toggle_viewed) on a file row calls session:toggle_viewed and auto-advances, same as v"] = function()
-  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/diffly/new.lua"]])
 
   set_cursor(4) -- docs/guide.md
   child.type_keys([[\v]]) -- the literal keys `<leader>v` sends with the default mapleader
 
   eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
   eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
-  eq(cursor(), { 7, 0 }) -- row for lua/difit/new.lua
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+  eq(cursor(), { 7, 0 }) -- row for lua/diffly/new.lua
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/new.lua" })
 end
 
 T["<leader>s (keymaps.universal.toggle_mode) calls session:set_mode with the flipped mode, same as s"] = function()
@@ -570,8 +570,8 @@ end
 
 T["keymaps.universal.toggle_mode = false disables only that key on the panel, leaving keymaps.panel's own s intact"] = function()
   child.lua([[
-    require("difit.config").setup({ keymaps = { universal = { toggle_mode = false } } })
-    _G.panel = require("difit.ui.panel").open(_G.session)
+    require("diffly.config").setup({ keymaps = { universal = { toggle_mode = false } } })
+    _G.panel = require("diffly.ui.panel").open(_G.session)
   ]])
 
   eq(mapped(buf_maparg("<leader>s")), false, "keymaps.universal.toggle_mode")
@@ -586,17 +586,17 @@ end
 -- (not `session.current_path`), same idiom as `on_open`/`on_fold` -- see
 -- `reference_path` in ui/panel.lua. file_order for this fixture (dirs first, then files,
 -- alphabetical; matches EXPECTED_LINES row order above): docs/guide.md (row 4),
--- lua/difit/gone.lua (6), lua/difit/new.lua (7), lua/difit/renamed.lua (8),
--- lua/difit/state.lua (9), README.md (10).
+-- lua/diffly/gone.lua (6), lua/diffly/new.lua (7), lua/diffly/renamed.lua (8),
+-- lua/diffly/state.lua (9), README.md (10).
 ---------------------------------------------------------------------------------------
 
 T["]f (keymaps.universal.next_file) in the panel opens the next file relative to the cursor's row and moves the cursor there, wrapping at the end"] = function()
   set_cursor(4) -- docs/guide.md
   child.type_keys("]f")
 
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/gone.lua" })
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/gone.lua" })
   eq(cursor(), { 6, 0 })
-  eq(child.lua_get("_G.session.current_path"), "lua/difit/gone.lua")
+  eq(child.lua_get("_G.session.current_path"), "lua/diffly/gone.lua")
 
   set_cursor(10) -- README.md, the last file in file_order
   child.type_keys("]f")
@@ -606,7 +606,7 @@ T["]f (keymaps.universal.next_file) in the panel opens the next file relative to
 end
 
 T["[f (keymaps.universal.prev_file) in the panel opens the previous file relative to the cursor's row, wrapping at the start"] = function()
-  set_cursor(6) -- lua/difit/gone.lua
+  set_cursor(6) -- lua/diffly/gone.lua
   child.type_keys("[f")
 
   eq(child.lua_get("_G.calls.open_file"), { "docs/guide.md" })
@@ -619,12 +619,12 @@ T["[f (keymaps.universal.prev_file) in the panel opens the previous file relativ
 end
 
 T["]f in the panel falls back to session.current_path when the cursor isn't on a file row"] = function()
-  child.lua([[_G.session.current_path = "lua/difit/new.lua"]])
+  child.lua([[_G.session.current_path = "lua/diffly/new.lua"]])
   set_cursor(1) -- header row: current_node() has no file node here
 
   child.type_keys("]f")
 
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/renamed.lua" })
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/renamed.lua" })
 end
 
 ---------------------------------------------------------------------------------------
@@ -649,7 +649,7 @@ T["H (keymaps.panel.toggle_hide_viewed) hides already-viewed rows and adds a hea
 end
 
 T["marking a file viewed while hide_viewed is on makes its row vanish too; auto-advance still works and the cursor lands on a valid row"] = function()
-  child.lua([[_G.session._next_unviewed_answer = "lua/difit/new.lua"]])
+  child.lua([[_G.session._next_unviewed_answer = "lua/diffly/new.lua"]])
   child.type_keys("H") -- hide_viewed on: state.lua's row disappears
 
   set_cursor(4) -- docs/guide.md (still visible: not viewed yet)
@@ -658,7 +658,7 @@ T["marking a file viewed while hide_viewed is on makes its row vanish too; auto-
   eq(child.lua_get("_G.calls.toggle_viewed"), { "docs/guide.md" })
   -- next_unviewed is session state, not panel rows -- entirely unaffected by the filter.
   eq(child.lua_get("_G.calls.next_unviewed"), { "docs/guide.md" })
-  eq(child.lua_get("_G.calls.open_file"), { "lua/difit/new.lua" })
+  eq(child.lua_get("_G.calls.open_file"), { "lua/diffly/new.lua" })
 
   local got = lines()
   for _, l in ipairs(got) do
@@ -670,15 +670,15 @@ T["marking a file viewed while hide_viewed is on makes its row vanish too; auto-
   eq(cur[1] >= 1 and cur[1] <= total_lines, true, "cursor stays on a valid row")
   eq(
     child.lua_get("_G.panel.row_nodes[" .. cur[1] .. "].path"),
-    "lua/difit/new.lua",
+    "lua/diffly/new.lua",
     "auto-advance's own cursor-move landed on the right (still-visible) row"
   )
 end
 
 T["keymaps.panel.toggle_hide_viewed = false disables the H mapping"] = function()
   child.lua([[
-    require("difit.config").setup({ keymaps = { panel = { toggle_hide_viewed = false } } })
-    _G.panel = require("difit.ui.panel").open(_G.session)
+    require("diffly.config").setup({ keymaps = { panel = { toggle_hide_viewed = false } } })
+    _G.panel = require("diffly.ui.panel").open(_G.session)
   ]])
 
   eq(mapped(buf_maparg("H")), false, "keymaps.panel.toggle_hide_viewed")
@@ -687,33 +687,33 @@ end
 
 ---------------------------------------------------------------------------------------
 -- V (keymaps.panel.toggle_viewed_subtree): tri-state bulk toggle over a directory's
--- files, single-file passthrough to `v` on a file row. "lua/difit" (row 5) has
+-- files, single-file passthrough to `v` on a file row. "lua/diffly" (row 5) has
 -- state.lua (viewed) plus gone/new/renamed (un-viewed), in `entries` iteration order --
 -- see FAKE_SESSION_SETUP's comment on `toggle_viewed_batch` for why path SET ORDER below
 -- matches that array's literal order, not tree/alphabetical order.
 ---------------------------------------------------------------------------------------
 
-local LUA_DIFIT_SUBTREE = {
-  "lua/difit/state.lua",
-  "lua/difit/new.lua",
-  "lua/difit/gone.lua",
-  "lua/difit/renamed.lua",
+local LUA_DIFFLY_SUBTREE = {
+  "lua/diffly/state.lua",
+  "lua/diffly/new.lua",
+  "lua/diffly/gone.lua",
+  "lua/diffly/renamed.lua",
 }
 
 T["V on a dir row marks every un-viewed file under it in one batch call"] = function()
-  set_cursor(5) -- lua/difit
+  set_cursor(5) -- lua/diffly
   child.type_keys("V")
 
-  eq(child.lua_get("_G.calls.toggle_viewed_batch"), { LUA_DIFIT_SUBTREE })
-  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), true)
-  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), true)
-  eq(child.lua_get("_G.viewed['lua/difit/renamed.lua']"), true)
-  eq(child.lua_get("_G.viewed['lua/difit/state.lua']"), true, "already-viewed file stays viewed")
+  eq(child.lua_get("_G.calls.toggle_viewed_batch"), { LUA_DIFFLY_SUBTREE })
+  eq(child.lua_get("_G.viewed['lua/diffly/new.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/diffly/gone.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/diffly/renamed.lua']"), true)
+  eq(child.lua_get("_G.viewed['lua/diffly/state.lua']"), true, "already-viewed file stays viewed")
 
   local got = lines()
   eq(got[6], "    [✓] D gone.lua  +0 −7")
   eq(got[7], "    [✓] A new.lua  +10 −0")
-  eq(got[8], "    [✓] R lua/difit/old_name.lua → lua/difit/renamed.lua  +2 −1")
+  eq(got[8], "    [✓] R lua/diffly/old_name.lua → lua/diffly/renamed.lua  +2 −1")
 end
 
 T["V again unmarks the whole subtree once every file in it is viewed"] = function()
@@ -722,29 +722,29 @@ T["V again unmarks the whole subtree once every file in it is viewed"] = functio
   child.type_keys("V") -- all four now viewed -> unmark all four
 
   eq(#child.lua_get("_G.calls.toggle_viewed_batch"), 2)
-  eq(child.lua_get("_G.viewed['lua/difit/state.lua']"), false)
-  eq(child.lua_get("_G.viewed['lua/difit/new.lua']"), false)
-  eq(child.lua_get("_G.viewed['lua/difit/gone.lua']"), false)
-  eq(child.lua_get("_G.viewed['lua/difit/renamed.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/diffly/state.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/diffly/new.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/diffly/gone.lua']"), false)
+  eq(child.lua_get("_G.viewed['lua/diffly/renamed.lua']"), false)
 end
 
 T["V on a file row behaves exactly like v (single toggle, never a batch call)"] = function()
-  set_cursor(9) -- lua/difit/state.lua
+  set_cursor(9) -- lua/diffly/state.lua
   child.type_keys("V")
 
-  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/difit/state.lua" })
+  eq(child.lua_get("_G.calls.toggle_viewed"), { "lua/diffly/state.lua" })
   eq(child.lua_get("_G.calls.toggle_viewed_batch"), {})
 end
 
 T["V with hide_viewed on still batches the full subtree, including the currently-hidden viewed file"] = function()
-  child.type_keys("H") -- hide_viewed on: state.lua's row disappears; "lua/difit" stays at row 5
+  child.type_keys("H") -- hide_viewed on: state.lua's row disappears; "lua/diffly" stays at row 5
 
-  set_cursor(5) -- lua/difit (dir row itself is unaffected by the filter)
+  set_cursor(5) -- lua/diffly (dir row itself is unaffected by the filter)
   child.type_keys("V")
 
   eq(
     child.lua_get("_G.calls.toggle_viewed_batch"),
-    { LUA_DIFIT_SUBTREE },
+    { LUA_DIFFLY_SUBTREE },
     "the batch is computed from session.entries directly, filter-independent"
   )
 end
@@ -752,7 +752,7 @@ end
 T["V on a dir row auto-advances to the next un-viewed file after a marking batch"] = function()
   child.lua([[_G.session._next_unviewed_answer = "docs/guide.md"]])
 
-  set_cursor(5) -- lua/difit
+  set_cursor(5) -- lua/diffly
   child.type_keys("V")
 
   eq(child.lua_get("_G.calls.next_unviewed_count"), 1)
@@ -765,7 +765,7 @@ T["V again (an unmark batch) does not auto-advance"] = function()
 
   set_cursor(5)
   child.type_keys("V") -- marks: auto-advances (moves the cursor off row 5)
-  set_cursor(5) -- back on lua/difit's row, now every file under it is viewed
+  set_cursor(5) -- back on lua/diffly's row, now every file under it is viewed
   child.type_keys("V") -- unmark batch: must not advance again
 
   eq(
@@ -777,8 +777,8 @@ end
 
 T["keymaps.panel.toggle_viewed_subtree = false disables the V mapping"] = function()
   child.lua([[
-    require("difit.config").setup({ keymaps = { panel = { toggle_viewed_subtree = false } } })
-    _G.panel = require("difit.ui.panel").open(_G.session)
+    require("diffly.config").setup({ keymaps = { panel = { toggle_viewed_subtree = false } } })
+    _G.panel = require("diffly.ui.panel").open(_G.session)
   ]])
 
   eq(mapped(buf_maparg("V")), false, "keymaps.panel.toggle_viewed_subtree")
@@ -805,7 +805,7 @@ T["S calls the injected sweep action exactly once per press"] = function()
 end
 
 T["S is a harmless no-op when M.open() was never given a sweep action"] = function()
-  child.lua([[_G.panel = require("difit.ui.panel").open(_G.session)]])
+  child.lua([[_G.panel = require("diffly.ui.panel").open(_G.session)]])
 
   eq(pcall(child.type_keys, "S"), true)
   eq(child.lua_get("_G.calls.sweep"), 0)
@@ -813,8 +813,8 @@ end
 
 T["keymaps.panel.sweep = false disables the S mapping"] = function()
   child.lua([[
-    require("difit.config").setup({ keymaps = { panel = { sweep = false } } })
-    _G.panel = require("difit.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
+    require("diffly.config").setup({ keymaps = { panel = { sweep = false } } })
+    _G.panel = require("diffly.ui.panel").open(_G.session, { sweep = _G.__sweep_action })
   ]])
 
   eq(mapped(buf_maparg("S")), false, "keymaps.panel.sweep")
@@ -845,7 +845,7 @@ T["focus() moves the current window back to the panel"] = function()
 end
 
 ---------------------------------------------------------------------------------------
--- DifitCurrentFile: the row for `session.current_path` (the file the diff view currently
+-- DifflyCurrentFile: the row for `session.current_path` (the file the diff view currently
 -- shows) gets a whole-row background highlight, so the panel always shows where the
 -- review currently is. Set directly on the fake session and `render()`ed explicitly
 -- (rather than routed through `session:open_file`, whose subscriber-notify semantics
@@ -854,7 +854,7 @@ end
 -- `current_path`.
 ---------------------------------------------------------------------------------------
 
-T["render() adds no DifitCurrentFile extmark when current_path is nil"] = function()
+T["render() adds no DifflyCurrentFile extmark when current_path is nil"] = function()
   eq(
     child.lua_get("_G.session.current_path == nil"),
     true,
@@ -864,30 +864,30 @@ T["render() adds no DifitCurrentFile extmark when current_path is nil"] = functi
 end
 
 T["render() highlights only the row matching session.current_path"] = function()
-  child.lua([[_G.session.current_path = "lua/difit/new.lua"; _G.panel:render()]])
-  eq(current_file_rows(), { 7 }) -- row for lua/difit/new.lua, per this file's fixed fixture layout
+  child.lua([[_G.session.current_path = "lua/diffly/new.lua"; _G.panel:render()]])
+  eq(current_file_rows(), { 7 }) -- row for lua/diffly/new.lua, per this file's fixed fixture layout
 end
 
-T["a viewed AND current file's row carries both DifitViewed and DifitCurrentFile"] = function()
-  child.lua([[_G.session.current_path = "lua/difit/state.lua"; _G.panel:render()]])
+T["a viewed AND current file's row carries both DifflyViewed and DifflyCurrentFile"] = function()
+  child.lua([[_G.session.current_path = "lua/diffly/state.lua"; _G.panel:render()]])
   eq(current_file_rows(), { 9 }, "state.lua's row -- pre-viewed per FAKE_SESSION_SETUP")
 
   local groups = hl_groups_on_row(9)
-  eq(vim.tbl_contains(groups, "DifitViewed"), true, "the viewed row-wide style is still applied")
+  eq(vim.tbl_contains(groups, "DifflyViewed"), true, "the viewed row-wide style is still applied")
   eq(
-    vim.tbl_contains(groups, "DifitCurrentFile"),
+    vim.tbl_contains(groups, "DifflyCurrentFile"),
     true,
     "the current-file background is layered under it"
   )
 end
 
-T["dir rows never get DifitCurrentFile, even if current_path happens to equal a dir's path"] = function()
-  child.lua([[_G.session.current_path = "lua/difit"; _G.panel:render()]]) -- "lua/difit" is a DIR node's path, not any file's entry.path
+T["dir rows never get DifflyCurrentFile, even if current_path happens to equal a dir's path"] = function()
+  child.lua([[_G.session.current_path = "lua/diffly"; _G.panel:render()]]) -- "lua/diffly" is a DIR node's path, not any file's entry.path
   eq(current_file_rows(), {})
 end
 
-T["hide_viewed filtering the current file away leaves no DifitCurrentFile extmark and does not error"] = function()
-  child.lua([[_G.session.current_path = "lua/difit/state.lua"]]) -- pre-viewed; H below hides its row
+T["hide_viewed filtering the current file away leaves no DifflyCurrentFile extmark and does not error"] = function()
+  child.lua([[_G.session.current_path = "lua/diffly/state.lua"]]) -- pre-viewed; H below hides its row
   eq(pcall(child.type_keys, "H"), true)
 
   eq(current_file_rows(), {})
@@ -898,20 +898,20 @@ T["hide_viewed filtering the current file away leaves no DifitCurrentFile extmar
 end
 
 T["hl.setup() links the documented groups with default = true"] = function()
-  local hl = require("difit.ui.hl")
+  local hl = require("diffly.ui.hl")
   hl.setup()
 
   local expected = {
-    DifitPanelHeader = "Title",
-    DifitPanelDir = "Directory",
-    DifitStatusAdded = "Added",
-    DifitStatusModified = "Changed",
-    DifitStatusDeleted = "Removed",
-    DifitStatusRenamed = "Special",
-    DifitViewed = "Comment",
-    DifitCurrentFile = "QuickFixLine",
-    DifitCounts = "Comment",
-    DifitCheckbox = "Special",
+    DifflyPanelHeader = "Title",
+    DifflyPanelDir = "Directory",
+    DifflyStatusAdded = "Added",
+    DifflyStatusModified = "Changed",
+    DifflyStatusDeleted = "Removed",
+    DifflyStatusRenamed = "Special",
+    DifflyViewed = "Comment",
+    DifflyCurrentFile = "QuickFixLine",
+    DifflyCounts = "Comment",
+    DifflyCheckbox = "Special",
   }
   for name, link in pairs(expected) do
     local def = vim.api.nvim_get_hl(0, { name = name })

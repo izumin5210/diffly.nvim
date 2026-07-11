@@ -2,7 +2,7 @@
 -- concerns (`ui/size_guard.lua` was renamed here once the second guard needed the exact
 -- same shape): the large-file guard (config.lua's `max_file_size`) and the generated-file
 -- guard (config.lua's `collapse_generated`, GitHub-parity collapsing of vendored/lockfile/
--- codegen output -- see `lua/difit/generated.lua`). Both decide whether an entry's content
+-- codegen output -- see `lua/diffly/generated.lua`). Both decide whether an entry's content
 -- is worth loading at all, format a placeholder message, and share the placeholder's
 -- force-load `L` key (`M.apply_force_load_keymap` doesn't care which guard triggered it).
 -- Kept out of ui/sidebyside.lua and ui/unified.lua themselves (mirrors ui/scratch.lua's/
@@ -16,9 +16,9 @@
 -- (binary > size > generated) lives in each view's `open()`, not here -- see
 -- docs/architecture.md's "Rendering" section.
 
-local config = require("difit.config")
-local git = require("difit.git")
-local generated = require("difit.generated")
+local config = require("diffly.config")
+local git = require("diffly.git")
+local generated = require("diffly.generated")
 
 local M = {}
 
@@ -47,7 +47,7 @@ end
 --- nil-safe wrapper around `git.blob_size`: a nil `sha` (nothing to load on that side,
 --- e.g. an added file's empty base) stays nil instead of every call site re-deriving the
 --- same guard.
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param sha string?
 ---@return integer? size
 function M.blob_size(repo, sha)
@@ -90,9 +90,9 @@ end
 --- skipping a legitimately oversized right side whenever the left side happens to be the
 --- one that's absent (e.g. any oversized ADDED file). Building the list with `table.insert`
 --- rather than a `{ left, right }` literal is what avoids ever constructing that hole.
----@param repo difit.RepoIdentity
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param repo diffly.RepoIdentity
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return integer[]
 function M.sidebyside_sizes(repo, entry, spec)
   local sizes = {}
@@ -123,9 +123,9 @@ end
 --- Same "never a `nil` hole" contract as `M.sidebyside_sizes` above -- a side with nothing
 --- to load (e.g. a deleted file with no `base_sha` either, vanishingly rare but possible)
 --- is omitted rather than included as `nil`.
----@param repo difit.RepoIdentity
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param repo diffly.RepoIdentity
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return integer[]
 function M.unified_sizes(repo, entry, spec)
   local size
@@ -184,16 +184,16 @@ end
 --- Which content to run `generated.lua`'s heuristics against for `entry` in `spec`: the
 --- side the view is about to render as the file's "current" content -- the worktree file
 --- or `entry.head_sha`'s blob, or `entry.base_sha`'s blob when the file was deleted (no
---- head side to speak of). This is difit's OWN decision, not linguist's or GitHub's:
+--- head side to speak of). This is diffly's OWN decision, not linguist's or GitHub's:
 --- linguist classifies a single blob at a time (no diff/side concept at all), and GitHub's
 --- own choice of which side of a PR diff it runs its collapsing heuristics against isn't
 --- documented or observable. One side is picked (not run separately per side, the way the
 --- size guard's `M.sidebyside_sizes` does) because "generated" is a single yes/no per
 --- entry -- sidebyside would otherwise need to reconcile two independent verdicts for its
 --- two windows.
----@param repo difit.RepoIdentity
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param repo diffly.RepoIdentity
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return string[]? lines
 function M.generated_check_lines(repo, entry, spec)
   if not entry.head_sha then
@@ -221,9 +221,9 @@ end
 --- notifying -- the normal render path this entry falls through to on a `false` verdict
 --- will attempt the exact same read and notify once there, so notifying here too would be
 --- a duplicate.
----@param repo difit.RepoIdentity
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param repo diffly.RepoIdentity
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@return boolean
 function M.is_generated(repo, entry, spec)
   if not config.get().collapse_generated then
@@ -244,7 +244,7 @@ function M.is_generated(repo, entry, spec)
 end
 
 --- Apply the placeholder's force-load `L` key to `bufnr`: buffer-local and `nowait` (same
---- convention as every other difit keymap -- CLAUDE.md's invariants), adds `entry.path`
+--- convention as every other diffly keymap -- CLAUDE.md's invariants), adds `entry.path`
 --- to `view.force_loaded` (a set that lives on the view instance itself -- resets on a
 --- mode switch/close along with the rest of the view's per-open state, deliberately never
 --- persisted), then re-runs `view:open(entry, spec)` -- the exact same entry point every
@@ -254,14 +254,14 @@ end
 --- past either also bypasses the other for the rest of this view instance's lifetime (see
 --- both views' `open()`).
 ---@param bufnr integer
----@param view difit.View  -- must also expose `force_loaded` (both views do)
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param view diffly.View  -- must also expose `force_loaded` (both views do)
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function M.apply_force_load_keymap(bufnr, view, entry, spec)
   vim.keymap.set("n", "L", function()
     view.force_loaded[entry.path] = true
     view:open(entry, spec)
-  end, { buffer = bufnr, nowait = true, silent = true, desc = "difit: force-load oversized file" })
+  end, { buffer = bufnr, nowait = true, silent = true, desc = "diffly: force-load oversized file" })
 end
 
 return M

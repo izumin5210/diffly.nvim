@@ -1,32 +1,32 @@
 -- Session orchestration core (WP-E). This module owns the git/state plumbing that
--- turns a working directory into a `difit.DiffSpec` + file list + viewed-state, and
+-- turns a working directory into a `diffly.DiffSpec` + file list + viewed-state, and
 -- exposes the operations a UI drives a review with. It has no UI of its own: renders
 -- happen through subscriber callbacks and an injected view factory (see
--- `difit.SessionOpts.view_factory`), so this module is fully testable without any
--- `lua/difit/ui/*` dependency, and the real factories are wired up by WP-I.
+-- `diffly.SessionOpts.view_factory`), so this module is fully testable without any
+-- `lua/diffly/ui/*` dependency, and the real factories are wired up by WP-I.
 
-local config = require("difit.config")
-local git = require("difit.git")
-local state = require("difit.state")
-local tree = require("difit.tree")
+local config = require("diffly.config")
+local git = require("diffly.git")
+local state = require("diffly.state")
+local tree = require("diffly.tree")
 
 -- Loaded once at require-time; `opts.github` (tests, mainly) overrides this per call
 -- without needing to touch the module cache.
-local default_github = require("difit.github")
+local default_github = require("diffly.github")
 
 local M = {}
 
----@class difit.Session
----@field spec difit.DiffSpec
----@field entries difit.FileEntry[]
----@field state difit.ReviewState
+---@class diffly.Session
+---@field spec diffly.DiffSpec
+---@field entries diffly.FileEntry[]
+---@field state diffly.ReviewState
 ---@field mode "sidebyside"|"unified"
 ---@field current_path string?
 local Session = {}
 Session.__index = Session
 
 -- This notice is meant to fire once per Neovim *session* (i.e. process lifetime), not
--- once per `difit.Session` instance -- a plain module-level flag survives across
+-- once per `diffly.Session` instance -- a plain module-level flag survives across
 -- however many reviews get opened/closed in one Neovim run, and resets naturally on the
 -- next Neovim start (or the next test's fresh child process).
 local gh_missing_notified = false
@@ -50,7 +50,7 @@ local function compile_pattern(pattern)
       bad_pattern_notified[pattern] = true
       vim.notify(
         string.format(
-          "difit: ignoring invalid viewed_patterns entry %q (%s)",
+          "diffly: ignoring invalid viewed_patterns entry %q (%s)",
           pattern,
           lpeg_pattern
         ),
@@ -81,7 +81,7 @@ end
 --- branch itself was never checked out), and finally the same short name prefixed by
 --- every *other* configured remote (e.g. an "upstream"-only clone with no "origin" at
 --- all, or a base branch that only exists on a secondary remote).
----@param repo difit.RepoIdentity
+---@param repo diffly.RepoIdentity
 ---@param name string
 ---@return string|nil resolved
 local function resolve_ref(repo, name)
@@ -105,8 +105,8 @@ local function resolve_ref(repo, name)
   return nil
 end
 
----@param entries difit.FileEntry[]
----@return table<string, difit.FileEntry>
+---@param entries diffly.FileEntry[]
+---@return table<string, diffly.FileEntry>
 local function index_by_path(entries)
   local map = {}
   for _, entry in ipairs(entries) do
@@ -124,8 +124,8 @@ end
 --- one process per refresh beats a `git check-attr` per `open()` call for reviews with many
 --- open/close cycles over the same file). Skipped entirely (empty table, no subprocess)
 --- when `config.collapse_generated` is off.
----@param repo difit.RepoIdentity
----@param entries difit.FileEntry[]
+---@param repo diffly.RepoIdentity
+---@param entries diffly.FileEntry[]
 ---@return table<string, string>
 local function load_generated_attrs(repo, entries)
   if not config.get().collapse_generated then
@@ -147,13 +147,13 @@ function Session:_notify()
   end
 end
 
----@param opts difit.SessionOpts
----@return difit.Session|nil, string|nil err
+---@param opts diffly.SessionOpts
+---@return diffly.Session|nil, string|nil err
 function M.new(opts)
   opts = opts or {}
 
   if type(opts.view_factory) ~= "function" then
-    return nil, "difit.session.new: opts.view_factory is required"
+    return nil, "diffly.session.new: opts.view_factory is required"
   end
   local github = opts.github or default_github
 
@@ -177,7 +177,7 @@ function M.new(opts)
   -- open PR -- that's an entirely normal, silent case.
   if not pr_info and not github.available() and not gh_missing_notified then
     gh_missing_notified = true
-    vim.notify("difit: gh not found; viewed state is keyed by branch pair", vim.log.levels.INFO)
+    vim.notify("diffly: gh not found; viewed state is keyed by branch pair", vim.log.levels.INFO)
   end
 
   -- 2. Base resolution: arg > config > detected PR's base > repo default.
@@ -186,14 +186,14 @@ function M.new(opts)
     or (pr_info and pr_info.base_ref)
     or git.default_branch(repo)
   if not base_name then
-    return nil, "difit: could not resolve a base branch (no arg, config, PR, or default branch)"
+    return nil, "diffly: could not resolve a base branch (no arg, config, PR, or default branch)"
   end
 
   local base_ref = resolve_ref(repo, base_name)
   if not base_ref then
     return nil,
       string.format(
-        "difit: base ref %q does not resolve (tried it, origin/%s, and every other remote's %s)",
+        "diffly: base ref %q does not resolve (tried it, origin/%s, and every other remote's %s)",
         base_name,
         base_name,
         base_name
@@ -207,7 +207,7 @@ function M.new(opts)
   end
 
   -- 4. Review key: PR detected -> keyed by PR number; otherwise by the branch pair.
-  ---@type difit.ReviewKey
+  ---@type diffly.ReviewKey
   local review_key
   if pr_info then
     review_key = { kind = "pr", repo = repo.id, pr_number = pr_info.number }
@@ -231,7 +231,7 @@ function M.new(opts)
     return nil, entries_err
   end
 
-  ---@type difit.DiffSpec
+  ---@type diffly.DiffSpec
   local spec = {
     repo = repo,
     base_ref = base_ref,
@@ -407,7 +407,7 @@ function Session:toggle_viewed_batch(paths)
   return { marked = marked, unmarked = unmarked, matched = #entries }
 end
 
----@class difit.PatternGroupInfo : difit.PatternGroup
+---@class diffly.PatternGroupInfo : diffly.PatternGroup
 ---@field matched string[]  -- self.entries' paths matching this group, in entries order
 ---@field unviewed integer  -- how many of `matched` are currently un-viewed
 
@@ -419,7 +419,7 @@ end
 --- when ANY of that group's patterns matches it (see `compile_pattern`); invalid patterns
 --- are skipped within their group (warned once, see `bad_pattern_notified`) rather than
 --- failing the whole group.
----@return difit.PatternGroupInfo[]
+---@return diffly.PatternGroupInfo[]
 function Session:pattern_groups()
   local groups = config.normalize_pattern_groups(config.get().viewed_patterns or {})
 
@@ -458,7 +458,7 @@ end
 
 --- Sweep either ONE named group (`group_name` matched EXACTLY against a
 --- `pattern_groups()` entry's `name` -- prefix resolution, if any, is a UI-level concern;
---- see `init.lua`'s `:Difit sweep {name}` handling) or, when `group_name` is nil, the
+--- see `init.lua`'s `:Diffly sweep {name}` handling) or, when `group_name` is nil, the
 --- UNION of every group's matched paths (a file matched by more than one group is only
 --- toggled once) -- the pre-groups `sweep_patterns()` behavior, preserved as the
 --- no-argument case so existing single-list `viewed_patterns` configs keep working
@@ -492,7 +492,7 @@ function Session:sweep_patterns(group_name)
     end
   end
 
-  return nil, string.format("difit: unknown pattern group %q", group_name)
+  return nil, string.format("diffly: unknown pattern group %q", group_name)
 end
 
 --- `tree.file_order(tree.build(self.entries))`, the single source every navigation
@@ -501,7 +501,7 @@ end
 --- tolerates a stale `after_path`/`before_path` that no longer appears in the current
 --- order (falls back to "from the start/end" -- see `next_file`/`prev_file`), so there is
 --- no correctness reason to cache it, only a marginal one.
----@param self difit.Session
+---@param self diffly.Session
 ---@return string[]
 local function file_order(self)
   return tree.file_order(tree.build(self.entries))

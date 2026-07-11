@@ -9,7 +9,7 @@ function M.available()
   return vim.fn.executable("gh") == 1
 end
 
----@class difit.PrInfo
+---@class diffly.PrInfo
 ---@field number integer
 ---@field base_ref string    -- baseRefName, e.g. "main"
 
@@ -17,8 +17,8 @@ end
 ---
 --- Never raises: `gh` missing, a non-zero exit (no PR for this branch / not logged in),
 --- or output that doesn't parse as the expected JSON shape all yield `nil, err`.
----@param repo difit.RepoIdentity
----@return difit.PrInfo|nil, string|nil err
+---@param repo diffly.RepoIdentity
+---@return diffly.PrInfo|nil, string|nil err
 function M.detect_pr(repo)
   if not M.available() then
     return nil, "gh executable not found on PATH"
@@ -56,7 +56,7 @@ function M.detect_pr(repo)
     return nil, "`gh pr view` output missing expected fields"
   end
 
-  ---@type difit.PrInfo
+  ---@type diffly.PrInfo
   local info = {
     number = data.number,
     base_ref = data.baseRefName,

@@ -1,11 +1,11 @@
--- Tests for lua/difit/state.lua: viewed-state persistence (file_path, load, save, mark,
+-- Tests for lua/diffly/state.lua: viewed-state persistence (file_path, load, save, mark,
 -- unmark, is_viewed, clean). No real git repo is needed here -- shas are just opaque
 -- strings from state.lua's point of view -- so plain fixture tables stand in for
--- difit.ReviewKey / difit.FileEntry. The state directory is redirected to a fresh temp
+-- diffly.ReviewKey / diffly.FileEntry. The state directory is redirected to a fresh temp
 -- dir per test via the documented `M._dir` test seam so runs never touch the real
 -- stdpath('data') location or leak between cases.
 
-local state = require("difit.state")
+local state = require("diffly.state")
 
 local eq = MiniTest.expect.equality
 
@@ -14,10 +14,23 @@ local T = MiniTest.new_set({
     pre_case = function()
       state._dir = vim.fn.tempname()
       vim.fn.mkdir(state._dir, "p")
+      -- Also redirect the legacy-dir seam to an unused tempname (never created) so the
+      -- one-time migration's `fs_stat` finds nothing and no-ops -- otherwise it would
+      -- fall back to the real `stdpath('data')/difit`, which this plugin's own pre-rename
+      -- installs may genuinely have populated on this machine.
+      state._legacy_dir = vim.fn.tempname()
+      -- Every case gets its own migration attempt instead of inheriting whichever case
+      -- happened to run first in this process.
+      state._migrated = false
     end,
     post_case = function()
       vim.fn.delete(state._dir, "rf")
       state._dir = nil
+      if state._legacy_dir then
+        vim.fn.delete(state._legacy_dir, "rf")
+      end
+      state._legacy_dir = nil
+      state._migrated = false
     end,
   },
 })
@@ -206,6 +219,60 @@ T["clean({key=...}) removes only that review's file"] = function()
   eq(removed, 1)
   eq(vim.uv.fs_stat(state.file_path(branch_key)), nil)
   eq(vim.uv.fs_stat(state.file_path(other_key)) ~= nil, true)
+end
+
+T["legacy dir migration: an existing pre-rename dir is renamed wholesale on first use"] = function()
+  -- This test manages its own dirs instead of the pre_case default: migration only fires
+  -- when the *new* dir doesn't exist yet, so the eagerly-mkdir'd `state._dir` from
+  -- pre_case would suppress it.
+  vim.fn.delete(state._dir, "rf")
+  local old_dir = vim.fn.tempname()
+  local new_dir = vim.fn.tempname()
+  vim.fn.mkdir(old_dir, "p")
+  vim.fn.writefile({ "legacy" }, old_dir .. "/leftover.json")
+
+  state._dir = new_dir
+  state._legacy_dir = old_dir
+  state._migrated = false
+
+  local st = state.load(branch_key)
+  state.mark(st, { path = "src/a.lua", base_sha = "aaa", head_sha = "bbb" })
+  state.save(st)
+
+  eq(vim.uv.fs_stat(old_dir), nil)
+  eq(vim.uv.fs_stat(new_dir) ~= nil, true)
+  eq(vim.fn.filereadable(new_dir .. "/leftover.json") == 1, true)
+
+  local reloaded = state.load(branch_key)
+  eq(reloaded.viewed["src/a.lua"].base_sha, "aaa")
+end
+
+T["legacy dir migration: does nothing when the new dir already exists"] = function()
+  -- pre_case already created `state._dir`, so the new dir exists before any state op
+  -- runs; a legacy dir sitting alongside it must survive untouched.
+  local old_dir = vim.fn.tempname()
+  vim.fn.mkdir(old_dir, "p")
+  vim.fn.writefile({ "legacy" }, old_dir .. "/leftover.json")
+  state._legacy_dir = old_dir
+
+  state.save(state.load(branch_key))
+
+  eq(vim.uv.fs_stat(old_dir) ~= nil, true)
+  eq(vim.fn.filereadable(old_dir .. "/leftover.json") == 1, true)
+
+  vim.fn.delete(old_dir, "rf")
+end
+
+T["legacy dir migration: does nothing when no legacy dir exists"] = function()
+  -- pre_case's `state._legacy_dir` is an unused tempname (never created); this just
+  -- documents that the common case (no pre-rename install) never touches the filesystem
+  -- for the old dir beyond the stat check, and normal load/save still works.
+  local st = state.load(branch_key)
+  state.mark(st, { path = "src/a.lua", base_sha = "aaa", head_sha = "bbb" })
+  state.save(st)
+
+  local reloaded = state.load(branch_key)
+  eq(reloaded.viewed["src/a.lua"].base_sha, "aaa")
 end
 
 return T

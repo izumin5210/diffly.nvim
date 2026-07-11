@@ -1,4 +1,4 @@
-# difit.nvim — working rules
+# diffly.nvim — working rules
 
 File-tree diff viewer for Neovim with persistent per-file `viewed` marks (difit-inspired).
 Behavior and the reasoning behind it: `docs/design.md`. Structure and load-bearing
@@ -52,11 +52,11 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
   (explicit close, `TabClosed` reconciliation, `WinClosed` sentinel all route there).
 - No module-level mutable seams. Keymap actions resolve the live session through the
   tabpage-keyed registry at call time; stale actions notify instead of erroring.
-- Every difit keymap is buffer-local **and `nowait`** (buffer-local otherwise loses the
+- Every diffly keymap is buffer-local **and `nowait`** (buffer-local otherwise loses the
   ambiguity wait against longer global mappings).
 - Real file buffers get only the leader-prefixed `keymaps.universal` layer — never
   single-key maps (they would shadow core editing keys), never `keymaps.diff`.
-- `difit://` buffers never get `'filetype'` set — a FileType event would trigger LSP
+- `diffly://` buffers never get `'filetype'` set — a FileType event would trigger LSP
   `didOpen` on a custom URI, which can crash servers. Use `vim.treesitter.start` or
   `'syntax'` directly (`ui/scratch.lua` owns this).
 - Viewed state is keyed per review (PR number, else branch pair) and invalidated by

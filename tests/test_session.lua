@@ -1,8 +1,8 @@
--- Tests for lua/difit/session.lua: the orchestration core (base resolution, review-key
+-- Tests for lua/diffly/session.lua: the orchestration core (base resolution, review-key
 -- derivation, viewed-state persistence, next-unviewed navigation, view lifecycle). Git is
 -- never mocked -- every case drives a real repository via tests/helpers.lua. Only the
 -- view (`opts.view_factory`) and `gh` (`opts.github`) seams are faked, exactly as
--- `difit.SessionOpts` intends: both are injected values, not shimmed subprocesses.
+-- `diffly.SessionOpts` intends: both are injected values, not shimmed subprocesses.
 --
 -- Everything (session, its fakes, config, state) runs inside a child Neovim per test case
 -- (never the test-runner process itself): the fakes need real Lua closures with shared
@@ -18,7 +18,7 @@ local eq = MiniTest.expect.equality
 -- `github` module:
 --   _G.__log            ordered {event="open"|"close", mode=..., path=...?} list
 --   _G.__factory_modes   ordered list of modes `view_factory` was called with
---   _G.__pr_result       {info=difit.PrInfo?, err=string?} returned by the next detect_pr
+--   _G.__pr_result       {info=diffly.PrInfo?, err=string?} returned by the next detect_pr
 --   _G.__github_calls    number of times detect_pr was invoked
 --   _G.__gh_available    boolean returned by the fake's `available()` (default true --
 --                        matches the "gh works, just no PR" case being the silent one)
@@ -92,7 +92,7 @@ end
 
 --- Configure what the fake `github.detect_pr` returns on its next call(s).
 ---@param child table
----@param info difit.PrInfo?
+---@param info diffly.PrInfo?
 ---@param err string?
 local function set_pr_result(child, info, err)
   -- `nil` in a leading arg position round-trips through nvim_exec_lua as `vim.NIL`
@@ -110,12 +110,12 @@ local function set_pr_result(child, info, err)
   )
 end
 
---- Point the child's `difit.state` module at a fresh directory (the documented `_dir`
+--- Point the child's `diffly.state` module at a fresh directory (the documented `_dir`
 --- test seam), so runs never touch the real `stdpath('data')` location.
 ---@param child table
 ---@param dir string
 local function point_state_dir(child, dir)
-  child.lua("require('difit.state')._dir = ...", { dir })
+  child.lua("require('diffly.state')._dir = ...", { dir })
 end
 
 --- `session.new(opts)` inside the child, with the fakes above pre-wired into
@@ -135,7 +135,7 @@ local function new_session(child, extra)
         { view_factory = _G.__view_factory, github = _G.__fake_github },
         extra or {}
       )
-      local session, err = require("difit.session").new(opts)
+      local session, err = require("diffly.session").new(opts)
       _G.__session = session
       return { ok = session ~= nil, err = err }
     ]],
@@ -278,7 +278,7 @@ end
 ---@param child table
 ---@param patterns string[]
 local function set_viewed_patterns(child, patterns)
-  child.lua("require('difit.config').setup({ viewed_patterns = ... })", { patterns })
+  child.lua("require('diffly.config').setup({ viewed_patterns = ... })", { patterns })
 end
 
 ---@param child table
@@ -336,19 +336,19 @@ local function sweep_with_scope(child, group_name)
 end
 
 ---@param child table
----@return difit.PatternGroupInfo[]
+---@return diffly.PatternGroupInfo[]
 local function pattern_groups(child)
   return child.lua_get("_G.__session:pattern_groups()")
 end
 
---- Spy on `require('difit.state').save` inside the child, counting calls without changing
+--- Spy on `require('diffly.state').save` inside the child, counting calls without changing
 --- its behavior. `session.lua` holds the SAME cached module table `require()` returns, so
 --- reassigning the field here is visible to every `state.save(...)` call session.lua makes.
 ---@param child table
 local function install_save_spy(child)
   child.lua([[
     _G.__save_count = 0
-    local state = require("difit.state")
+    local state = require("diffly.state")
     local orig_save = state.save
     state.save = function(...)
       _G.__save_count = _G.__save_count + 1
@@ -408,7 +408,7 @@ T["M.new(): base resolution -- arg beats config beats detected PR base beats def
   eq(session_field(child, "spec.review_key.head"), "feature")
 
   -- config.get().base beats the (still no-PR) default, but loses to a later opts.base.
-  child.lua([[require("difit.config").options.base = "arg-base"]])
+  child.lua([[require("diffly.config").options.base = "arg-base"]])
   res = new_session(child, {})
   eq(res.ok, true)
   eq(
@@ -446,7 +446,7 @@ T["M.new(): opts.view_factory is required"] = function()
 
   local child = helpers.new_child(repo.dir)
   local res = child.lua([[
-    local session, err = require("difit.session").new({})
+    local session, err = require("diffly.session").new({})
     return { ok = session ~= nil, err = err }
   ]])
   eq(res.ok, false)
@@ -491,7 +491,7 @@ T["M.new(): DiffSpec.right comes from opts.right, else config.get().right"] = fu
   eq(res.ok, true)
   eq(session_field(child, "spec.right"), "head")
 
-  child.lua([[require("difit.config").options.right = "head"]])
+  child.lua([[require("diffly.config").options.right = "head"]])
   res = new_session(child, {})
   eq(res.ok, true)
   eq(
@@ -792,7 +792,7 @@ T["close(): closes the view and saves state, even with no prior toggle"] = funct
 
   eq(view_log(child), { { event = "close", mode = "sidebyside" } })
   local saved = child.lua_get(
-    [[vim.uv.fs_stat(require('difit.state').file_path(_G.__session.spec.review_key)) ~= nil]]
+    [[vim.uv.fs_stat(require('diffly.state').file_path(_G.__session.spec.review_key)) ~= nil]]
   )
   eq(saved, true)
 
@@ -820,7 +820,7 @@ T["M.new(): notifies once per Neovim session when gh is unavailable and the bran
 
   local notes = notifications(child)
   eq(#notes, 1, "the notice must fire exactly once across both M.new() calls")
-  eq(notes[1].msg, "difit: gh not found; viewed state is keyed by branch pair")
+  eq(notes[1].msg, "diffly: gh not found; viewed state is keyed by branch pair")
   eq(notes[1].level, vim.log.levels.INFO)
 
   child.stop()
@@ -868,9 +868,9 @@ T["M.new(): resolves the base ref via a non-origin remote when only that remote 
 
   local dir = vim.fn.tempname()
   eq(vim.system({ "git", "clone", "-q", "--origin", "upstream", bare_dir, dir }):wait().code, 0)
-  eq(vim.system({ "git", "-C", dir, "config", "user.name", "difit test" }):wait().code, 0)
+  eq(vim.system({ "git", "-C", dir, "config", "user.name", "diffly test" }):wait().code, 0)
   eq(
-    vim.system({ "git", "-C", dir, "config", "user.email", "difit-test@example.com" }):wait().code,
+    vim.system({ "git", "-C", dir, "config", "user.email", "diffly-test@example.com" }):wait().code,
     0
   )
   eq(vim.system({ "git", "-C", dir, "config", "commit.gpgsign", "false" }):wait().code, 0)
@@ -900,7 +900,7 @@ end
 --- forms cleanly): two "*.lock" files at different depths plus one unrelated file, so a
 --- basename pattern, a full-path pattern, and a "**" pattern each pick out a different
 --- subset. Entries sort by path: "a/b/c.lock", "other.txt", "x/c.lock".
----@return difit.test.Repo
+---@return diffly.test.Repo
 local function lock_pattern_repo()
   local repo = helpers.new_repo()
   repo:write("base.txt", "base\n")
@@ -1145,7 +1145,7 @@ end
 --- files" group's "*.lock"), one file under generated/ (matched by a "generated" group's
 --- "generated/**"), and one file matched by neither -- entries sort by path: "a.lock",
 --- "generated/out.txt", "other.txt", "z.lock".
----@return difit.test.Repo
+---@return diffly.test.Repo
 local function group_repo()
   local repo = helpers.new_repo()
   repo:write("base.txt", "base\n")

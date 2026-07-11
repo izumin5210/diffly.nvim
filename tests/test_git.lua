@@ -1,10 +1,10 @@
--- Tests for lua/difit/git.lua: synchronous git plumbing (repo identity, branch/rev
+-- Tests for lua/diffly/git.lua: synchronous git plumbing (repo identity, branch/rev
 -- resolution, `--raw --numstat -z` diff parsing, blob hashing/reading, hunk parsing).
 -- Git is never mocked: every case drives a real repository created in a temp dir via
 -- tests/helpers.lua, and cross-checks results against independently-run `git` commands
 -- rather than hand-computed expectations wherever practical.
 
-local git = require("difit.git")
+local git = require("diffly.git")
 local helpers = dofile("tests/helpers.lua")
 
 local eq = MiniTest.expect.equality
@@ -25,7 +25,7 @@ end
 --- helper round-trips content through `vim.fn.writefile`, which cannot carry an
 --- embedded NUL byte (Neovim marshals such a Lua string to a `Blob`, which
 --- `writefile()` then rejects as a list item).
----@param repo difit.test.Repo
+---@param repo diffly.test.Repo
 ---@param path string
 ---@param bytes string
 local function write_bytes(repo, path, bytes)

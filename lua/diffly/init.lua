@@ -1,8 +1,8 @@
 -- Integration layer (WP-I): wires the pure `session`/`state`/`git` core and the two view
--- modules into the single `:Difit` user command experience described in docs/design.md.
+-- modules into the single `:Diffly` user command experience described in docs/design.md.
 -- Nothing here re-implements domain logic already owned by another module -- this file's
 -- entire job is lifecycle (tabpage/window layout, autocmds, command dispatch) around the
--- documented `difit.Session`/`difit.View`/`difit.Panel` interfaces.
+-- documented `diffly.Session`/`diffly.View`/`diffly.Panel` interfaces.
 --
 -- Session registry (docs/architecture.md "Session lifecycle"): a module-local registry replaces what used to be a single
 -- `M._session`/`M._panel`/`M._viewer_tab` triple, so more than one review can be open at
@@ -11,7 +11,7 @@
 -- called from, instead of reading a singleton.
 --
 -- View contract (docs/architecture.md "View contract"): views no longer read "the current window" or reach for
--- module-level `_on_*` seam slots. Each session gets one `difit.ui.ViewCtx` table (see
+-- module-level `_on_*` seam slots. Each session gets one `diffly.ui.ViewCtx` table (see
 -- `ui/keymaps.lua`), built here and passed BY REFERENCE into every view the session's
 -- `view_factory` closure ever constructs (including across `set_mode`). `ctx.anchor`/
 -- `ctx.claim` are filled in once the viewer tabpage/panel exist (session.new() runs
@@ -19,35 +19,35 @@
 -- closures resolve the live registry entry by tabpage handle on every call, so a stale
 -- action surviving past `close_entry` degrades to a no-op notify instead of an error.
 
-local config = require("difit.config")
-local session = require("difit.session")
-local state = require("difit.state")
-local panel = require("difit.ui.panel")
-local hl = require("difit.ui.hl")
-local sidebyside = require("difit.ui.sidebyside")
-local unified = require("difit.ui.unified")
+local config = require("diffly.config")
+local session = require("diffly.session")
+local state = require("diffly.state")
+local panel = require("diffly.ui.panel")
+local hl = require("diffly.ui.hl")
+local sidebyside = require("diffly.ui.sidebyside")
+local unified = require("diffly.ui.unified")
 
 local M = {}
 
----@class difit.init.Entry
----@field session difit.Session
----@field panel difit.Panel
+---@class diffly.init.Entry
+---@field session diffly.Session
+---@field panel diffly.Panel
 ---@field origin_tab integer  -- tabpage handle the user was on before this review opened
 ---@field refresh_timer uv.uv_timer_t?             -- BufWritePost/FocusGained debounce
 
 --- The session registry itself: one entry per open review, keyed by the dedicated
 --- viewer tabpage's handle. Underscore-prefixed, in the same spirit as
---- `difit.state._dir`: a plain field on the returned module table (Lua has no real
+--- `diffly.state._dir`: a plain field on the returned module table (Lua has no real
 --- privacy), kept internal by convention but reachable for tests/introspection rather
 --- than hidden behind a closure.
----@type table<integer, difit.init.Entry>
+---@type table<integer, diffly.init.Entry>
 M._entries = {}
 local entries = M._entries
 
 local REFRESH_DEBOUNCE_MS = 200
-local GLOBAL_AUGROUP = "difit_global"
+local GLOBAL_AUGROUP = "diffly_global"
 
----@return difit.init.Entry?
+---@return diffly.init.Entry?
 local function current_entry()
   return entries[vim.api.nvim_get_current_tabpage()]
 end
@@ -55,8 +55,8 @@ end
 --- Review keys are only ever compared field-by-field, never with plain `==` (a fresh
 --- table from a fresh `session.new()` call is never `==` to one built earlier even when
 --- every field matches).
----@param a difit.ReviewKey
----@param b difit.ReviewKey
+---@param a diffly.ReviewKey
+---@param b diffly.ReviewKey
 ---@return boolean
 local function same_review_key(a, b)
   if a.kind ~= b.kind or a.repo ~= b.repo then
@@ -71,7 +71,7 @@ end
 --- Find a live entry already reviewing `key` -- "live" meaning its tabpage hasn't been
 --- torn down out from under the registry yet (see `reconcile_registry`; in the steady
 --- state this is always true, `TabClosed` reconciles synchronously).
----@param key difit.ReviewKey
+---@param key diffly.ReviewKey
 ---@return integer? tab
 local function find_entry_by_review_key(key)
   for tab, entry in pairs(entries) do
@@ -85,20 +85,20 @@ local function find_entry_by_review_key(key)
 end
 
 --- Mark `path` viewed/unviewed on `entry`'s session and, per `config.auto_advance`, open
---- the next un-viewed file -- the same policy `lua/difit/ui/panel.lua`'s own
+--- the next un-viewed file -- the same policy `lua/diffly/ui/panel.lua`'s own
 --- `toggle_viewed` keymap applies, reimplemented here because it is invoked from two
 --- different places (the diff-buffer seams below, and `M.toggle_viewed_current` for real
 --- file buffers) that have no access to panel.lua's private row/cursor bookkeeping. The
 --- panel itself re-renders on its own: `session:toggle_viewed` notifies subscribers, and
 --- `panel.open` already subscribed a re-render callback, so this function only owns the
 --- auto-advance decision.
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 ---@param path string
 local function toggle_viewed_and_advance(entry, path)
   local became_viewed = entry.session:toggle_viewed(path)
   -- Auto-advance only on MARKING a file viewed, never on un-marking it (design.md:
   -- "Marking advances to the next un-viewed file") -- mirrors the same rule in
-  -- `lua/difit/ui/panel.lua`'s own `toggle_viewed` keymap.
+  -- `lua/diffly/ui/panel.lua`'s own `toggle_viewed` keymap.
   if became_viewed and config.get().auto_advance then
     local nxt = entry.session:next_unviewed(path)
     if nxt then
@@ -117,12 +117,12 @@ end
 
 --- Open `target` (if any) through `entry`'s session and sync the panel's cursor to it --
 --- the shared tail `build_actions`' `next_file`/`prev_file` and the top-level
---- `M.next_file`/`M.prev_file` (the `<Plug>(difit-next-file)`/`<Plug>(difit-prev-file)`
+--- `M.next_file`/`M.prev_file` (the `<Plug>(diffly-next-file)`/`<Plug>(diffly-prev-file)`
 --- backing functions) both need once `session:next_file`/`prev_file` has resolved a
 --- target: `session:open_file` moves the view, and `Panel:set_cursor` keeps the panel in
 --- sync without stealing focus, mirroring `toggle_viewed_and_advance`'s own auto-advance
 --- tail below. A no-op when `target` is nil (no files in the review at all).
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 ---@param target string?
 local function open_and_sync_cursor(entry, target)
   if not target then
@@ -147,7 +147,7 @@ local function close_tabpage_safe(tab)
   vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(tab))
 end
 
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 local function stop_entry_timer(entry)
   if not entry.refresh_timer then
     return
@@ -168,7 +168,7 @@ end
 --- and closes this exact timer object before ever removing `entry` from the registry, so
 --- a stale closure can never fire `entry.session:refresh()` after the review closed --
 --- the same guarantee the old singleton implementation had.
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 local function debounced_refresh(entry)
   stop_entry_timer(entry)
   entry.refresh_timer = assert(vim.uv.new_timer())
@@ -183,18 +183,18 @@ end
 ---@param tab integer
 ---@return string
 local function entry_augroup_name(tab)
-  return string.format("difit_entry_%d", tab)
+  return string.format("diffly_entry_%d", tab)
 end
 
 --- Per-entry augroup for the BufWritePost/FocusGained refresh triggers (docs/architecture.md "Session lifecycle": these move off the old single global augroup so each concurrent
 --- review gets its own, torn down independently in `close_entry`).
 ---@param tab integer
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 local function setup_entry_autocmds(tab, entry)
   local group = vim.api.nvim_create_augroup(entry_augroup_name(tab), { clear = true })
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group,
-    desc = "difit: refresh on writes inside the reviewed repo",
+    desc = "diffly: refresh on writes inside the reviewed repo",
     callback = function(ev)
       local toplevel = entry.session.spec.repo.toplevel
       local full = vim.fn.fnamemodify(ev.file, ":p")
@@ -205,7 +205,7 @@ local function setup_entry_autocmds(tab, entry)
   })
   vim.api.nvim_create_autocmd("FocusGained", {
     group = group,
-    desc = "difit: refresh on regaining focus",
+    desc = "diffly: refresh on regaining focus",
     callback = function()
       debounced_refresh(entry)
     end,
@@ -217,7 +217,7 @@ local function clear_entry_autocmds(tab)
   pcall(vim.api.nvim_del_augroup_by_name, entry_augroup_name(tab))
 end
 
---- The single idempotent teardown every close path funnels through: `:Difit close`/`q`
+--- The single idempotent teardown every close path funnels through: `:Diffly close`/`q`
 --- (via the `close` action -- see `build_actions`), the `TabClosed` reconciler, and the
 --- `WinClosed` panel-gone detector all end up here. Removing `tab` from the registry FIRST
 --- makes every step
@@ -288,8 +288,8 @@ end
 --- Tears `tab`'s review down once its panel window -- the sole navigational anchor of the
 --- whole viewer -- is gone: a review with diff panes but no tree is not meaningfully
 --- usable, and closing the panel is this plugin's closest equivalent to the user saying
---- "I'm done reviewing" without having gone through `:Difit close`/the diff buffers' own
---- `close` keymap (`lua/difit/ui/panel.lua`'s own `q` mapping closes the session/panel
+--- "I'm done reviewing" without having gone through `:Diffly close`/the diff buffers' own
+--- `close` keymap (`lua/diffly/ui/panel.lua`'s own `q` mapping closes the session/panel
 --- directly but never the tabpage -- this is what actually finishes that job).
 ---@param tab integer
 local function maybe_teardown_on_win_closed(tab)
@@ -323,13 +323,13 @@ local function setup_global_autocmds()
 
   vim.api.nvim_create_autocmd("TabClosed", {
     group = group,
-    desc = "difit: reconcile the session registry when a viewer tabpage closes",
+    desc = "diffly: reconcile the session registry when a viewer tabpage closes",
     callback = reconcile_registry,
   })
 
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
-    desc = "difit: tear a review down once its panel window is gone",
+    desc = "diffly: tear a review down once its panel window is gone",
     callback = function(ev)
       local win = tonumber(ev.match)
       if not win then
@@ -352,23 +352,26 @@ local function setup_global_autocmds()
 end
 
 --- Resolve tab's live registry entry, or notify (once, per call) that it's gone. Every
---- `difit.ui.Actions` closure (see `build_actions`) goes through this instead of holding a
---- `difit.Session`/`difit.init.Entry` reference directly -- the entry a buffer-local
+--- `diffly.ui.Actions` closure (see `build_actions`) goes through this instead of holding a
+--- `diffly.Session`/`diffly.init.Entry` reference directly -- the entry a buffer-local
 --- keymap was wired against can always outlive the review itself (a real file buffer, or a
---- `difit://` scratch buffer some other window still shows), and a stale action firing
+--- `diffly://` scratch buffer some other window still shows), and a stale action firing
 --- after `close_entry` must degrade to a harmless no-op, never an error (docs/architecture.md "View contract").
 ---@param tab integer
 ---@param what string  -- action name, folded into the notify message
----@return difit.init.Entry?
+---@return diffly.init.Entry?
 local function resolve_live_entry(tab, what)
   local entry = entries[tab]
   if not entry then
-    vim.notify(string.format("difit: review already closed; %s ignored", what), vim.log.levels.WARN)
+    vim.notify(
+      string.format("diffly: review already closed; %s ignored", what),
+      vim.log.levels.WARN
+    )
   end
   return entry
 end
 
---- Build the `difit.ui.Actions` table (see `ui/keymaps.lua`) for the review at `tab`:
+--- Build the `diffly.ui.Actions` table (see `ui/keymaps.lua`) for the review at `tab`:
 --- the single implementation of "what toggling viewed/mode, focusing the panel, or
 --- closing the review means" that both views' buffer-local keymaps call into, regardless
 --- of which buffer/window the key was pressed in. Captures `tab`, a plain tabpage handle,
@@ -376,7 +379,7 @@ end
 --- the CURRENT live entry for that tabpage rather than risking acting on a torn-down
 --- session.
 ---@param tab integer
----@return difit.ui.Actions
+---@return diffly.ui.Actions
 local function build_actions(tab)
   return {
     toggle_viewed = function(path)
@@ -430,8 +433,8 @@ end
 --- `Session:sweep_patterns(nil)` itself performs when actually sweeping it (see its own
 --- docs), so the menu's count can never promise something the sweep it triggers doesn't
 --- deliver.
----@param session difit.Session
----@param groups difit.PatternGroupInfo[]
+---@param session diffly.Session
+---@param groups diffly.PatternGroupInfo[]
 ---@return integer matched, integer unviewed
 local function union_counts(session, groups)
   local seen, matched, unviewed = {}, 0, 0
@@ -461,7 +464,7 @@ local function format_group_choice(name, matched, unviewed)
   return string.format("%s (%d files, %d unviewed)", name, matched, unviewed)
 end
 
----@class difit.init.SweepChoice
+---@class diffly.init.SweepChoice
 ---@field group_name string?  -- nil = the "all groups" union
 ---@field display string
 
@@ -472,9 +475,9 @@ end
 --- fzf-lua/etc., any of which may replace the builtin `vim.ui.select`) gets the real
 --- `group_name` as the selected value and only uses `display` for rendering, instead of
 --- having to parse a group's name back out of a formatted string.
----@param session difit.Session
----@param groups difit.PatternGroupInfo[]
----@return difit.init.SweepChoice[]
+---@param session diffly.Session
+---@param groups diffly.PatternGroupInfo[]
+---@return diffly.init.SweepChoice[]
 local function sweep_choices(session, groups)
   local all_matched, all_unviewed = union_counts(session, groups)
   local choices = {
@@ -493,8 +496,8 @@ end
 --- report a compact result scoped to whichever group actually got swept. The shared tail
 --- both `run_sweep_selector` (0/1/N-group picking) and `M.sweep`'s explicit-name path
 --- funnel into once a group is settled on, so the notification wording and auto-advance
---- policy can never drift apart between the panel's `S` key and `:Difit sweep [name]`.
----@param entry difit.init.Entry
+--- policy can never drift apart between the panel's `S` key and `:Diffly sweep [name]`.
+---@param entry diffly.init.Entry
 ---@param group_name string?
 local function perform_sweep(entry, group_name)
   local result, scope = entry.session:sweep_patterns(group_name)
@@ -511,7 +514,7 @@ local function perform_sweep(entry, group_name)
 
   if result.matched == 0 then
     vim.notify(
-      string.format("difit: no files matched viewed_patterns (%s)", scope),
+      string.format("diffly: no files matched viewed_patterns (%s)", scope),
       vim.log.levels.INFO
     )
     return
@@ -519,7 +522,7 @@ local function perform_sweep(entry, group_name)
 
   if result.marked > 0 then
     vim.notify(
-      string.format("difit: marked %d files as viewed (%s)", result.marked, scope),
+      string.format("diffly: marked %d files as viewed (%s)", result.marked, scope),
       vim.log.levels.INFO
     )
     -- Auto-advance only after a MARKING batch, mirroring `toggle_viewed_and_advance`'s own
@@ -531,25 +534,25 @@ local function perform_sweep(entry, group_name)
     end
   else
     vim.notify(
-      string.format("difit: unmarked %d files (%s)", result.unmarked, scope),
+      string.format("diffly: unmarked %d files (%s)", result.unmarked, scope),
       vim.log.levels.INFO
     )
   end
 end
 
 --- The shared "which group to sweep" flow behind BOTH the panel's `S` key and a bare
---- `:Difit sweep` (no explicit name) -- `perform_sweep` above is the actual sweep+notify
+--- `:Diffly sweep` (no explicit name) -- `perform_sweep` above is the actual sweep+notify
 --- tail once a group is chosen. 0 groups -> nothing to sweep; exactly 1 -> sweep it
 --- immediately, no menu (the whole point of a picker is choosing among options, and there
 --- is exactly one); 2+ -> `vim.ui.select` (so telescope/fzf-lua/etc. pickers apply when a
 --- user has replaced the builtin one), cancelling out of it is a silent no-op -- same "no
 --- side effect" contract as cancelling any other `vim.ui.select` prompt in this plugin.
----@param entry difit.init.Entry
+---@param entry diffly.init.Entry
 local function run_sweep_selector(entry)
   local groups = entry.session:pattern_groups()
 
   if #groups == 0 then
-    vim.notify("difit: viewed_patterns is not configured", vim.log.levels.INFO)
+    vim.notify("diffly: viewed_patterns is not configured", vim.log.levels.INFO)
     return
   end
 
@@ -571,12 +574,12 @@ local function run_sweep_selector(entry)
 end
 
 --- Exact match first, then a UNIQUE prefix match (typical CLI-subcommand resolution) --
---- backs `:Difit sweep {name}` so e.g. `:Difit sweep lock` works when "lock files" is the
+--- backs `:Diffly sweep {name}` so e.g. `:Diffly sweep lock` works when "lock files" is the
 --- only configured group starting with "lock", without requiring the whole name (or its
 --- backslash-escaped spaces, see `M.sweep_group_names`) to be typed out. Returns nil, not
 --- an error, on anything else (no match, or an ambiguous prefix matching more than one
 --- group) -- `M.sweep` turns that into a message listing what IS available.
----@param groups difit.PatternGroupInfo[]
+---@param groups diffly.PatternGroupInfo[]
 ---@param requested string
 ---@return string|nil
 local function resolve_group_name(groups, requested)
@@ -608,7 +611,7 @@ end
 --- flashing a throwaway tabpage into existence. That means the view factory closure below
 --- must close over a `ctx` table (docs/architecture.md "View contract") BEFORE its `anchor`/`claim`/
 --- `actions` fields are actually known: `session.new()` calls it once immediately (just to
---- construct the initial, window-less `difit.View` instance), well before the tabpage,
+--- construct the initial, window-less `diffly.View` instance), well before the tabpage,
 --- panel, or diff placeholder window exist. Because `ctx` is a plain table passed BY
 --- REFERENCE into every view the factory ever builds, filling its fields in further down
 --- -- once the tabpage/panel genuinely exist -- is enough: no view actually reads
@@ -620,7 +623,7 @@ local function open_new(base)
 
   hl.setup()
 
-  ---@type difit.ui.ViewCtx
+  ---@type diffly.ui.ViewCtx
   local ctx = { anchor = nil, claim = nil, actions = nil }
   local function view_factory(mode)
     return mode == "unified" and unified.new(ctx) or sidebyside.new(ctx)
@@ -628,7 +631,7 @@ local function open_new(base)
 
   local sess, err = session.new({ base = base, view_factory = view_factory })
   if not sess then
-    vim.notify("difit: " .. tostring(err), vim.log.levels.ERROR)
+    vim.notify("diffly: " .. tostring(err), vim.log.levels.ERROR)
     return
   end
 
@@ -649,10 +652,10 @@ local function open_new(base)
   -- `ctx.claim` by whichever view opens the first file below (R2's `ensure_windows`/
   -- `ensure_window` set this sentinel again themselves once that happens; harmless to
   -- set it twice).
-  vim.w[diff_win].difit = true
+  vim.w[diff_win].diffly = true
 
   -- Injected into the panel below so its own `S` key runs the EXACT SAME selector flow as
-  -- `:Difit sweep` (`run_sweep_selector`) without `ui/panel.lua` ever `require`ing this
+  -- `:Diffly sweep` (`run_sweep_selector`) without `ui/panel.lua` ever `require`ing this
   -- module -- mirrors `build_actions(tab)`'s closures just above/below, which the diff
   -- views' `ctx.actions` already reach init.lua-owned behavior through the same way: a
   -- closure captures `viewer_tab` (not `entry`/`sess` themselves) and re-resolves the LIVE
@@ -674,7 +677,7 @@ local function open_new(base)
   ctx.claim = diff_win
   ctx.actions = build_actions(viewer_tab)
 
-  ---@type difit.init.Entry
+  ---@type diffly.init.Entry
   local entry = {
     session = sess,
     panel = pnl,
@@ -700,7 +703,7 @@ function M.setup(opts)
 end
 
 --- Close the review open on the CURRENT tabpage, if any. A no-op from any tabpage that
---- isn't itself a registered viewer (including a second `:Difit close` from the origin
+--- isn't itself a registered viewer (including a second `:Diffly close` from the origin
 --- tabpage right after the first one already returned there).
 function M.close()
   close_entry(vim.api.nvim_get_current_tabpage())
@@ -721,8 +724,8 @@ function M.refresh()
   end
 end
 
---- Focus the panel window: the backing function for `:Difit focus`,
---- `<Plug>(difit-focus-panel)`, and both views' `focus_panel` seam (problem 1 in the bug
+--- Focus the panel window: the backing function for `:Diffly focus`,
+--- `<Plug>(diffly-focus-panel)`, and both views' `focus_panel` seam (problem 1 in the bug
 --- report this shipped with -- pressing <CR> in the panel had no discoverable way back to
 --- it). `Panel:focus()` itself calls `nvim_set_current_win`, which also switches to the
 --- panel's tabpage when called from a different one, so there is nothing tabpage-specific
@@ -730,7 +733,7 @@ end
 function M.focus()
   local entry = current_entry()
   if not entry then
-    vim.notify("difit: no review is open", vim.log.levels.WARN)
+    vim.notify("diffly: no review is open", vim.log.levels.WARN)
     return
   end
   if entry.panel then
@@ -740,7 +743,7 @@ end
 
 --- Flip between side-by-side and unified: the backing function for both views'
 --- `toggle_mode` seam (`keymaps.diff`/`keymaps.universal`), mirroring
---- `lua/difit/ui/panel.lua`'s own `s` keymap.
+--- `lua/diffly/ui/panel.lua`'s own `s` keymap.
 function M.toggle_mode()
   local entry = current_entry()
   if not entry then
@@ -751,11 +754,11 @@ function M.toggle_mode()
 end
 
 --- Open the next file (ALL files, not just un-viewed ones -- see `Session:next_file`):
---- the backing function for `<Plug>(difit-next-file)` and `keymaps.universal.next_file`
+--- the backing function for `<Plug>(diffly-next-file)` and `keymaps.universal.next_file`
 --- (via `build_actions`, for buffers that already have a `path` reference to hand it).
 --- Reference point is `session.current_path` -- there is no buffer-local "which file is
 --- this" to resolve here, unlike `M.toggle_viewed_current`, since a `<Plug>` mapping isn't
---- tied to any one difit buffer.
+--- tied to any one diffly buffer.
 function M.next_file()
   local entry = current_entry()
   if entry then
@@ -764,7 +767,7 @@ function M.next_file()
 end
 
 --- Open the previous file, mirroring `M.next_file` in the opposite direction: the backing
---- function for `<Plug>(difit-prev-file)` and `keymaps.universal.prev_file`.
+--- function for `<Plug>(diffly-prev-file)` and `keymaps.universal.prev_file`.
 function M.prev_file()
   local entry = current_entry()
   if entry then
@@ -772,10 +775,10 @@ function M.prev_file()
   end
 end
 
---- Backing function for `:Difit sweep [{name}]`: with no name, runs the same 0/1/N-group
+--- Backing function for `:Diffly sweep [{name}]`: with no name, runs the same 0/1/N-group
 --- selector the panel's `S` key uses (`run_sweep_selector`, wired to it via the injected
 --- `sweep` action -- see `open_new`); with a name (`fargs` joined with spaces -- see
---- plugin/difit.lua's completion, which offers group names with embedded spaces
+--- plugin/diffly.lua's completion, which offers group names with embedded spaces
 --- backslash-escaped so `nargs="*"` still hands them here as separate fargs tokens,
 --- rejoining with " " undoes exactly that split), resolves it against the live review's
 --- groups (`resolve_group_name`) and sweeps just that one; an unresolved name reports the
@@ -784,7 +787,7 @@ end
 function M.sweep(fargs)
   local entry = current_entry()
   if not entry then
-    vim.notify("difit: no review is open", vim.log.levels.WARN)
+    vim.notify("diffly: no review is open", vim.log.levels.WARN)
     return
   end
 
@@ -803,7 +806,7 @@ function M.sweep(fargs)
     end
     vim.notify(
       string.format(
-        "difit: unknown pattern group %q; available: %s",
+        "diffly: unknown pattern group %q; available: %s",
         requested,
         #names > 0 and table.concat(names, ", ") or "(none configured)"
       ),
@@ -815,14 +818,14 @@ function M.sweep(fargs)
   perform_sweep(entry, resolved)
 end
 
---- `:Difit sweep <Tab>` completion candidates: the live review's pattern-group names (see
+--- `:Diffly sweep <Tab>` completion candidates: the live review's pattern-group names (see
 --- `Session:pattern_groups()`), with embedded spaces backslash-escaped so a multi-word
 --- group name round-trips through `nargs="*"`'s space-based arg splitting as ONE token
 --- (mirrors how e.g. `:edit`'s own filename completion escapes spaces -- see `:help
 --- f-args` for the matching unescape-on-parse side that `M.sweep` above relies on). Empty
 --- outside a viewer tabpage -- unlike `M.sweep()` itself, a completion function never
 --- notifies; no candidates is the correct "nothing to offer" UX here (mirrors
---- plugin/difit.lua's own `local_branches()` degrading to `{}` when `git branch` fails).
+--- plugin/diffly.lua's own `local_branches()` degrading to `{}` when `git branch` fails).
 ---@return string[]
 function M.sweep_group_names()
   local entry = current_entry()
@@ -843,11 +846,11 @@ end
 ---@param all boolean?
 function M.clean(all)
   if all then
-    if vim.fn.confirm("difit: remove ALL viewed-state files?", "&Yes\n&No", 2) ~= 1 then
+    if vim.fn.confirm("diffly: remove ALL viewed-state files?", "&Yes\n&No", 2) ~= 1 then
       return
     end
     local removed = state.clean({ all = true })
-    vim.notify(string.format("difit: removed %d state file(s)", removed), vim.log.levels.INFO)
+    vim.notify(string.format("diffly: removed %d state file(s)", removed), vim.log.levels.INFO)
     return
   end
 
@@ -867,21 +870,21 @@ function M.clean(all)
       end,
     })
     if not sess then
-      vim.notify("difit: " .. tostring(err), vim.log.levels.ERROR)
+      vim.notify("diffly: " .. tostring(err), vim.log.levels.ERROR)
       return
     end
     key = sess.spec.review_key
   end
 
-  if vim.fn.confirm("difit: remove viewed state for the current review?", "&Yes\n&No", 2) ~= 1 then
+  if vim.fn.confirm("diffly: remove viewed state for the current review?", "&Yes\n&No", 2) ~= 1 then
     return
   end
   local removed = state.clean({ key = key })
-  vim.notify(string.format("difit: removed %d state file(s)", removed), vim.log.levels.INFO)
+  vim.notify(string.format("diffly: removed %d state file(s)", removed), vim.log.levels.INFO)
 end
 
---- Entry point for `:Difit [subcommand|base]`. `args[1]` is either one of the recognized
---- subcommands or a base-branch override. A bare `:Difit` (or one with an unrecognized
+--- Entry point for `:Diffly [subcommand|base]`. `args[1]` is either one of the recognized
+--- subcommands or a base-branch override. A bare `:Diffly` (or one with an unrecognized
 --- first argument):
 --- - from a tabpage that already IS a registered viewer, refreshes that review in place
 ---   rather than nesting a second viewer inside the first;
@@ -915,9 +918,9 @@ function M.open(args)
   open_new(first)
 end
 
---- Backing function for `<Plug>(difit-toggle-viewed)` (see plugin/difit.lua): toggles the
+--- Backing function for `<Plug>(diffly-toggle-viewed)` (see plugin/diffly.lua): toggles the
 --- viewed mark for the current buffer's file when that buffer is a real worktree/HEAD file
---- belonging to the current tabpage's session. difit-owned buffers (`difit://...`) already
+--- belonging to the current tabpage's session. diffly-owned buffers (`diffly://...`) already
 --- get their own `config.keymaps.diff.toggle_viewed` mapping straight from the view
 --- modules, so this is specifically for real file buffers (worktree mode's real buffer in
 --- either the side-by-side right window or the unified window alike).

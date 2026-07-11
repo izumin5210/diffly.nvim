@@ -1,19 +1,19 @@
 -- Side-by-side diff view (design.md "UI" > "Side-by-side"): a two-window vertical diff
--- pair reused across `open()` calls. Left window always shows a read-only `difit://` blob
+-- pair reused across `open()` calls. Left window always shows a read-only `diffly://` blob
 -- buffer for the base side; right window shows either the real worktree file (edits + `:w`
 -- work normally) or a read-only HEAD blob, depending on `spec.right`.
 --
--- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `difit.ui.ViewCtx` in
+-- docs/architecture.md "View contract" view contract: `M.new(ctx)` (see `diffly.ui.ViewCtx` in
 -- `ui/keymaps.lua`) -- this view never reads "the current window". Both its windows are
 -- always created by splitting rightward from `ctx.anchor` (the panel window), or by
 -- absorbing `ctx.claim` when one is offered and still valid; buffer-local keymap callbacks
 -- go through `ctx.actions` instead of module-level seam slots. `ui/unified.lua` follows
 -- the identical contract.
 
-local git = require("difit.git")
-local ui_keymaps = require("difit.ui.keymaps")
-local scratch = require("difit.ui.scratch")
-local guard = require("difit.ui.guard")
+local git = require("diffly.git")
+local ui_keymaps = require("diffly.ui.keymaps")
+local scratch = require("diffly.ui.scratch")
+local guard = require("diffly.ui.guard")
 
 local M = {}
 
@@ -27,8 +27,8 @@ local M = {}
 --- session was built with -- stable and unique for the session's whole lifetime, so two
 --- concurrent reviews whose entries happen to share a blob/merge-base sha never collide
 --- on the same buffer name (see ui/scratch.lua).
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@param session_id integer
 ---@return string
 local function left_buffer_name(entry, spec, session_id)
@@ -45,7 +45,7 @@ end
 --- A nil `head_sha` means the file doesn't exist at the right-hand revision (deleted),
 --- which is the same situation as a deleted worktree file, hence the shared "deleted"
 --- name. See `left_buffer_name` above for why `session_id` is part of the name too.
----@param entry difit.FileEntry
+---@param entry diffly.FileEntry
 ---@param session_id integer
 ---@return string
 local function right_blob_buffer_name(entry, session_id)
@@ -55,9 +55,9 @@ local function right_blob_buffer_name(entry, session_id)
   return scratch.name(scratch.short_sha(entry.head_sha), session_id, entry.path)
 end
 
----@class difit.ui.SideBySide : difit.View
----@field ctx difit.ui.ViewCtx
----@field left_win integer?   -- not part of the difit.View contract; exposed for tests
+---@class diffly.ui.SideBySide : diffly.View
+---@field ctx diffly.ui.ViewCtx
+---@field left_win integer?   -- not part of the diffly.View contract; exposed for tests
 ---@field right_win integer?  -- ditto
 ---@field owned_wins integer[]  -- every window this view currently owns; destroyed by close()
 ---@field owned_bufs table<integer, boolean>
@@ -74,7 +74,7 @@ end
 local View = {}
 View.__index = View
 
---- Get-or-create a difit-owned scratch buffer via ui/scratch.lua: `buftype=nofile`,
+--- Get-or-create a diffly-owned scratch buffer via ui/scratch.lua: `buftype=nofile`,
 --- `bufhidden=hide`, non-modifiable once populated, LSP-safe highlighting (never
 --- `'filetype'` -- docs/architecture.md "Rendering"). Reuses an existing buffer with the exact
 --- same name instead of recreating/re-populating it (buffer names always embed whatever
@@ -98,7 +98,7 @@ end
 --- Peel `keymaps.universal` off whatever real buffer currently holds them, if any. Called
 --- whenever the right window stops showing a real file (deleted-file scratch, binary
 --- placeholder, `close()`) -- the previous real buffer is left alone otherwise (design.md:
---- editing/`:w` on it must keep working normally), it just must not keep difit's keymaps.
+--- editing/`:w` on it must keep working normally), it just must not keep diffly's keymaps.
 --- Thin wrapper around `ui/keymaps.lua`'s shared lifecycle (see `View.universal_buf`'s doc
 --- above) -- kept as a method so call sites read the same as before the extraction.
 function View:clear_universal_keymaps()
@@ -144,8 +144,8 @@ function View:ensure_windows()
     { split = "right", win = left }
   )
 
-  vim.w[left].difit = true
-  vim.w[right].difit = true
+  vim.w[left].diffly = true
+  vim.w[right].diffly = true
 
   self.left_win, self.right_win = left, right
   self.owned_wins = { left, right }
@@ -173,8 +173,8 @@ end
 --- still fails to load is a REAL git failure (docs/architecture.md "Rendering") -- notify once
 --- rather than silently degrading to the same empty buffer a legitimate absence would
 --- produce, so the UI still renders instead of erroring.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:set_left(entry, spec)
   local lines = {}
   if entry.base_sha then
@@ -184,7 +184,7 @@ function View:set_left(entry, spec)
     else
       vim.notify(
         string.format(
-          "difit: failed to load base blob for %s: %s",
+          "diffly: failed to load base blob for %s: %s",
           entry.path,
           err or "unknown error"
         ),
@@ -203,8 +203,8 @@ end
 --- Populate the right window for `spec.right == "worktree"`: `:edit` the real file so
 --- normal buffer semantics (autocmds, filetype detection, `:w`) apply, or an empty
 --- scratch when the file was deleted in the worktree.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:set_right_worktree(entry, spec)
   if not entry.head_sha then
     local bufnr = self:owned_buffer(
@@ -236,8 +236,8 @@ end
 --- entry.head_sha, following the same empty-scratch rule as the left side when there is
 --- no blob (file doesn't exist at HEAD, i.e. deleted) -- and the same real-failure
 --- notice as `set_left` when `entry.head_sha` is set but the blob still fails to load.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:set_right_head(entry, spec)
   local lines = {}
   if entry.head_sha then
@@ -247,7 +247,7 @@ function View:set_right_head(entry, spec)
     else
       vim.notify(
         string.format(
-          "difit: failed to load head blob for %s: %s",
+          "diffly: failed to load head blob for %s: %s",
           entry.path,
           err or "unknown error"
         ),
@@ -270,7 +270,7 @@ end
 
 --- Binary entries never get `diffthis`; both windows just show the same one-line
 --- placeholder buffer.
----@param entry difit.FileEntry
+---@param entry diffly.FileEntry
 function View:show_binary(entry)
   -- Binary entries pre-empt `set_right_worktree` entirely (see `open()`), so the right
   -- window stops showing a real file even in worktree mode -- drop its `keymaps.universal`
@@ -294,8 +294,8 @@ end
 --- so a `session:refresh()` that changes the file's size while it's still oversized gets a
 --- FRESH buffer instead of reusing stale message text -- mirrors every other owned buffer
 --- here relying on a content-addressed name for reuse-safety.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 ---@param actual integer  -- bytes, the largest oversized side
 ---@param limit integer   -- bytes, config.max_file_size
 function View:show_oversized(entry, spec, actual, limit)
@@ -315,13 +315,13 @@ function View:show_oversized(entry, spec, actual, limit)
 end
 
 --- Generated entries (`config.collapse_generated` -- see `ui/guard.lua`/
---- `lua/difit/generated.lua`): the same shared-placeholder shape as `show_oversized`
+--- `lua/diffly/generated.lua`): the same shared-placeholder shape as `show_oversized`
 --- (both windows, `keymaps.diff` + `keymaps.universal`, no `diffthis`, a force-load `L`
 --- key), but with a fixed message (no size to report) -- so, unlike `show_oversized`'s
 --- buffer name, this one needs no content-addressed suffix; the message never changes for
 --- a given path.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:show_generated(entry, spec)
   self:clear_universal_keymaps()
   local name = scratch.name("generated", self.ctx.anchor, entry.path)
@@ -347,8 +347,8 @@ end
 --- heuristics (which need to read that content) never get a chance to run for it -- an
 --- accepted divergence from a hypothetical "check generated first" ordering, since running
 --- heuristics would defeat the size guard's entire point.
----@param entry difit.FileEntry
----@param spec difit.DiffSpec
+---@param entry diffly.FileEntry
+---@param spec diffly.DiffSpec
 function View:open(entry, spec)
   self:ensure_windows()
   self:diffoff()
@@ -394,7 +394,7 @@ function View:open(entry, spec)
   self:focus_right_first_change()
 end
 
---- `diffoff` where applicable, close every owned window, then wipe every difit-owned
+--- `diffoff` where applicable, close every owned window, then wipe every diffly-owned
 --- buffer this view created (docs/architecture.md "View contract": views own their windows now, not
 --- just their buffers -- WP-I no longer reaps them). Real file BUFFERS are still never
 --- wiped: closing the right window when it shows one just closes that window, exactly
@@ -438,8 +438,8 @@ function View:close()
   self.owned_bufs = {}
 end
 
----@param ctx difit.ui.ViewCtx
----@return difit.View
+---@param ctx diffly.ui.ViewCtx
+---@return diffly.View
 function M.new(ctx)
   return setmetatable({
     ctx = ctx,

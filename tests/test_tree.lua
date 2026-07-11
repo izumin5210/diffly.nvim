@@ -1,16 +1,16 @@
 -- tree.lua is pure data (no vim UI dependency), so these run directly in the top-level
 -- test process -- no child Neovim needed.
 
-local tree = require("difit.tree")
+local tree = require("diffly.tree")
 
 local eq = MiniTest.expect.equality
 
 local T = MiniTest.new_set()
 
---- Minimal difit.FileEntry-shaped table. Only `.path` matters for tree building; the
+--- Minimal diffly.FileEntry-shaped table. Only `.path` matters for tree building; the
 --- rest is kept shape-correct but otherwise arbitrary.
 ---@param path string
----@return difit.FileEntry
+---@return diffly.FileEntry
 local function entry(path)
   return {
     path = path,
