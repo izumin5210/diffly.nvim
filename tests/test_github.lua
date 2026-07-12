@@ -341,6 +341,117 @@ T["fetch_threads() fails synchronously (on_done never fires) when gh is missing 
   restore()
 end
 
+-- submit_review() -------------------------------------------------------------------
+
+--- Run submit_review inside the child against a stdin-capturing shim: the shim appends
+--- its args and then its ENTIRE stdin (the JSON payload piped via `--input -`) to `log`.
+---@param log string
+---@return function restore
+local function submit_shim(log)
+  local body = ([[
+LOG=%q
+printf 'ARGS %%s\n' "$*" >> "$LOG"
+case "$1" in
+  api) cat >> "$LOG"; printf '%%s' '{}' ;;
+  *) printf '%%s' '{}' ;;
+esac
+]]):format(log)
+  return helpers.child_path_shim(child, "gh", body)
+end
+
+---@param submission table
+---@return {ok: boolean|nil, err: string|nil}
+local function submit(submission)
+  return child.lua(
+    [[
+      local repo_id, toplevel, submission = ...
+      local ok, err = require("diffly.github").submit_review(
+        { id = repo_id, toplevel = toplevel },
+        { number = 7, base_ref = "main", head_oid = "abc123" },
+        submission
+      )
+      return { ok = ok, err = err }
+    ]],
+    { "github.com/acme/widgets", repo.dir, submission }
+  )
+end
+
+T["submit_review() POSTs one review with translated sides and range rules"] = function()
+  local log = vim.fn.tempname()
+  local restore = submit_shim(log)
+
+  local result = submit({
+    commit_id = "abc123",
+    event = "REQUEST_CHANGES",
+    body = "overall summary",
+    comments = {
+      { path = "src/a.lua", side = "head", line = 5, body = "single line" },
+      { path = "src/a.lua", side = "base", line = 6, start_line = 4, body = "a base range" },
+    },
+  })
+  eq(result.err, nil)
+  eq(result.ok, true)
+
+  local lines = vim.fn.readfile(log)
+  eq(lines[1]:find("repos/acme/widgets/pulls/7/reviews", 1, true) ~= nil, true)
+  eq(lines[1]:find("--input -", 1, true) ~= nil, true)
+
+  -- Everything after the ARGS line is the JSON payload the shim swallowed from stdin.
+  local payload = vim.json.decode(table.concat(vim.list_slice(lines, 2), "\n"))
+  eq(payload.commit_id, "abc123")
+  eq(payload.event, "REQUEST_CHANGES")
+  eq(payload.body, "overall summary")
+  eq(#payload.comments, 2)
+  -- diffly-neutral sides leave the provider translated to forge vocabulary...
+  eq(payload.comments[1].side, "RIGHT")
+  eq(payload.comments[1].line, 5)
+  eq(payload.comments[1].body, "single line")
+  -- ...and single-line comments must NOT carry range fields (the forge rejects
+  -- start_line == line).
+  eq(payload.comments[1].start_line, nil)
+  eq(payload.comments[1].start_side, nil)
+  eq(payload.comments[2].side, "LEFT")
+  eq(payload.comments[2].start_line, 4)
+  eq(payload.comments[2].start_side, "LEFT")
+  eq(payload.comments[2].line, 6)
+
+  restore()
+end
+
+T["submit_review() omits an empty body and propagates gh failures verbatim"] = function()
+  local log = vim.fn.tempname()
+  local restore = submit_shim(log)
+
+  eq(
+    submit({
+      commit_id = "abc123",
+      event = "COMMENT",
+      comments = { { path = "a", side = "head", line = 1, body = "x" } },
+    }).ok,
+    true
+  )
+  local payload = vim.json.decode(table.concat(vim.list_slice(vim.fn.readfile(log), 2), "\n"))
+  eq(payload.body, nil)
+  restore()
+
+  restore = helpers.child_path_shim(
+    child,
+    "gh",
+    [[
+      echo "HTTP 422: line must be part of the diff (pull_request_review_thread.line)" >&2
+      exit 1
+    ]]
+  )
+  local result = submit({
+    commit_id = "abc123",
+    event = "COMMENT",
+    comments = { { path = "a", side = "head", line = 1, body = "x" } },
+  })
+  eq(result.ok, nil)
+  eq(result.err:find("line must be part of the diff", 1, true) ~= nil, true)
+  restore()
+end
+
 T["fetch_threads() cancel suppresses on_done"] = function()
   local restore = helpers.child_path_shim(
     child,

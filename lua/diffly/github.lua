@@ -268,4 +268,76 @@ function M.fetch_threads(repo, pr, on_done)
     nil
 end
 
+--- Submit one review -- SYNCHRONOUSLY (`:wait()`): unlike the background overlay fetch,
+--- a submit is an explicit user action awaiting its outcome, and the one async pattern
+--- stays reserved for `fetch_threads`. The payload's diffly-neutral sides translate to
+--- forge vocabulary here, at the last moment; single-line comments must not carry range
+--- fields (the forge rejects `start_line == line`), which `plan_submission` already
+--- guarantees by omission. Errors surface with gh's stderr verbatim, so a 422's "line
+--- must be part of the diff" reaches the user unedited.
+---@param repo diffly.RepoIdentity
+---@param pr diffly.PrInfo
+---@param submission diffly.ReviewSubmission
+---@return boolean|nil ok, string|nil err
+function M.submit_review(repo, pr, submission)
+  if not M.available() then
+    return nil, "gh executable not found on PATH"
+  end
+  local host, owner, name = parse_owner_repo(repo.id)
+  if not host then
+    return nil, string.format("repo identity %q has no parsable remote host/owner/name", repo.id)
+  end
+
+  local comments_payload = {}
+  for _, comment in ipairs(submission.comments) do
+    local side = comment.side == "base" and "LEFT" or "RIGHT"
+    table.insert(comments_payload, {
+      path = comment.path,
+      side = side,
+      line = comment.line,
+      start_line = comment.start_line,
+      start_side = comment.start_line and side or nil,
+      body = comment.body,
+    })
+  end
+  local payload = {
+    commit_id = submission.commit_id,
+    event = submission.event,
+    body = submission.body ~= "" and submission.body or nil,
+    comments = comments_payload,
+  }
+
+  local spawn_ok, res_or_err = pcall(function()
+    return vim
+      .system({
+        "gh",
+        "api",
+        "--hostname",
+        host,
+        string.format("repos/%s/%s/pulls/%d/reviews", owner, name, pr.number),
+        "--input",
+        "-",
+      }, {
+        text = true,
+        cwd = repo.toplevel,
+        stdin = vim.json.encode(payload),
+        timeout = 30000,
+      })
+      :wait()
+  end)
+  if not spawn_ok then
+    return nil, tostring(res_or_err)
+  end
+
+  local res = res_or_err
+  if res.code ~= 0 then
+    local err = res.stderr and vim.trim(res.stderr) or ""
+    if err == "" then
+      err = string.format("gh api exited with code %d", res.code)
+    end
+    return nil, err
+  end
+  return true, nil
+end
+
 return M
