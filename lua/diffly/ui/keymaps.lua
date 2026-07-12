@@ -112,16 +112,17 @@ end
 local next_universal_token = 0
 
 --- The cursor line, or -- when the mapping fired from visual mode -- the selection's line
---- range, normalized so start <= end. Visual mode is left explicitly (the compose float
---- should open in normal/insert mode, not with a dangling selection); `nvim_feedkeys`
---- with escaped termcodes is the documented way to do that from a mapping callback.
+--- range, normalized so start <= end. Visual mode is left SYNCHRONOUSLY (the "x" flag
+--- executes the <Esc> before this function returns): merely queueing it ("n" alone) let
+--- the Esc land AFTER the compose float's `startinsert`, knocking the float back to
+--- normal mode and eating the first characters the user typed as normal-mode commands.
 ---@return integer start_line, integer end_line
 local function cursor_range()
   local mode = vim.api.nvim_get_mode().mode
   if mode == "v" or mode == "V" or mode == "\22" then
     local anchor = vim.fn.getpos("v")[2]
     local cursor = vim.fn.getpos(".")[2]
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
     return math.min(anchor, cursor), math.max(anchor, cursor)
   end
   local line = vim.api.nvim_win_get_cursor(0)[1]
