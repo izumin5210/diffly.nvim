@@ -28,6 +28,11 @@ local LINKS = {
   -- chunks in the other.
   DifflyOverlayAdd = "DiffAdd",
   DifflyOverlayDelete = "DiffDelete",
+  -- Inline comment rendering (ui/comments.lua): the body text of an expanded thread, and
+  -- the marker glyphs around it (the "┃ " gutter, the collapsed eol indicator, the
+  -- panel's per-file comment count).
+  DifflyCommentBody = "NormalFloat",
+  DifflyCommentMarker = "Special",
 }
 
 function M.setup()

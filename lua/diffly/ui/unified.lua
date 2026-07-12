@@ -15,6 +15,7 @@
 -- re-deriving them.
 
 local git = require("diffly.git")
+local ui_comments = require("diffly.ui.comments")
 local ui_keymaps = require("diffly.ui.keymaps")
 local scratch = require("diffly.ui.scratch")
 local guard = require("diffly.ui.guard")
@@ -27,6 +28,12 @@ local M = {}
 ---@field owned_wins integer[]                  -- same window as `win`; destroyed by close()
 ---@field owned_bufs table<integer, boolean>     -- diffly-owned scratch buffers, wiped by close()
 ---@field ns integer               -- this view's own overlay namespace (one ns per concern)
+---@field comment_ns integer       -- this view's own comment namespace -- separate from the
+--- overlay's `ns` on purpose ("one ns per concern"): `render_overlay`'s clear-and-redraw
+--- must never eat comment marks, and a comment-only repaint (`refresh_comments`) must
+--- never disturb the overlay
+---@field shown { buf: integer, path: string, hunks: diffly.Hunk[], deleted: boolean }?
+--- -- what `View:open` last rendered, exactly what a comment-only repaint needs
 ---@field universal_buf integer?   -- real bufnr currently carrying the overlay + `keymaps.universal`
 ---@field universal_keys string[]? -- keys applied to `universal_buf` (see `ui_keymaps.detach_universal`)
 ---@field force_loaded table<string, boolean> -- paths whose size OR generated-file guard
@@ -116,8 +123,44 @@ local function release_real_buf(self, keep)
   end
   if vim.api.nvim_buf_is_valid(self.universal_buf) then
     vim.api.nvim_buf_clear_namespace(self.universal_buf, self.ns, 0, -1)
+    -- Same rule for the comment layer: a real buffer must retain no diffly marks once
+    -- the view stops showing it.
+    vim.api.nvim_buf_clear_namespace(self.universal_buf, self.comment_ns, 0, -1)
   end
   ui_keymaps.detach_universal(self)
+end
+
+--- Comment-layer repaint of whatever `View:open` last rendered: placements from the
+--- session's threads (through `ctx.actions` -- views never hold a session), then a full
+--- clear-and-redraw of `self.comment_ns` only. Head-side threads map 1:1 onto the shown
+--- buffer; base-side threads go through the hunk walk -- except on a deleted file, whose
+--- buffer IS the base blob, so base threads map 1:1 there (and its head side no longer
+--- exists to render).
+---@param self diffly.ui.UnifiedView
+local function render_comments(self)
+  local shown = self.shown
+  if not shown or not vim.api.nvim_buf_is_valid(shown.buf) then
+    return
+  end
+
+  local actions = self.ctx.actions
+  local threads = actions.comments_for(shown.path)
+  local line_count = vim.api.nvim_buf_line_count(shown.buf)
+
+  local placements
+  if shown.deleted then
+    placements = ui_comments.direct_placements(threads, "base", line_count)
+  else
+    placements = ui_comments.direct_placements(threads, "head", line_count)
+    vim.list_extend(
+      placements,
+      ui_comments.mapped_base_placements(threads, shown.hunks, line_count)
+    )
+  end
+
+  ui_comments.render(shown.buf, self.comment_ns, placements, {
+    collapsed = actions.comments_collapsed(),
+  })
 end
 
 --- Compute this hunk set's overlay as plain data: 0-based rows to paint `DifflyOverlayAdd`
@@ -323,6 +366,7 @@ local function show_deleted(self, entry, spec)
   local buf = owned_buffer(self, name, lines, entry.path)
   vim.api.nvim_win_set_buf(self.win, buf)
   render_all_deleted(self, buf)
+  return buf
 end
 
 --- `spec.right == "worktree"`: `:edit` the real file directly into `self.win` -- normal
@@ -373,6 +417,10 @@ end
 function View:open(entry, spec)
   ensure_window(self)
 
+  -- Placeholders below render no comments; `shown` only ever points at a buffer whose
+  -- lines are real file content the placement math can anchor into.
+  self.shown = nil
+
   if entry.binary then
     show_binary(self, entry)
     vim.api.nvim_set_current_win(self.win)
@@ -398,7 +446,8 @@ function View:open(entry, spec)
   end
 
   if not entry.head_sha then
-    show_deleted(self, entry, spec)
+    local buf = show_deleted(self, entry, spec)
+    self.shown = { buf = buf, path = entry.path, hunks = {}, deleted = true }
   else
     local buf
     if spec.right == "worktree" then
@@ -422,9 +471,18 @@ function View:open(entry, spec)
       hunks = {}
     end
     render_overlay(self, buf, hunks)
+    self.shown = { buf = buf, path = entry.path, hunks = hunks, deleted = false }
   end
 
+  render_comments(self)
   vim.api.nvim_set_current_win(self.win)
+end
+
+--- Optional View-contract method (`Session:_refresh_comment_render`): repaint ONLY the
+--- comment namespace of whatever this view currently shows -- no window churn, no cursor
+--- movement, exactly what a comment mutation or collapse toggle needs.
+function View:refresh_comments()
+  render_comments(self)
 end
 
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
@@ -446,8 +504,16 @@ function View:close()
   end
   self.owned_wins = {}
   self.win = nil
+  self.shown = nil
 
   for buf in pairs(self.owned_bufs) do
+    -- An owned buffer that SURVIVES below (still shown by the incoming view's window
+    -- during the set_mode overlap) must not keep this view's comment marks: the incoming
+    -- view repaints its OWN comment ns, and a leftover ns from this one would render
+    -- every comment twice.
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_clear_namespace(buf, self.comment_ns, 0, -1)
+    end
     -- Regression guard (the "focus lands on the panel after switching modes on a
     -- binary/head-mode file" bug): binary placeholders and head-mode blobs are named
     -- purely from `entry.path`/the sha/`ctx.anchor` (see ui/scratch.lua), with no
@@ -476,6 +542,8 @@ function M.new(ctx)
     owned_wins = {},
     owned_bufs = {},
     ns = vim.api.nvim_create_namespace(""), -- anonymous: one dedicated ns per view instance
+    comment_ns = vim.api.nvim_create_namespace(""), -- ditto; see the field doc above
+    shown = nil,
     universal_buf = nil,
     universal_keys = nil,
     universal_token = nil,

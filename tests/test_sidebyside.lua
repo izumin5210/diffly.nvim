@@ -86,6 +86,14 @@ local function new_ctx(child)
         close = function()
           table.insert(_G.__actions_log, { action = "close" })
         end,
+        -- Render-time getters the comment repaint pulls data through; tests drive them
+        -- via the two globals instead of a real session.
+        comments_for = function(path)
+          return (_G.__fake_threads or {})[path] or {}
+        end,
+        comments_collapsed = function()
+          return _G.__fake_collapsed == true
+        end,
       },
     }
   ]])
@@ -989,6 +997,80 @@ T["set_right_head(): a bogus head_sha notifies WARN once and still renders an em
   local notes = child.lua_get("_G.__notifications")
   eq(#notes, 1)
   eq(notes[1].level, vim.log.levels.WARN)
+end
+
+---------------------------------------------------------------------------------------
+-- comment rendering (ui/comments.lua wired through this view's own comment_ns; threads
+-- come from the fake `ctx.actions` getters, driven via `_G.__fake_threads`)
+---------------------------------------------------------------------------------------
+
+--- A minimal diffly.CommentThread the fake `comments_for` getter serves up.
+---@param path string
+---@param side "base"|"head"
+---@param line integer
+---@param body string
+local function fake_thread(path, side, line, body)
+  return {
+    id = "c1",
+    path = path,
+    anchor = { side = side, start_line = line, end_line = line, sha = "s", snapshot = { "x" } },
+    messages = { { body = body, created_at = "2026-07-12T00:00:00Z" } },
+  }
+end
+
+---@param child_ table
+---@param bufnr integer
+---@return table[]
+local function comment_marks(child_, bufnr)
+  return child_.lua(
+    [[
+      local buf = ...
+      return vim.api.nvim_buf_get_extmarks(buf, _G.__view.comment_ns, 0, -1, { details = true })
+    ]],
+    { bufnr }
+  )
+end
+
+T["comments: base threads render into the left blob, head threads into the right file"] = function()
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  child.lua("_G.__fake_threads = ...", {
+    {
+      [paths.modified] = {
+        fake_thread(paths.modified, "base", 4, "base-side note"),
+        fake_thread(paths.modified, "head", 4, "head-side note"),
+      },
+    },
+  })
+  view_open(child, built.spec, entry)
+
+  local left = comment_marks(child, buf_of(child, "left_win"))
+  eq(#left, 1)
+  eq(left[1][2], 3)
+  eq(left[1][4].virt_lines[1][2][1], "base-side note")
+
+  local right = comment_marks(child, buf_of(child, "right_win"))
+  eq(#right, 1)
+  eq(right[1][2], 3)
+  eq(right[1][4].virt_lines[1][2][1], "head-side note")
+end
+
+T["comments: moving to another file strips comment marks from the previous real buffer"] = function()
+  local built = build(child, "worktree")
+
+  new_view(child)
+  child.lua("_G.__fake_threads = ...", {
+    { [paths.modified] = { fake_thread(paths.modified, "head", 4, "note") } },
+  })
+  view_open(child, built.spec, entry_by_path(built.entries, paths.modified))
+
+  local real_buf = buf_of(child, "right_win")
+  eq(#comment_marks(child, real_buf), 1)
+
+  view_open(child, built.spec, entry_by_path(built.entries, paths.new))
+  eq(comment_marks(child, real_buf), {}, "moving on must leave no diffly marks on a real buffer")
 end
 
 return T

@@ -29,6 +29,10 @@ local M = {}
 ---@field close fun()
 ---@field next_file fun(path: string)
 ---@field prev_file fun(path: string)
+---@field comments_for fun(path: string): diffly.CommentThread[]  -- render-time read the
+--- views' comment repaint pulls threads through (views never hold a session); stale ->
+--- `{}` silently, since a render is not a user action worth a notify
+---@field comments_collapsed fun(): boolean  -- ditto; stale -> false
 
 --- docs/architecture.md "View contract": the explicit window-ownership contract both diff views' `M.new`
 --- takes in place of ever reading "the current window". `anchor` is the window to split

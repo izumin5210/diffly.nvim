@@ -162,6 +162,14 @@ local function setup_child()
         close = function()
           table.insert(_G.__actions_log, { action = "close" })
         end,
+        -- Render-time getters the comment repaint pulls data through; tests drive them
+        -- via the two globals instead of a real session.
+        comments_for = function(path)
+          return (_G.__fake_threads or {})[path] or {}
+        end,
+        comments_collapsed = function()
+          return _G.__fake_collapsed == true
+        end,
       },
     }
     _G.view = unified.new(_G.ctx)
@@ -941,6 +949,12 @@ local function overlay_for_change(before, after)
         toggle_mode = function() end,
         focus_panel = function() end,
         close = function() end,
+        comments_for = function()
+          return {}
+        end,
+        comments_collapsed = function()
+          return false
+        end,
       },
     }
     _G.view2 = unified2.new(_G.ctx2)
@@ -1079,6 +1093,126 @@ T["overlay edge case: the whole file emptied (new_start == 0) clamps to row 0"] 
   eq(add_rows(result.marks), {})
 
   cleanup()
+end
+
+---------------------------------------------------------------------------------------
+-- comment rendering (ui/comments.lua wired through this view's own comment_ns; threads
+-- come from the fake `ctx.actions` getters, driven via `_G.__fake_threads`)
+---------------------------------------------------------------------------------------
+
+--- A minimal diffly.CommentThread the fake `comments_for` getter serves up.
+---@param path string
+---@param side "base"|"head"
+---@param line integer
+---@param body string
+---@param outdated boolean?
+local function fake_thread(path, side, line, body, outdated)
+  return {
+    id = "c1",
+    path = path,
+    anchor = {
+      side = side,
+      start_line = line,
+      end_line = line,
+      sha = "s",
+      snapshot = { "x" },
+      outdated = outdated,
+    },
+    messages = { { body = body, created_at = "2026-07-12T00:00:00Z" } },
+  }
+end
+
+---@param threads_by_path table<string, table[]>
+local function set_fake_threads(threads_by_path)
+  child.lua("_G.__fake_threads = ...", { threads_by_path })
+end
+
+---@param buf integer
+---@return table[]
+local function comment_marks(buf)
+  return child.lua(
+    [[
+      local buf = ...
+      return vim.api.nvim_buf_get_extmarks(buf, view.comment_ns, 0, -1, { details = true })
+    ]],
+    { buf }
+  )
+end
+
+T["comments: a head thread renders below its line; refresh_comments repaints without touching the overlay"] = function()
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 4, "why?") } })
+  local result = open(paths.modified)
+
+  local got = comment_marks(result.buf)
+  eq(#got, 1)
+  eq(got[1][2], 3) -- 0-based row of worktree line 4
+  eq(got[1][4].virt_lines_above, false)
+  eq(got[1][4].virt_lines[1][2][1], "why?")
+
+  -- The thread moves (a re-anchor, or edit/delete): a comment-only repaint follows it.
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 8, "why?") } })
+  child.lua("view:refresh_comments()")
+  got = comment_marks(result.buf)
+  eq(#got, 1)
+  eq(got[1][2], 7)
+
+  -- The overlay namespace was never touched by any of this.
+  local overlay = child.lua(
+    [[
+      local buf = ...
+      return vim.api.nvim_buf_get_extmarks(buf, view.ns, 0, -1, {})
+    ]],
+    { result.buf }
+  )
+  eq(#overlay > 0, true)
+end
+
+T["comments: a base thread on the replaced line maps through the hunks to the deletion anchor"] = function()
+  -- Fixture hunk (see the overlay block comment above): base line 4 is the deleted
+  -- `  return "hello"`, whose run anchors at row 3 with virt_lines_above.
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "base", 4, "was fine") } })
+  local result = open(paths.modified)
+
+  local got = comment_marks(result.buf)
+  eq(#got, 1)
+  eq(got[1][2], 3)
+  eq(got[1][4].virt_lines_above, true)
+end
+
+T["comments: outdated threads render nothing inline"] = function()
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 4, "old", true) } })
+  local result = open(paths.modified)
+  eq(comment_marks(result.buf), {})
+end
+
+T["comments: collapsed mode paints eol indicators instead of virt_lines"] = function()
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 4, "why?") } })
+  child.lua("_G.__fake_collapsed = true")
+  local result = open(paths.modified)
+
+  local got = comment_marks(result.buf)
+  eq(#got, 1)
+  eq(got[1][4].virt_lines, nil)
+  eq(got[1][4].virt_text_pos, "eol")
+end
+
+T["comments: a deleted file's blob renders base threads 1:1"] = function()
+  set_fake_threads({ [paths.deleted] = { fake_thread(paths.deleted, "base", 1, "bye") } })
+  local result = open(paths.deleted)
+
+  local got = comment_marks(result.buf)
+  eq(#got, 1)
+  eq(got[1][2], 0)
+  eq(got[1][4].virt_lines_above, false)
+end
+
+T["comments: the real buffer is stripped of comment marks when the view moves to another file"] = function()
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 4, "why?") } })
+  local first = open(paths.modified)
+  eq(#comment_marks(first.buf), 1)
+
+  open(paths.new)
+  eq(comment_marks(first.buf), {}, "moving on must leave no diffly marks on a real buffer")
 end
 
 return T

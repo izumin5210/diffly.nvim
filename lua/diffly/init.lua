@@ -424,6 +424,23 @@ local function build_actions(tab)
         open_and_sync_cursor(entry, entry.session:prev_file(path))
       end
     end,
+    -- Render-time reads (the views' comment repaint), not user actions: a stale call
+    -- degrades to empty data SILENTLY -- `resolve_live_entry`'s notify is for ignored
+    -- keypresses, and a repaint racing teardown is not something to warn about.
+    comments_for = function(path)
+      local entry = entries[tab]
+      if not entry then
+        return {}
+      end
+      return entry.session:comments_for(path)
+    end,
+    comments_collapsed = function()
+      local entry = entries[tab]
+      if not entry then
+        return false
+      end
+      return entry.session.comments_collapsed
+    end,
   }
 end
 
