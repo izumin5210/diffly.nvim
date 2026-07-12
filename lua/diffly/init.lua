@@ -566,6 +566,12 @@ local function build_actions(tab)
         entry.session:toggle_comments_collapsed()
       end
     end,
+    comment_toggle_resolved = function()
+      local entry = resolve_live_entry(tab, "comment_toggle_resolved")
+      if entry then
+        entry.session:toggle_remote_resolved()
+      end
+    end,
     comment_copy = function(path, side, line)
       local entry = resolve_live_entry(tab, "comment_copy")
       if not entry then

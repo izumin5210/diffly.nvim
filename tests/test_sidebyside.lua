@@ -1083,18 +1083,22 @@ T["comments: owned buffers get comment keys (x-mode add included); real and plac
   new_view(child)
   view_open(child, built.spec, entry_by_path(built.entries, paths.modified))
 
-  -- Owned left blob: single-key comment family, including the visual-range add.
+  -- Owned left blob: single-key comment family, including the visual-range add and the
+  -- resolved-remote toggle.
   local left = buf_of(child, "left_win")
   eq(has_buf_map(child, left, "n", "ca"), true)
   eq(has_buf_map(child, left, "x", "ca"), true)
   eq(has_buf_map(child, left, "n", "ce"), true)
   eq(has_buf_map(child, left, "n", "cY"), true)
+  eq(has_buf_map(child, left, "n", "cr"), true)
 
   -- Real right buffer: leader-prefixed universal family ONLY, never single keys.
   local right = buf_of(child, "right_win")
   eq(has_buf_map(child, right, "n", "ca"), false)
   eq(has_buf_map(child, right, "n", [[\ca]]), true)
   eq(has_buf_map(child, right, "x", [[\ca]]), true)
+  eq(has_buf_map(child, right, "n", "cr"), false)
+  eq(has_buf_map(child, right, "n", [[\cr]]), true)
 
   -- Binary placeholder: no comment keys in either layer (side == nil).
   view_open(child, built.spec, {
