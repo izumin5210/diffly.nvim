@@ -75,7 +75,7 @@ end
 ---@return diffly.ReviewState
 function M.load(key)
   local path = M.file_path(key)
-  local fresh = { version = 1, key = key, viewed = {} }
+  local fresh = { version = 1, key = key, viewed = {}, comments = {}, comment_seq = 0 }
 
   local f = io.open(path, "r")
   if not f then
@@ -99,6 +99,10 @@ function M.load(key)
   decoded.version = decoded.version or 1
   decoded.key = decoded.key or key
   decoded.viewed = decoded.viewed or {}
+  -- Comment fields arrived after the first release; state files written before them (or
+  -- by it) must load with the same shape a fresh state has.
+  decoded.comments = decoded.comments or {}
+  decoded.comment_seq = decoded.comment_seq or 0
   return decoded
 end
 

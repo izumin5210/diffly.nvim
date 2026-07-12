@@ -221,6 +221,55 @@ T["clean({key=...}) removes only that review's file"] = function()
   eq(vim.uv.fs_stat(state.file_path(other_key)) ~= nil, true)
 end
 
+T["load() defaults comments and comment_seq for fresh and pre-comments states"] = function()
+  -- Fresh state.
+  local st = state.load(branch_key)
+  eq(st.comments, {})
+  eq(st.comment_seq, 0)
+
+  -- A state file written before the comments field existed (viewed only) must load with
+  -- the comment fields filled in, not nil.
+  state.mark(st, { path = "src/a.lua", base_sha = "aaa", head_sha = "bbb" })
+  st.comments = nil
+  st.comment_seq = nil
+  state.save(st)
+
+  local reloaded = state.load(branch_key)
+  eq(reloaded.viewed["src/a.lua"].base_sha, "aaa")
+  eq(reloaded.comments, {})
+  eq(reloaded.comment_seq, 0)
+end
+
+T["comment threads round-trip through save/load, absent optionals staying absent"] = function()
+  local comments = require("diffly.comments")
+  local st = state.load(branch_key)
+  local thread = comments.add(st, {
+    path = "src/a.lua",
+    side = "head",
+    start_line = 4,
+    end_line = 6,
+    body = "tighten this loop",
+    sha = "bbb",
+    snapshot = { "for i = 1, n do", "  work()", "end" },
+  })
+  state.save(st)
+
+  local reloaded = state.load(branch_key)
+  local got = reloaded.comments["src/a.lua"][1]
+  eq(got.id, thread.id)
+  eq(got.anchor.side, "head")
+  eq(got.anchor.start_line, 4)
+  eq(got.anchor.end_line, 6)
+  eq(got.anchor.sha, "bbb")
+  eq(got.anchor.snapshot, { "for i = 1, n do", "  work()", "end" })
+  -- luanil round-trip: outdated/updated_at were never set and must come back as real
+  -- nil, not vim.NIL.
+  eq(got.anchor.outdated, nil)
+  eq(got.messages[1].body, "tighten this loop")
+  eq(got.messages[1].updated_at, nil)
+  eq(reloaded.comment_seq, 1)
+end
+
 T["legacy dir migration: an existing pre-rename dir is renamed wholesale on first use"] = function()
   -- This test manages its own dirs instead of the pre_case default: migration only fires
   -- when the *new* dir doesn't exist yet, so the eagerly-mkdir'd `state._dir` from

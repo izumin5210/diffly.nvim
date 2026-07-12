@@ -16,8 +16,9 @@ the code as behavior evolves.
   sessions, worktrees, and clones. Never carried over to a different PR.
 
 Out of scope for v1 (deliberately deferred): arbitrary rev comparison (`difit A B`),
-staged/working-only modes, line comments + AI prompt copy (schema stays extensible for it),
-flat list toggle in the panel, fs-watch based refresh.
+staged/working-only modes, flat list toggle in the panel, fs-watch based refresh.
+Line comments + AI prompt copy, deferred at v1, are now designed and phased in — see
+[Comments](#comments) below.
 
 ## Decisions
 
@@ -103,6 +104,68 @@ flat list toggle in the panel, fs-watch based refresh.
   diffly-specific pattern list -- `.gitattributes` is the only per-file override, same as
   on github.com.
 
+### Comments
+
+Design agreed 2026-07-12. Phase 1 (local comments, everything below unless marked
+otherwise) is implemented; Phases 2–3 are agreed but not yet built.
+
+- **Purpose**: the reviewer's own tool — notes while reading a diff, feedback to hand to
+  an AI coding agent (difit's flagship workflow), and drafts of PR review comments. Not a
+  full PR-review client: other people's comments only ever need to be *readable* (Phase
+  2), and posting is a batch *exit* (Phase 3), never the storage.
+- **Local-first, always.** Comments live in the review's own state file whether or not a
+  PR exists — the same "the PR is a metadata source only" principle v1 set for diffs.
+  GitHub becomes a read-only overlay (Phase 2: fetched threads rendered alongside local
+  drafts, never merged into local state; `isOutdated`/`isResolved` taken verbatim) and an
+  explicit submit target (Phase 3: one `POST /pulls/N/reviews` with a `comments` array —
+  one review, one notification — behind an event picker and a pre-submit validation pass,
+  since the endpoint is atomic and rejects lines outside the PR's diff). Submitted drafts
+  leave the local store and reappear through the overlay, so nothing renders twice.
+- **Model**: thread-shaped (`messages[]`) for future replies, but the v1 UI creates and
+  edits exactly one message per thread. Anchors are a single line or a range, on either
+  side, in **diffly-neutral vocabulary** (`side = "base"|"head"`, `outdated` as a plain
+  boolean): provider-specific shapes (GitHub's LEFT/RIGHT, GraphQL thread ids) stay inside
+  the provider module, arriving in Phase 2 with a small LuaCATS contract
+  (`detect_pr` / `fetch_threads` / `submit_review`) — no registry, no config.
+- **Anchoring**: a comment records its side's blob sha plus a snapshot of the commented
+  lines' text. On session build and refresh, a changed sha triggers an exact whole-block
+  search for the snapshot, nearest to the old position (ties go to the smaller line);
+  found → the anchor follows (and persists), not found → `outdated`. Outdated threads
+  never render inline — a comment pinned to the wrong line is worse than an absent one —
+  but stay reachable via the panel count and `:Diffly comments`. The failed pass advances
+  the anchor sha too, so unchanged content short-circuits instead of re-scanning.
+  File-level sha invalidation (the viewed-mark rule) was rejected for comments: any edit
+  anywhere in the file would expire every comment in it, which is wrong for the primary
+  "AI agent keeps rewriting the file under review" workflow.
+- **Display**: expanded inline by default — the body as `virt_lines` directly below the
+  commented line (below the *deleted* lines it annotates, for a base-side comment on a
+  removed line) — with a session-wide collapse toggle down to an eol indicator. Both
+  views render both sides; the panel shows a per-file `✎N` count (outdated included).
+- **Compose**: a small markdown float at the cursor (`<C-s>` submit, `q` cancel; empty
+  body cancels), reused for editing. Deleting asks for confirmation via `vim.ui.select`.
+- **Writing a base-side comment from the unified view is deferred** (deleted lines are
+  virtual there — the cursor can't reach them); side-by-side's left window is the
+  affordance. Base-side comments *render* in both views.
+- **AI prompt copy**: difit-compatible — `path:L42` (or `:L42-L48`) + body, `=====`
+  between comments for copy-all — to the unnamed register, best-effort to the clipboard.
+- **`:Diffly comments`**: every thread into quickfix (`[outdated]`/`[base]` markers, first
+  body line), rather than a bespoke list UI.
+- **Keys**: a `c` family (`ca/ce/cd/ct/cy/cY`) on diffly-owned buffers; the same family
+  leader-prefixed everywhere else — on a real file buffer (where most comments get
+  written) the universal layer is the only one allowed, so the primary gesture is
+  `<leader>ca` by design. `ca` also works on a visual range. Placeholder buffers
+  (binary/oversized/generated) get no comment keys at all.
+- **Storage**: the `comments` field the v1 schema reserved, inside the existing per-review
+  state file (same key scoping, version still 1). **Phase 3**: when a PR is first detected
+  for a branch that has drafts under the branch-pair key, the drafts are adopted into the
+  PR-keyed store automatically (one-way, once, with a notice) — drafts are user text and
+  must survive the key switch; viewed marks stay unmigrated as before.
+- Rejected: fuzzy/partial snapshot matching (silently mis-anchored comments); rendering
+  outdated threads at the top of the file (misattribution noise); persisting buffer rows
+  (derived state that drifts); posting comments to GitHub as they're written (notification
+  spam, and GitHub silently folds them into any pending review); GitHub-side pending
+  reviews as the draft store (offline-hostile, per-keystroke API traffic).
+
 ### Interface
 
 - Single `:Diffly` command with subcommands: `:Diffly [base]` (open/focus), `:Diffly close`,
@@ -131,9 +194,10 @@ flat list toggle in the panel, fs-watch based refresh.
   only; silently falls back to the branch-pair key with a one-time notice when absent).
 - **Neovim 0.12+.**
 - **Modules**: `git.lua` (diff/blob access), `github.lua` (gh wrapper, stubbable),
-  `state.lua` (viewed persistence), `tree.lua` (file tree model), `ui/panel.lua`,
-  `ui/sidebyside.lua`, `ui/unified.lua`, `ui/scratch.lua` (shared `diffly://` scratch-buffer
-  find-or-create + LSP-safe highlighting), `config.lua`.
+  `state.lua` (viewed persistence), `comments.lua` (comment model + re-anchoring),
+  `tree.lua` (file tree model), `ui/panel.lua`, `ui/sidebyside.lua`, `ui/unified.lua`,
+  `ui/comments.lua` (comment rendering + compose float), `ui/scratch.lua` (shared
+  `diffly://` scratch-buffer find-or-create + LSP-safe highlighting), `config.lua`.
 
 ### Development
 

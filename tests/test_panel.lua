@@ -147,6 +147,11 @@ local FAKE_SESSION_SETUP = [[
     return _G.viewed[path] == true
   end
 
+  _G.comment_counts = {}
+  function _G.session:comment_count(path)
+    return _G.comment_counts[path] or 0
+  end
+
   function _G.session:next_unviewed(after_path)
     _G.calls.next_unviewed_count = _G.calls.next_unviewed_count + 1
     table.insert(_G.calls.next_unviewed, after_path)
@@ -368,6 +373,59 @@ T["viewed file shows [✓], un-viewed files show [ ]"] = function()
   eq(got[9], "    [✓] M state.lua  +42 −3")
   eq(got[4]:find("^%s*%[ %] A", 1), 1)
   eq(got[10]:find("^%s*%[ %] M", 1), 1)
+end
+
+--- The (col_start, col_end) byte range of the first extmark on 1-indexed row `lnum`
+--- carrying `group`, or nil -- for asserting a segment highlight sits exactly on its text.
+---@param lnum integer
+---@param group string
+---@return {col_start: integer, col_end: integer}|nil
+local function mark_range_on_row(lnum, group)
+  local got = child.lua(
+    [[
+      local lnum, group = ...
+      local marks = vim.api.nvim_buf_get_extmarks(_G.panel.buf, -1, 0, -1, { details = true })
+      for _, m in ipairs(marks) do
+        if m[2] == lnum - 1 and m[4].hl_group == group then
+          return { col_start = m[3], col_end = m[4].end_col }
+        end
+      end
+      return vim.NIL
+    ]],
+    { lnum, group }
+  )
+  if got == vim.NIL then
+    return nil
+  end
+  return got
+end
+
+T["a file with comments renders a ✎N segment after the counts; zero comments render nothing"] = function()
+  child.lua([[_G.comment_counts["lua/diffly/new.lua"] = 2; _G.panel:render()]])
+
+  local got = lines()
+  eq(got[7], "    [ ] A new.lua  +10 −0 ✎2")
+  eq(got[10], "  [ ] M README.md  +1 −1", "a zero count adds no segment")
+
+  -- The segment carries its own highlight, exactly over "✎2"; the counts highlight
+  -- still sits exactly over the counts (explicit offsets, not end-of-line arithmetic).
+  local seg = mark_range_on_row(7, "DifflyCommentMarker")
+  eq(seg ~= nil, true)
+  eq(got[7]:sub(seg.col_start + 1, seg.col_end), "✎2")
+  local counts = mark_range_on_row(7, "DifflyCounts")
+  eq(got[7]:sub(counts.col_start + 1, counts.col_end), "+10 −0")
+end
+
+T["a viewed row with comments keeps the whole-row DifflyViewed styling over the segment"] = function()
+  child.lua([[_G.comment_counts["lua/diffly/state.lua"] = 1; _G.panel:render()]])
+
+  local got = lines()
+  eq(got[9], "    [✓] M state.lua  +42 −3 ✎1")
+  local viewed = mark_range_on_row(9, "DifflyViewed")
+  eq(viewed ~= nil, true)
+  eq(viewed.col_start, 0)
+  eq(viewed.col_end, #got[9], "the grey-out covers the comment segment too")
+  eq(mark_range_on_row(9, "DifflyCommentMarker"), nil)
 end
 
 T["render() preserves the cursor's logical file across a background refresh that reshuffles rows"] = function()

@@ -11,6 +11,8 @@ local M = {}
 
 ---@class diffly.ui.KeymapAction
 ---@field key string|false|nil  -- falsy disables the mapping (config.lua convention)
+---@field modes string[]?       -- map modes, default {"n"}; "x" enables visual-range
+--- actions (comment_add over a selection)
 ---@field callback fun()
 
 --- docs/architecture.md "View contract": the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
@@ -27,6 +29,16 @@ local M = {}
 ---@field close fun()
 ---@field next_file fun(path: string)
 ---@field prev_file fun(path: string)
+---@field comments_for fun(path: string): diffly.CommentThread[]  -- render-time read the
+--- views' comment repaint pulls threads through (views never hold a session); stale ->
+--- `{}` silently, since a render is not a user action worth a notify
+---@field comments_collapsed fun(): boolean  -- ditto; stale -> false
+---@field comment_add fun(path: string, side: "base"|"head", start_line: integer, end_line: integer)
+---@field comment_edit fun(path: string, side: "base"|"head", line: integer)
+---@field comment_delete fun(path: string, side: "base"|"head", line: integer)
+---@field comment_toggle fun()
+---@field comment_copy fun(path: string, side: "base"|"head", line: integer)
+---@field comment_copy_all fun()
 
 --- docs/architecture.md "View contract": the explicit window-ownership contract both diff views' `M.new`
 --- takes in place of ever reading "the current window". `anchor` is the window to split
@@ -64,7 +76,7 @@ function M.apply(bufnr, spec)
   for action, def in pairs(spec) do
     if def.key then
       vim.keymap.set(
-        "n",
+        def.modes or { "n" },
         def.key,
         def.callback,
         { buffer = bufnr, silent = true, nowait = true, desc = "diffly: " .. action }
@@ -77,7 +89,10 @@ end
 
 --- Delete buffer-local mappings for `keys` from `bufnr`. Guards buffer validity itself
 --- (callers track bufnrs across `open()` calls; by the time cleanup runs the buffer may
---- already be gone, e.g. wiped by `:bwipeout` from outside diffly).
+--- already be gone, e.g. wiped by `:bwipeout` from outside diffly). Deletion tries every
+--- mode `apply` can set rather than tracking (key, mode) pairs -- the pcall already
+--- tolerates keys that were never mapped in a given mode, so the applied-keys list keeps
+--- its simple flat shape.
 ---@param bufnr integer
 ---@param keys string[]
 function M.remove(bufnr, keys)
@@ -85,7 +100,9 @@ function M.remove(bufnr, keys)
     return
   end
   for _, key in ipairs(keys) do
-    pcall(vim.keymap.del, "n", key, { buffer = bufnr })
+    for _, mode in ipairs({ "n", "x" }) do
+      pcall(vim.keymap.del, mode, key, { buffer = bufnr })
+    end
   end
 end
 
@@ -94,16 +111,91 @@ end
 -- Neovim session is unique regardless of how many buffers/views come and go.
 local next_universal_token = 0
 
+--- The cursor line, or -- when the mapping fired from visual mode -- the selection's line
+--- range, normalized so start <= end. Visual mode is left SYNCHRONOUSLY (the "x" flag
+--- executes the <Esc> before this function returns): merely queueing it ("n" alone) let
+--- the Esc land AFTER the compose float's `startinsert`, knocking the float back to
+--- normal mode and eating the first characters the user typed as normal-mode commands.
+---@return integer start_line, integer end_line
+local function cursor_range()
+  local mode = vim.api.nvim_get_mode().mode
+  if mode == "v" or mode == "V" or mode == "\22" then
+    local anchor = vim.fn.getpos("v")[2]
+    local cursor = vim.fn.getpos(".")[2]
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    return math.min(anchor, cursor), math.max(anchor, cursor)
+  end
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  return line, line
+end
+
+--- The comment action entries shared by `M.diff_spec` and `M.universal_spec` (only the
+--- lhs config differs). Returns nil when `side` is nil -- placeholder buffers (binary/
+--- oversized/generated) show message text, not side content, so there is nothing a
+--- comment could anchor to and the keys must not exist there at all.
+---@param actions diffly.ui.Actions
+---@param path string
+---@param cfg table  -- the layer's `config.keymaps.<layer>` table
+---@param side "base"|"head"|nil
+---@return table<string, diffly.ui.KeymapAction>|nil
+local function comment_entries(actions, path, cfg, side)
+  if not side then
+    return nil
+  end
+  return {
+    comment_add = {
+      key = cfg.comment_add,
+      modes = { "n", "x" },
+      callback = function()
+        local start_line, end_line = cursor_range()
+        actions.comment_add(path, side, start_line, end_line)
+      end,
+    },
+    comment_edit = {
+      key = cfg.comment_edit,
+      callback = function()
+        actions.comment_edit(path, side, vim.api.nvim_win_get_cursor(0)[1])
+      end,
+    },
+    comment_delete = {
+      key = cfg.comment_delete,
+      callback = function()
+        actions.comment_delete(path, side, vim.api.nvim_win_get_cursor(0)[1])
+      end,
+    },
+    comment_toggle = {
+      key = cfg.comment_toggle,
+      callback = function()
+        actions.comment_toggle()
+      end,
+    },
+    comment_copy = {
+      key = cfg.comment_copy,
+      callback = function()
+        actions.comment_copy(path, side, vim.api.nvim_win_get_cursor(0)[1])
+      end,
+    },
+    comment_copy_all = {
+      key = cfg.comment_copy_all,
+      callback = function()
+        actions.comment_copy_all()
+      end,
+    },
+  }
+end
+
 --- Full `config.keymaps.diff` action set for a diffly-owned buffer showing `path` --
 --- applied to every diffly-owned diff buffer both views ever create (the side-by-side
 --- blob windows; the unified view's owned blob/binary buffers), never to a real file
 --- buffer (design.md: real buffers only ever get `M.universal_spec` below).
 ---@param actions diffly.ui.Actions
 ---@param path string
+---@param opts { side: "base"|"head"|nil }?  -- which side's content the buffer shows;
+--- nil (placeholders) omits the comment family entirely
 ---@return table<string, diffly.ui.KeymapAction>
-function M.diff_spec(actions, path)
+function M.diff_spec(actions, path, opts)
   local cfg = config.get().keymaps.diff
-  return {
+  local spec = {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
@@ -129,6 +221,10 @@ function M.diff_spec(actions, path)
       end,
     },
   }
+  for action, def in pairs(comment_entries(actions, path, cfg, opts and opts.side) or {}) do
+    spec[action] = def
+  end
+  return spec
 end
 
 --- `config.keymaps.universal` action set: applied ALONE to whichever real worktree buffer
@@ -139,10 +235,12 @@ end
 --- `M.diff_spec`).
 ---@param actions diffly.ui.Actions
 ---@param path string
+---@param opts { side: "base"|"head"|nil }?  -- which side's content the buffer shows;
+--- nil (placeholders) omits the comment family entirely
 ---@return table<string, diffly.ui.KeymapAction>
-function M.universal_spec(actions, path)
+function M.universal_spec(actions, path, opts)
   local cfg = config.get().keymaps.universal
-  return {
+  local spec = {
     toggle_viewed = {
       key = cfg.toggle_viewed,
       callback = function()
@@ -178,6 +276,10 @@ function M.universal_spec(actions, path)
       end,
     },
   }
+  for action, def in pairs(comment_entries(actions, path, cfg, opts and opts.side) or {}) do
+    spec[action] = def
+  end
+  return spec
 end
 
 --- Delete `keys` from `bufnr`, but ONLY if `bufnr`'s current ownership stamp still equals
@@ -225,7 +327,9 @@ function M.attach_universal(state, bufnr, path, actions)
   next_universal_token = next_universal_token + 1
   vim.b[bufnr].diffly_universal_token = next_universal_token
   state.universal_token = next_universal_token
-  state.universal_keys = M.apply(bufnr, M.universal_spec(actions, path))
+  -- A real buffer always shows the head side (it IS the worktree file); base content
+  -- only ever appears in diffly-owned blob buffers.
+  state.universal_keys = M.apply(bufnr, M.universal_spec(actions, path, { side = "head" }))
   state.universal_buf = bufnr
 end
 

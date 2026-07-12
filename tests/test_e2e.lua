@@ -1938,4 +1938,243 @@ T["actions resolve at call time: a stale action captured before close() notifies
   end
 end
 
+---------------------------------------------------------------------------------------
+-- comments: the full user flow, driven by keystrokes -------------------------------------
+---------------------------------------------------------------------------------------
+
+---@param child_ table
+---@param path string
+---@return table[] threads
+local function session_comments(child_, path)
+  return child_.lua([[return __diffly_entry().session:comments_for(...)]], { path })
+end
+
+T["comments: <leader>ca on the worktree buffer adds a comment that persists; cY copies; cd deletes after confirm"] = function()
+  child.cmd("Diffly")
+  -- The first un-viewed file (gone.lua) auto-opened; move to mod.lua's real worktree
+  -- buffer, where only the leader-prefixed universal layer exists.
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- Add on line 4 (the `  return "hello, world"` line): float opens in insert mode,
+  -- type the body, <C-s> submits.
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("tighten this up")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].messages[1].body, "tighten this up")
+  eq(threads[1].anchor.side, "head")
+  eq(threads[1].anchor.start_line, 4)
+  eq(threads[1].anchor.end_line, 4)
+  eq(threads[1].anchor.snapshot, { '  return "hello, world"' })
+
+  -- Persisted, not just in memory: reload the state file from disk.
+  local persisted = child.lua_get(
+    [[require("diffly.state").load(__diffly_entry().session.spec.review_key)
+        .comments[ (...) ][1].messages[1].body]],
+    { paths.modified }
+  )
+  eq(persisted, "tighten this up")
+
+  -- Copy-all writes the difit-format prompt to the unnamed register.
+  child.type_keys([[\cY]])
+  eq(child.lua_get([[vim.fn.getreg('"')]]), paths.modified .. ":L4\ntighten this up")
+
+  -- Delete from the same line; the confirmation menu is a vim.ui.select, stubbed to
+  -- pick its first choice ("Delete").
+  stub_ui_select(child, "function(items) return items[1] end")
+  child.type_keys([[\cd]])
+  eq(session_comments(child, paths.modified), {})
+  eq(select_log(child)[1].formatted, { "Delete", "Keep" })
+end
+
+T["comments: a visual range through <leader>ca records start/end and the snapshot block"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- Select worktree lines 3..4 and comment on the range.
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 3, 0 })]])
+  child.type_keys("Vj")
+  child.type_keys([[\ca]])
+  child.type_keys("this pair")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].anchor.start_line, 3)
+  eq(threads[1].anchor.end_line, 4)
+  eq(threads[1].anchor.snapshot, { "function M.hello()", '  return "hello, world"' })
+end
+
+T["comments: ct collapses inline rendering session-wide"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("note")
+  child.type_keys("<C-s>")
+
+  eq(session_field(child, "comments_collapsed"), false)
+  child.type_keys([[\ct]])
+  eq(session_field(child, "comments_collapsed"), true)
+  child.type_keys([[\ct]])
+  eq(session_field(child, "comments_collapsed"), false)
+end
+
+T["comments: editing via ce reopens the float prefilled and updates the body"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("first draft")
+  child.type_keys("<C-s>")
+
+  -- The float opens prefilled (normal mode); rewrite the whole line and submit.
+  child.type_keys([[\ce]])
+  child.type_keys("ccsecond draft")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].messages[1].body, "second draft")
+  eq(type(threads[1].messages[1].updated_at), "string")
+end
+
+T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers and completes"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- One head-side comment via the real keystroke flow...
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("inline note")
+  child.type_keys("<C-s>")
+  -- ...one base-side comment on the deleted file via the session API (multi-line body:
+  -- quickfix must show only the first line)...
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "base", start_line = 1, end_line = 1, body = "base note\nsecond line",
+        snapshot = { "x" } })]],
+    { paths.deleted }
+  )
+  -- ...and flip the head-side one to outdated to exercise the marker.
+  child.lua(
+    [[__diffly_entry().session.state.comments[(...)][1].anchor.outdated = true]],
+    { paths.modified }
+  )
+
+  child.cmd("Diffly comments")
+
+  local qf = child.lua_get([[vim.fn.getqflist({ items = 1, title = 1 })]])
+  eq(qf.title, "diffly comments")
+  eq(#qf.items, 2)
+  -- all_comments() orders by (path, start_line): gone.lua before mod.lua.
+  eq(qf.items[1].lnum, 1)
+  eq(qf.items[1].text, "[base] base note")
+  -- Compare via the realpath'd repo dir: `tempname()` hands out `/var/...` on macOS
+  -- while git (whose toplevel the quickfix filenames are built from) reports the
+  -- resolved `/private/var/...`. The file itself is deleted, so only the directory can
+  -- be resolved.
+  eq(
+    child.lua_get("vim.api.nvim_buf_get_name(...)", { qf.items[1].bufnr }),
+    vim.uv.fs_realpath(repo.dir) .. "/" .. paths.deleted
+  )
+  eq(qf.items[2].lnum, 4)
+  eq(qf.items[2].text, "[outdated] inline note")
+
+  -- The quickfix window opened and has focus.
+  eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype"), "quickfix")
+
+  -- Command completion offers the new subcommand.
+  local completions = child.lua_get([[vim.fn.getcompletion("Diffly com", "cmdline")]])
+  eq(vim.tbl_contains(completions, "comments"), true)
+end
+
+--- Two deterministic comments on src/mod.lua for the rendering goldens: a head-side one
+--- under worktree line 4, and a base-side one on base line 4 (the deleted
+--- `  return "hello"`) -- which, in unified mode, must render at the same anchor as the
+--- deletion's own virt_lines run, pinning the comment-below-deletion ordering.
+---@param child_ table
+---@param path string
+local function add_golden_comments(child_, path)
+  child_.lua(
+    [[
+      local path = ...
+      local session = __diffly_entry().session
+      session:add_comment(path, {
+        side = "head", start_line = 4, end_line = 4,
+        body = "tighten this up", snapshot = { '  return "hello, world"' },
+      })
+      session:add_comment(path, {
+        side = "base", start_line = 4, end_line = 4,
+        body = "this used to be fine", snapshot = { '  return "hello"' },
+      })
+    ]],
+    { path }
+  )
+end
+
+T["comments golden: expanded comments in unified, incl. a base comment on the deleted line"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+
+  -- Same `%t` statusline determinism note as scenario 7: the unified window shows the
+  -- real worktree file at a tempname-derived absolute path.
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
+T["comments golden: expanded comments on both sides of the side-by-side view"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
+T["comments golden: ct collapses inline comments to eol indicators"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  child.type_keys([[\ct]]) -- focus is on the right worktree buffer: universal layer
+  eq(session_field(child, "comments_collapsed"), true)
+
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
+T["comments: `:Diffly comments` with no comments notifies instead of opening an empty list"] = function()
+  child.cmd("Diffly")
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  child.cmd("Diffly comments")
+
+  eq(#child.lua_get("_G.__notifications"), 1)
+  eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype") ~= "quickfix", true)
+end
+
 return T

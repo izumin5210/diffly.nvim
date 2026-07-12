@@ -11,7 +11,8 @@ CONTENTS                                                      *diffly-contents*
   6. Generated files .......................... |diffly-generated-files|
   7. Viewed-state semantics .................. |diffly-viewed-state|
   8. Bulk viewed marking ..................... |diffly-bulk-viewed|
-  9. GitHub integration ...................... |diffly-github|
+  9. Comments ................................ |diffly-comments|
+  10. GitHub integration ..................... |diffly-github|
 
 ==============================================================================
 1. Introduction                                           *diffly-introduction*
@@ -77,6 +78,11 @@ Call it only to override them: >lua
                         matching an exact name first then a unique prefix.
                         See |diffly-bulk-viewed|.
 
+:Diffly comments         List every comment in the current review in the
+                        |quickfix| list -- one item per comment at its
+                        last-known line, first body line only, with
+                        `[outdated]`/`[base]` markers. See |diffly-comments|.
+
 :Diffly clean            Prompt to delete the *current* review's persisted
                         viewed state (the key the currently open review uses,
                         or the key that would be resolved if none is open).
@@ -121,7 +127,18 @@ defaults, exactly as declared in `lua/diffly/config.lua`: >lua
       },
       -- applied ONLY in diffly-owned buffers (blob/unified), IN ADDITION to
       -- keymaps.universal
-      diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+      diff = {
+        toggle_viewed = "v",
+        toggle_mode = "s",
+        focus_panel = "<leader>e",
+        close = "q",
+        comment_add = "ca",      -- normal: cursor line; visual: the range
+        comment_edit = "ce",
+        comment_delete = "cd",
+        comment_toggle = "ct",   -- collapse/expand inline comments
+        comment_copy = "cy",     -- AI prompt for the comment at the cursor
+        comment_copy_all = "cY", -- AI prompt for every comment
+      },
       -- the universal layer: works everywhere (panel, owned diff buffers, AND
       -- real file buffers shown in the viewer); real file buffers get ONLY
       -- this group
@@ -131,6 +148,12 @@ defaults, exactly as declared in `lua/diffly/config.lua`: >lua
         focus_panel = "<leader>e",
         next_file = "]f", -- open the next file (ALL files, unaffected by H)
         prev_file = "[f", -- open the previous file (ditto)
+        comment_add = "<leader>ca",
+        comment_edit = "<leader>ce",
+        comment_delete = "<leader>cd",
+        comment_toggle = "<leader>ct",
+        comment_copy = "<leader>cy",
+        comment_copy_all = "<leader>cY",
       },
     },
   }
@@ -175,6 +198,13 @@ Universal (all diffly windows) ~
   <leader>e    Focus the panel (same as `:Diffly focus`).
   ]f           Open the next file (ALL files, not just un-viewed ones).
   [f           Open the previous file (ditto).
+  <leader>ca   Add a comment on the cursor line, or the visual selection.
+  <leader>ce   Edit the comment under the cursor.
+  <leader>cd   Delete the comment under the cursor (confirms first).
+  <leader>ct   Collapse/expand inline comment rendering (session-wide).
+  <leader>cy   Copy the comment under the cursor as an AI prompt.
+  <leader>cY   Copy every comment in the review as one AI prompt.
+               (See |diffly-comments| for all of these.)
 
   Works everywhere: the panel, diffly-owned blob buffers, and real file
   buffers currently shown in the viewer -- worktree-mode side-by-side's
@@ -228,6 +258,12 @@ real file buffers, which get only the universal layer above.
                semantics as the panel's `v`).
   s            Toggle between side-by-side and unified diff modes.
   q            Close the review UI (same as `:Diffly close`/the panel's `q`).
+  ca ce cd     The comment family, single-key (|diffly-comments|): same
+  ct cy cY     actions as the `<leader>c…` universal maps above. Only present
+               where there is content to anchor a comment to -- never on
+               binary/oversized/generated placeholders, and only in buffers
+               showing base content for the base side (the side-by-side left
+               window, which is also where deleted lines are commented on).
 
                                                  *<Plug>(diffly-toggle-viewed)*
                                                     *<Plug>(diffly-toggle-mode)*
@@ -458,7 +494,60 @@ resolved from the start of file order, since a batch has no single "current"
 file to resume from); a batch that UNMARKED files never advances.
 
 ==============================================================================
-9. GitHub integration                                           *diffly-github*
+9. Comments                                                   *diffly-comments*
+
+difit-style line comments: notes attached to a line (or visual range) on
+either side of the diff, written in a small markdown float and rendered
+inline right below the code they annotate -- below the DELETED lines, for a
+base-side comment on removed code. `<leader>ct` collapses every comment down
+to a `✎` end-of-line marker when the inline text gets in the way. The panel
+shows a per-file `✎N` count.
+
+Comments are local: they are stored next to the viewed marks in the same
+per-review state file (same key, same worktree/clone sharing -- see
+|diffly-viewed-state|), whether or not a PR exists. Planned, not yet built:
+a read-only overlay of a PR's existing review threads, and batch submission
+of local drafts as one GitHub review (see docs/design.md, "Comments").
+
+Writing ~
+`<leader>ca` (any diffly context) / `ca` (diffly-owned buffers) opens the
+compose float at the cursor: type the note (markdown), `<C-s>` saves, `q` --
+or saving an empty body -- cancels. In visual mode the same key comments on
+the selected line range. Base-side comments (including deleted lines) are
+written from the side-by-side LEFT window; the unified view writes head-side
+comments only, though it renders both sides.
+
+`<leader>ce`/`ce` edits and `<leader>cd`/`cd` deletes the comment under the
+cursor (delete confirms via |vim.ui.select()|; when several comments cover
+the same line, both prompt for which one).
+
+Following the code ~
+Each comment remembers the exact text it was written against. When the file
+changes -- new commits, or an external tool rewriting it mid-review -- the
+anchor is re-located by searching for that text near its old position, and
+follows it. If the commented lines are gone entirely, the comment turns
+OUTDATED: it stops rendering inline (a note pinned to the wrong line is
+worse than none), but stays in the panel `✎N` count and in `:Diffly
+comments`, where `[outdated]` marks it. `[base]` marks base-side comments,
+whose line numbers refer to base content while quickfix jumps into the
+worktree file.
+
+AI prompt copy ~
+`<leader>cy`/`cy` copies the comment under the cursor, `<leader>cY`/`cY`
+every comment in the review, to the unnamed register (and the system
+clipboard when a provider is available) in difit's prompt format -- ready to
+paste into an AI coding agent: >
+  src/api/client.ts:L42-L48
+  this retry loop needs a backoff
+
+  =====
+
+  src/api/client.ts:L102
+  copy the error message into the exception
+<
+
+==============================================================================
+10. GitHub integration                                          *diffly-github*
 
 The `gh` CLI is entirely optional. When it is missing, not authenticated, or
 the current branch has no associated pull request, diffly.nvim silently falls

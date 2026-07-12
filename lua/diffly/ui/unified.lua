@@ -15,6 +15,7 @@
 -- re-deriving them.
 
 local git = require("diffly.git")
+local ui_comments = require("diffly.ui.comments")
 local ui_keymaps = require("diffly.ui.keymaps")
 local scratch = require("diffly.ui.scratch")
 local guard = require("diffly.ui.guard")
@@ -27,6 +28,12 @@ local M = {}
 ---@field owned_wins integer[]                  -- same window as `win`; destroyed by close()
 ---@field owned_bufs table<integer, boolean>     -- diffly-owned scratch buffers, wiped by close()
 ---@field ns integer               -- this view's own overlay namespace (one ns per concern)
+---@field comment_ns integer       -- this view's own comment namespace -- separate from the
+--- overlay's `ns` on purpose ("one ns per concern"): `render_overlay`'s clear-and-redraw
+--- must never eat comment marks, and a comment-only repaint (`refresh_comments`) must
+--- never disturb the overlay
+---@field shown { buf: integer, path: string, hunks: diffly.Hunk[], deleted: boolean }?
+--- -- what `View:open` last rendered, exactly what a comment-only repaint needs
 ---@field universal_buf integer?   -- real bufnr currently carrying the overlay + `keymaps.universal`
 ---@field universal_keys string[]? -- keys applied to `universal_buf` (see `ui_keymaps.detach_universal`)
 ---@field force_loaded table<string, boolean> -- paths whose size OR generated-file guard
@@ -94,12 +101,15 @@ end
 ---@param name string
 ---@param lines string[]
 ---@param path string
+---@param side "base"|"head"|nil  -- which side's content the buffer shows; nil
+--- (placeholders) keeps the comment keys off the buffer entirely
 ---@return integer bufnr
-local function owned_buffer(self, name, lines, path)
+local function owned_buffer(self, name, lines, path, side)
   local bufnr = scratch.find_or_create(name, { lines = lines, filename = path })
   self.owned_bufs[bufnr] = true
-  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, path))
-  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, path))
+  local keymap_opts = { side = side }
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, path, keymap_opts))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, path, keymap_opts))
   return bufnr
 end
 
@@ -116,8 +126,44 @@ local function release_real_buf(self, keep)
   end
   if vim.api.nvim_buf_is_valid(self.universal_buf) then
     vim.api.nvim_buf_clear_namespace(self.universal_buf, self.ns, 0, -1)
+    -- Same rule for the comment layer: a real buffer must retain no diffly marks once
+    -- the view stops showing it.
+    vim.api.nvim_buf_clear_namespace(self.universal_buf, self.comment_ns, 0, -1)
   end
   ui_keymaps.detach_universal(self)
+end
+
+--- Comment-layer repaint of whatever `View:open` last rendered: placements from the
+--- session's threads (through `ctx.actions` -- views never hold a session), then a full
+--- clear-and-redraw of `self.comment_ns` only. Head-side threads map 1:1 onto the shown
+--- buffer; base-side threads go through the hunk walk -- except on a deleted file, whose
+--- buffer IS the base blob, so base threads map 1:1 there (and its head side no longer
+--- exists to render).
+---@param self diffly.ui.UnifiedView
+local function render_comments(self)
+  local shown = self.shown
+  if not shown or not vim.api.nvim_buf_is_valid(shown.buf) then
+    return
+  end
+
+  local actions = self.ctx.actions
+  local threads = actions.comments_for(shown.path)
+  local line_count = vim.api.nvim_buf_line_count(shown.buf)
+
+  local placements
+  if shown.deleted then
+    placements = ui_comments.direct_placements(threads, "base", line_count)
+  else
+    placements = ui_comments.direct_placements(threads, "head", line_count)
+    vim.list_extend(
+      placements,
+      ui_comments.mapped_base_placements(threads, shown.hunks, line_count)
+    )
+  end
+
+  ui_comments.render(shown.buf, self.comment_ns, placements, {
+    collapsed = actions.comments_collapsed(),
+  })
 end
 
 --- Compute this hunk set's overlay as plain data: 0-based rows to paint `DifflyOverlayAdd`
@@ -320,9 +366,10 @@ local function show_deleted(self, entry, spec)
   local lines = entry.base_sha and load_blob(spec.repo, entry.base_sha, entry.path, "base") or {}
   local name =
     scratch.name(scratch.short_sha(entry.base_sha) or "empty", self.ctx.anchor, entry.path)
-  local buf = owned_buffer(self, name, lines, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path, entry.base_sha and "base" or nil)
   vim.api.nvim_win_set_buf(self.win, buf)
   render_all_deleted(self, buf)
+  return buf
 end
 
 --- `spec.right == "worktree"`: `:edit` the real file directly into `self.win` -- normal
@@ -355,7 +402,7 @@ local function show_head_blob(self, entry, spec)
   release_real_buf(self, nil)
   local lines = load_blob(spec.repo, entry.head_sha, entry.path, "head")
   local name = scratch.name(scratch.short_sha(entry.head_sha), self.ctx.anchor, entry.path)
-  local buf = owned_buffer(self, name, lines, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path, "head")
   vim.api.nvim_win_set_buf(self.win, buf)
   return buf
 end
@@ -372,6 +419,10 @@ end
 ---@param spec diffly.DiffSpec
 function View:open(entry, spec)
   ensure_window(self)
+
+  -- Placeholders below render no comments; `shown` only ever points at a buffer whose
+  -- lines are real file content the placement math can anchor into.
+  self.shown = nil
 
   if entry.binary then
     show_binary(self, entry)
@@ -398,7 +449,11 @@ function View:open(entry, spec)
   end
 
   if not entry.head_sha then
-    show_deleted(self, entry, spec)
+    local buf = show_deleted(self, entry, spec)
+    self.shown = { buf = buf, path = entry.path, hunks = {}, deleted = true }
+    -- No ordering concern here: render_all_deleted paints line highlights only (no
+    -- virt_lines to stack against).
+    render_comments(self)
   else
     local buf
     if spec.right == "worktree" then
@@ -421,10 +476,31 @@ function View:open(entry, spec)
       )
       hunks = {}
     end
+    -- Comments BEFORE the overlay, deliberately: same-(row, above) virt_lines stack by
+    -- creation order with the later-created mark on top, so a base-side comment sharing
+    -- a deletion run's anchor renders BELOW the deleted lines it annotates only when the
+    -- overlay's mark is created after the comment's (see ui/comments.lua; pinned by the
+    -- unified comments golden).
+    self.shown = { buf = buf, path = entry.path, hunks = hunks, deleted = false }
+    render_comments(self)
     render_overlay(self, buf, hunks)
   end
 
   vim.api.nvim_set_current_win(self.win)
+end
+
+--- Optional View-contract method (`Session:_refresh_comment_render`): repaint the
+--- comment namespace of whatever this view currently shows -- no window churn, no cursor
+--- movement, exactly what a comment mutation or collapse toggle needs. The overlay is
+--- repainted right after, NOT because its data changed, but to restore the
+--- comments-first creation order that keeps deletion runs above the comments annotating
+--- them (see `View:open`).
+function View:refresh_comments()
+  render_comments(self)
+  local shown = self.shown
+  if shown and not shown.deleted and vim.api.nvim_buf_is_valid(shown.buf) then
+    render_overlay(self, shown.buf, shown.hunks)
+  end
 end
 
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
@@ -446,8 +522,16 @@ function View:close()
   end
   self.owned_wins = {}
   self.win = nil
+  self.shown = nil
 
   for buf in pairs(self.owned_bufs) do
+    -- An owned buffer that SURVIVES below (still shown by the incoming view's window
+    -- during the set_mode overlap) must not keep this view's comment marks: the incoming
+    -- view repaints its OWN comment ns, and a leftover ns from this one would render
+    -- every comment twice.
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_clear_namespace(buf, self.comment_ns, 0, -1)
+    end
     -- Regression guard (the "focus lands on the panel after switching modes on a
     -- binary/head-mode file" bug): binary placeholders and head-mode blobs are named
     -- purely from `entry.path`/the sha/`ctx.anchor` (see ui/scratch.lua), with no
@@ -476,6 +560,8 @@ function M.new(ctx)
     owned_wins = {},
     owned_bufs = {},
     ns = vim.api.nvim_create_namespace(""), -- anonymous: one dedicated ns per view instance
+    comment_ns = vim.api.nvim_create_namespace(""), -- ditto; see the field doc above
+    shown = nil,
     universal_buf = nil,
     universal_keys = nil,
     universal_token = nil,

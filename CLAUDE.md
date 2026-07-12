@@ -66,6 +66,18 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 - Viewed marking is always an explicit user action. No automatic marking, no fs-watching
   (`docs/architecture.md` lists rejected designs — don't reintroduce them without new
   evidence).
+- Comment virt_lines live in a per-view comment namespace owned by the view — never by
+  `ui/comments.lua`, and never unified's overlay ns ("one ns per concern"). A real buffer
+  must be stripped of it whenever the view stops showing that buffer (same rule as
+  `keymaps.universal`), and `close()` clears it from surviving shared owned buffers.
+- Comment anchors persist `(side, lines, sha, snapshot)` and are rewritten ONLY in
+  `session.lua`'s build/refresh re-anchor pass — render code never writes state. Outdated
+  threads never render inline (panel `✎N` + `:Diffly comments` are the discoverability
+  channels).
+- Same-position virt_lines stack by extmark creation order (`priority` has no effect on
+  them): unified renders comments before the overlay, and `refresh_comments` repaints the
+  overlay right after the comment layer, to keep deleted lines above the comments
+  annotating them. Don't reorder those calls; the unified comments golden pins this.
 
 ## Git workflow
 

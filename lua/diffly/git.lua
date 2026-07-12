@@ -220,21 +220,21 @@ local function build_entries(raw, numstat)
 end
 
 --- Parse a `@@ -old_start,old_count +new_start,new_count @@ ...` header. Git omits the
---- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@"). Only `new_start`/
---- `new_count` are kept on `diffly.Hunk` (`old_start`/`old_count` were dropped: the
---- inline overlay anchors on new-side positions only; deleted text comes from the hunk's
---- own "-" lines, not from these old-side numbers) -- the
---- old-side numbers are still parsed here, just to recognize a header line at all and to
---- keep this function's shape matching `git diff`'s own header format one-for-one.
+--- ",count" part entirely when count == 1 (e.g. "@@ -1 +1 @@"). `old_start` is kept on
+--- `diffly.Hunk` alongside the new-side numbers: the inline overlay anchors on new-side
+--- positions only, but base-side comment anchoring (ui/comments.lua's base-line-to-row
+--- mapping) needs each hunk's old-side origin to walk both sides in step. `old_count`
+--- stays dropped -- it is derivable from the hunk's own "-"/" " lines and has no
+--- consumer.
 ---@param line string
----@return integer? new_start, integer? new_count
+---@return integer? new_start, integer? new_count, integer? old_start
 local function match_hunk_header(line)
   local old_start, _old_count, new_start, new_count =
     line:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
   if not old_start then
     return nil
   end
-  return tonumber(new_start), new_count ~= "" and tonumber(new_count) or 1
+  return tonumber(new_start), new_count ~= "" and tonumber(new_count) or 1, tonumber(old_start)
 end
 
 ---@param diff_text string
@@ -243,9 +243,10 @@ local function parse_hunks(diff_text)
   local hunks = {}
   local current
   for _, line in ipairs(vim.split(diff_text, "\n", { plain = true })) do
-    local new_start, new_count = match_hunk_header(line)
+    local new_start, new_count, old_start = match_hunk_header(line)
     if new_start then
       current = {
+        old_start = old_start,
         new_start = new_start,
         new_count = new_count,
         header = line,

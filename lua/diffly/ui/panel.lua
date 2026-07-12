@@ -5,7 +5,7 @@
 -- `session` is used ONLY through the documented interface from docs/architecture.md:
 -- fields `spec`/`entries`/`state`/`mode`/`current_path`, methods `subscribe`/
 -- `open_file`/`toggle_viewed`/`is_viewed`/`next_unviewed`/`progress`/`set_mode`/
--- `refresh`/`close`/`toggle_viewed_batch`. `lua/diffly/session.lua` is intentionally never
+-- `refresh`/`close`/`toggle_viewed_batch`/`comment_count`. `lua/diffly/session.lua` is intentionally never
 -- `require`d here, so this module stays testable against a scripted fake (see
 -- tests/test_panel.lua). The pattern-GROUP selector behind `S` (`pattern_groups`/
 -- `sweep_patterns`, `vim.ui.select`) lives in `init.lua` instead and is reached through an
@@ -37,6 +37,9 @@ local GLYPH = {
   dir_open = "▾",
   dir_closed = "▸",
   checked = "✓",
+  -- U+270E LOWER RIGHT PENCIL: plain Unicode like ✓/−/… above, no nerd-font dependency
+  -- (golden-safe). Marks a file-row's comment count.
+  comment = "✎",
 }
 -- U+2212 MINUS SIGN and U+2026 HORIZONTAL ELLIPSIS, matching the rendering sketch in
 -- the original design sketch verbatim (not ASCII "-"/"...").
@@ -123,10 +126,12 @@ local function render_dir_row(row, folded)
   }
 end
 
---- File rows: `<indent>[ ]|[✓] <status letter> <name>  +a −d`. Renamed files show
+--- File rows: `<indent>[ ]|[✓] <status letter> <name>  +a −d [✎N]`. Renamed files show
 --- `old → new` (full relative paths) in place of `name`. Spacing is a single
 --- space-separated layout (one space after the checkbox, one after the status letter,
---- two before the counts) -- there is no column-alignment requirement to satisfy.
+--- two before the counts, one before the comment count -- which only appears when the
+--- file has comments at all, outdated ones included: the panel count is the
+--- discoverability channel for comments that no longer render inline).
 --- Viewed files highlight the *whole row* `DifflyViewed` instead of the per-segment
 --- groups (design.md: viewed files are "greyed out" as a unit).
 ---@param row diffly.TreeRow
@@ -161,6 +166,18 @@ local function render_file_row(row, session, icons_enabled)
   local name_start = status_end + 1 -- +1: skip the space after the status letter
 
   local text = indent .. checkbox .. " " .. entry.status .. " " .. display_name .. "  " .. counts
+  -- Counts offsets are taken HERE, before any trailing segment lands -- computing them
+  -- backwards from the final #text would silently misplace the highlight the moment
+  -- anything else gets appended.
+  local counts_start = #text - #counts
+  local counts_end = #text
+
+  local comment_count = session:comment_count(entry.path)
+  local comment_seg
+  if comment_count > 0 then
+    comment_seg = GLYPH.comment .. comment_count
+    text = text .. " " .. comment_seg
+  end
 
   if viewed then
     return {
@@ -169,14 +186,20 @@ local function render_file_row(row, session, icons_enabled)
     }
   end
 
-  return {
-    text = text,
-    highlights = {
-      { col_start = checkbox_start, col_end = checkbox_end, hl_group = "DifflyCheckbox" },
-      { col_start = status_start, col_end = status_end, hl_group = STATUS_HL[entry.status] },
-      { col_start = #text - #counts, col_end = #text, hl_group = "DifflyCounts" },
-    },
+  local highlights = {
+    { col_start = checkbox_start, col_end = checkbox_end, hl_group = "DifflyCheckbox" },
+    { col_start = status_start, col_end = status_end, hl_group = STATUS_HL[entry.status] },
+    { col_start = counts_start, col_end = counts_end, hl_group = "DifflyCounts" },
   }
+  if comment_seg then
+    table.insert(highlights, {
+      col_start = #text - #comment_seg,
+      col_end = #text,
+      hl_group = "DifflyCommentMarker",
+    })
+  end
+
+  return { text = text, highlights = highlights }
 end
 
 --- After `render()` rebuilds `row_nodes`, move the cursor back onto whichever node it

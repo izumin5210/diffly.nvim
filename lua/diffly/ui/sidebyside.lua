@@ -11,6 +11,7 @@
 -- the identical contract.
 
 local git = require("diffly.git")
+local ui_comments = require("diffly.ui.comments")
 local ui_keymaps = require("diffly.ui.keymaps")
 local scratch = require("diffly.ui.scratch")
 local guard = require("diffly.ui.guard")
@@ -66,6 +67,11 @@ end
 --- this module directly (see the calls in `set_right_worktree`/`clear_universal_keymaps`
 --- below).
 ---@field universal_keys string[]?  -- keys applied to `universal_buf`, ditto
+---@field comment_ns integer  -- this view's own comment namespace (its FIRST extmark ns:
+--- the diff visualization here is native 'diff' mode, not extmarks) -- anonymous and
+--- per-instance, mirroring ui/unified.lua's "one ns per concern" rule
+---@field shown { path: string, left_buf: integer, right_buf: integer }?
+--- -- what `View:open` last rendered, exactly what a comment-only repaint needs
 ---@field force_loaded table<string, boolean> -- paths whose size OR generated-file guard
 --- (config.max_file_size/config.collapse_generated, ui/guard.lua) has been bypassed for
 --- the rest of THIS view instance's lifetime -- one shared set for both guards (forcing
@@ -81,7 +87,9 @@ View.__index = View
 --- makes their content unique, so reuse is always content-safe).
 ---@param name string
 ---@param lines string[]
----@param opts { filename: string?, entry_path: string }
+---@param opts { filename: string?, entry_path: string, side: "base"|"head"|nil }
+--- -- `side`: which side's content this buffer shows; nil (placeholders, empty
+--- no-content scratches) keeps the comment keys off the buffer entirely
 ---@return integer bufnr
 function View:owned_buffer(name, lines, opts)
   local bufnr = scratch.find_or_create(name, { lines = lines, filename = opts.filename })
@@ -90,8 +98,9 @@ function View:owned_buffer(name, lines, opts)
   -- second -- `vim.keymap.set` overwrites on a shared lhs, so a user who configures the
   -- same key in both groups gets the universal binding, consistently across every owned
   -- buffer (mirrors `ui/unified.lua`'s equivalent helper).
-  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, opts.entry_path))
-  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, opts.entry_path))
+  local keymap_opts = { side = opts.side }
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, opts.entry_path, keymap_opts))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, opts.entry_path, keymap_opts))
   return bufnr
 end
 
@@ -102,7 +111,44 @@ end
 --- Thin wrapper around `ui/keymaps.lua`'s shared lifecycle (see `View.universal_buf`'s doc
 --- above) -- kept as a method so call sites read the same as before the extraction.
 function View:clear_universal_keymaps()
+  -- The comment layer follows the exact same rule as the keymaps: a real buffer must
+  -- retain no diffly marks once this view stops showing it.
+  if self.universal_buf and vim.api.nvim_buf_is_valid(self.universal_buf) then
+    vim.api.nvim_buf_clear_namespace(self.universal_buf, self.comment_ns, 0, -1)
+  end
   ui_keymaps.detach_universal(self)
+end
+
+--- Comment-layer repaint of whatever `View:open` last rendered: base-side threads into
+--- the left (base blob) buffer, head-side threads into the right one, each buffer's
+--- `comment_ns` fully cleared and redrawn. Both buffers show their side's content 1:1,
+--- so placement is the direct line mapping -- no hunk walk needed here, unlike
+--- ui/unified.lua.
+---@param self diffly.ui.SideBySide
+local function render_comments(self)
+  local shown = self.shown
+  if not shown then
+    return
+  end
+
+  local actions = self.ctx.actions
+  local threads = actions.comments_for(shown.path)
+  local collapsed = actions.comments_collapsed()
+
+  for _, target in ipairs({
+    { buf = shown.left_buf, side = "base" },
+    { buf = shown.right_buf, side = "head" },
+  }) do
+    if vim.api.nvim_buf_is_valid(target.buf) then
+      local line_count = vim.api.nvim_buf_line_count(target.buf)
+      ui_comments.render(
+        target.buf,
+        self.comment_ns,
+        ui_comments.direct_placements(threads, target.side, line_count),
+        { collapsed = collapsed }
+      )
+    end
+  end
 end
 
 --- Build the two-window vertical pair on first use, splitting rightward from
@@ -192,11 +238,12 @@ function View:set_left(entry, spec)
       )
     end
   end
-  local bufnr = self:owned_buffer(
-    left_buffer_name(entry, spec, self.ctx.anchor),
-    lines,
-    { filename = entry.path, entry_path = entry.path }
-  )
+  local bufnr = self:owned_buffer(left_buffer_name(entry, spec, self.ctx.anchor), lines, {
+    filename = entry.path,
+    entry_path = entry.path,
+    -- An added/untracked file's empty left scratch has no base content to comment on.
+    side = entry.base_sha and "base" or nil,
+  })
   vim.api.nvim_win_set_buf(self.left_win, bufnr)
 end
 
@@ -224,12 +271,16 @@ function View:set_right_worktree(entry, spec)
   vim.api.nvim_win_call(self.right_win, function()
     vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
   end)
-  ui_keymaps.attach_universal(
-    self,
-    vim.api.nvim_win_get_buf(self.right_win),
-    entry.path,
-    self.ctx.actions
-  )
+  local buf = vim.api.nvim_win_get_buf(self.right_win)
+  -- A real-to-real file switch bypasses `clear_universal_keymaps` (attach_universal
+  -- peels the keymaps itself), but the comment layer follows the same rule: the
+  -- previous real buffer must retain no diffly marks.
+  if self.universal_buf and self.universal_buf ~= buf then
+    if vim.api.nvim_buf_is_valid(self.universal_buf) then
+      vim.api.nvim_buf_clear_namespace(self.universal_buf, self.comment_ns, 0, -1)
+    end
+  end
+  ui_keymaps.attach_universal(self, buf, entry.path, self.ctx.actions)
 end
 
 --- Populate the right window for `spec.right == "head"`: a read-only blob buffer of
@@ -255,11 +306,11 @@ function View:set_right_head(entry, spec)
       )
     end
   end
-  local bufnr = self:owned_buffer(
-    right_blob_buffer_name(entry, self.ctx.anchor),
-    lines,
-    { filename = entry.path, entry_path = entry.path }
-  )
+  local bufnr = self:owned_buffer(right_blob_buffer_name(entry, self.ctx.anchor), lines, {
+    filename = entry.path,
+    entry_path = entry.path,
+    side = entry.head_sha and "head" or nil,
+  })
   vim.api.nvim_win_set_buf(self.right_win, bufnr)
   -- `spec.right` never actually changes across one View instance's lifetime (see
   -- `session.lua`: a mode/right change always goes through a fresh view), but clearing
@@ -353,6 +404,10 @@ function View:open(entry, spec)
   self:ensure_windows()
   self:diffoff()
 
+  -- Placeholders below render no comments; `shown` only ever points at buffers whose
+  -- lines are real side content the placement math can anchor into.
+  self.shown = nil
+
   if entry.binary then
     self:show_binary(entry)
     self:focus_right_first_change()
@@ -391,7 +446,21 @@ function View:open(entry, spec)
     vim.cmd("diffthis")
   end)
 
+  self.shown = {
+    path = entry.path,
+    left_buf = vim.api.nvim_win_get_buf(self.left_win),
+    right_buf = vim.api.nvim_win_get_buf(self.right_win),
+  }
+  render_comments(self)
+
   self:focus_right_first_change()
+end
+
+--- Optional View-contract method (`Session:_refresh_comment_render`): repaint ONLY the
+--- comment namespace of whatever this view currently shows -- no window churn, no cursor
+--- movement, exactly what a comment mutation or collapse toggle needs.
+function View:refresh_comments()
+  render_comments(self)
 end
 
 --- `diffoff` where applicable, close every owned window, then wipe every diffly-owned
@@ -417,8 +486,16 @@ function View:close()
   end
   self.owned_wins = {}
   self.left_win, self.right_win = nil, nil
+  self.shown = nil
 
   for bufnr in pairs(self.owned_bufs) do
+    -- An owned buffer that SURVIVES below (still shown by the incoming view's window
+    -- during the set_mode overlap) must not keep this view's comment marks: the incoming
+    -- view repaints its OWN comment ns, and a leftover ns from this one would render
+    -- every comment twice.
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_clear_namespace(bufnr, self.comment_ns, 0, -1)
+    end
     -- Regression guard (the "focus lands on the panel after switching modes on a
     -- binary/head-mode file" bug): binary placeholders and head-mode blobs are named
     -- purely from `entry.path`/the sha/`ctx.anchor` (see ui/scratch.lua), with no
@@ -450,6 +527,8 @@ function M.new(ctx)
     universal_buf = nil, -- real bufnr currently carrying `keymaps.universal`, if any
     universal_keys = nil, -- keys applied to `universal_buf`, for `ui_keymaps.remove`
     universal_token = nil, -- this attach's ownership stamp (see `ui_keymaps.attach_universal`)
+    comment_ns = vim.api.nvim_create_namespace(""), -- anonymous, per-instance (field doc above)
+    shown = nil,
     force_loaded = {},
   }, View)
 end

@@ -19,12 +19,14 @@
 -- closures resolve the live registry entry by tabpage handle on every call, so a stale
 -- action surviving past `close_entry` degrades to a no-op notify instead of an error.
 
+local comments = require("diffly.comments")
 local config = require("diffly.config")
 local session = require("diffly.session")
 local state = require("diffly.state")
 local panel = require("diffly.ui.panel")
 local hl = require("diffly.ui.hl")
 local sidebyside = require("diffly.ui.sidebyside")
+local ui_comments = require("diffly.ui.comments")
 local unified = require("diffly.ui.unified")
 
 local M = {}
@@ -371,6 +373,62 @@ local function resolve_live_entry(tab, what)
   return entry
 end
 
+---@param path string
+---@param start_line integer
+---@param end_line integer
+---@return string @difit-style location: "path:L42" / "path:L42-L48"
+local function comment_location(path, start_line, end_line)
+  local location = string.format("%s:L%d", path, start_line)
+  if end_line ~= start_line then
+    location = location .. string.format("-L%d", end_line)
+  end
+  return location
+end
+
+--- Resolve which thread a cursor action targets: 0 -> notify; 1 -> act immediately;
+--- 2+ -> `vim.ui.select` (so telescope/fzf-lua/etc. pickers apply), following
+--- `run_sweep_selector`'s `{value..., display}` item shape.
+---@param threads diffly.CommentThread[]
+---@param what string  -- verb for the prompt
+---@param on_pick fun(thread: diffly.CommentThread)
+local function pick_thread(threads, what, on_pick)
+  if #threads == 0 then
+    vim.notify("diffly: no comment on this line", vim.log.levels.INFO)
+    return
+  end
+  if #threads == 1 then
+    on_pick(threads[1])
+    return
+  end
+
+  local choices = {}
+  for _, thread in ipairs(threads) do
+    local first = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
+    table.insert(choices, {
+      thread = thread,
+      display = string.format("L%d: %s", thread.anchor.start_line, first),
+    })
+  end
+  vim.ui.select(choices, {
+    prompt = "diffly: which comment to " .. what .. "?",
+    format_item = function(choice)
+      return choice.display
+    end,
+  }, function(choice)
+    if choice then
+      on_pick(choice.thread)
+    end
+  end)
+end
+
+--- Unnamed register unconditionally (works everywhere, including headless); system
+--- clipboard best-effort only -- a clipboard provider may legitimately be absent.
+---@param text string
+local function copy_to_registers(text)
+  vim.fn.setreg('"', text)
+  pcall(vim.fn.setreg, "+", text)
+end
+
 --- Build the `diffly.ui.Actions` table (see `ui/keymaps.lua`) for the review at `tab`:
 --- the single implementation of "what toggling viewed/mode, focusing the panel, or
 --- closing the review means" that both views' buffer-local keymaps call into, regardless
@@ -423,6 +481,134 @@ local function build_actions(tab)
       if entry then
         open_and_sync_cursor(entry, entry.session:prev_file(path))
       end
+    end,
+    comment_add = function(path, side, start_line, end_line)
+      local entry = resolve_live_entry(tab, "comment_add")
+      if not entry then
+        return
+      end
+      -- Snapshot captured NOW, from the buffer the key was pressed in: what the user is
+      -- looking at is exactly what the comment anchors to -- even mid-edit, before `:w`
+      -- (the next refresh re-anchors against disk, see session.lua).
+      local snapshot = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+      ui_comments.compose({
+        title = comment_location(path, start_line, end_line),
+        on_submit = function(lines)
+          -- Re-resolve at submit time: the float can outlive the review.
+          local live = resolve_live_entry(tab, "comment_add")
+          if not live then
+            return
+          end
+          local _, err = live.session:add_comment(path, {
+            side = side,
+            start_line = start_line,
+            end_line = end_line,
+            body = table.concat(lines, "\n"),
+            snapshot = snapshot,
+          })
+          if err then
+            vim.notify(err, vim.log.levels.WARN)
+          end
+        end,
+      })
+    end,
+    comment_edit = function(path, side, line)
+      local entry = resolve_live_entry(tab, "comment_edit")
+      if not entry then
+        return
+      end
+      local found = comments.find_at(entry.session.state, path, side, line)
+      pick_thread(found, "edit", function(thread)
+        ui_comments.compose({
+          title = comment_location(path, thread.anchor.start_line, thread.anchor.end_line),
+          initial = vim.split(thread.messages[1].body, "\n", { plain = true }),
+          on_submit = function(lines)
+            local live = resolve_live_entry(tab, "comment_edit")
+            if live then
+              live.session:update_comment(path, thread.id, table.concat(lines, "\n"))
+            end
+          end,
+        })
+      end)
+    end,
+    comment_delete = function(path, side, line)
+      local entry = resolve_live_entry(tab, "comment_delete")
+      if not entry then
+        return
+      end
+      local found = comments.find_at(entry.session.state, path, side, line)
+      pick_thread(found, "delete", function(thread)
+        -- A written comment is real user work: confirm before destroying it. Goes
+        -- through `vim.ui.select` (not `vim.fn.confirm`) so picker replacements apply
+        -- and the flow stays drivable in tests, same as every other menu here.
+        vim.ui.select({
+          { confirm = true, display = "Delete" },
+          { confirm = false, display = "Keep" },
+        }, {
+          prompt = "diffly: delete this comment?",
+          format_item = function(choice)
+            return choice.display
+          end,
+        }, function(choice)
+          if not choice or not choice.confirm then
+            return
+          end
+          local live = resolve_live_entry(tab, "comment_delete")
+          if live then
+            live.session:delete_comment(path, thread.id)
+          end
+        end)
+      end)
+    end,
+    comment_toggle = function()
+      local entry = resolve_live_entry(tab, "comment_toggle")
+      if entry then
+        entry.session:toggle_comments_collapsed()
+      end
+    end,
+    comment_copy = function(path, side, line)
+      local entry = resolve_live_entry(tab, "comment_copy")
+      if not entry then
+        return
+      end
+      local found = comments.find_at(entry.session.state, path, side, line)
+      pick_thread(found, "copy", function(thread)
+        copy_to_registers(comments.format_prompt(thread))
+        vim.notify("diffly: copied 1 comment as prompt", vim.log.levels.INFO)
+      end)
+    end,
+    comment_copy_all = function()
+      local entry = resolve_live_entry(tab, "comment_copy_all")
+      if not entry then
+        return
+      end
+      local threads = entry.session:all_comments()
+      if #threads == 0 then
+        vim.notify("diffly: no comments to copy", vim.log.levels.INFO)
+        return
+      end
+      copy_to_registers(comments.format_prompt_all(threads))
+      vim.notify(
+        string.format("diffly: copied %d comment(s) as prompt", #threads),
+        vim.log.levels.INFO
+      )
+    end,
+    -- Render-time reads (the views' comment repaint), not user actions: a stale call
+    -- degrades to empty data SILENTLY -- `resolve_live_entry`'s notify is for ignored
+    -- keypresses, and a repaint racing teardown is not something to warn about.
+    comments_for = function(path)
+      local entry = entries[tab]
+      if not entry then
+        return {}
+      end
+      return entry.session:comments_for(path)
+    end,
+    comments_collapsed = function()
+      local entry = entries[tab]
+      if not entry then
+        return false
+      end
+      return entry.session.comments_collapsed
     end,
   }
 end
@@ -907,6 +1093,8 @@ function M.open(args)
     return M.focus()
   elseif first == "sweep" then
     return M.sweep(vim.list_slice(args, 2))
+  elseif first == "comments" then
+    return M.comments()
   end
 
   local entry = current_entry()
@@ -916,6 +1104,46 @@ function M.open(args)
   end
 
   open_new(first)
+end
+
+--- `:Diffly comments`: every comment thread in the current review into the quickfix
+--- list -- the review-wide overview and the discoverability channel for outdated threads
+--- (which never render inline; see ui/comments.lua). One item per thread at its
+--- last-known start line, first body line only, with `[outdated]`/`[base]` markers. A
+--- base-side item's line number references BASE content while quickfix jumps into the
+--- worktree file -- an accepted approximation, which is exactly what the `[base]` marker
+--- flags. No dedicated comment-list UI: quickfix already does navigation, persistence
+--- across the review, and :cdo-style batching for free.
+function M.comments()
+  local entry = current_entry()
+  if not entry then
+    vim.notify("diffly: no review is open on this tabpage", vim.log.levels.INFO)
+    return
+  end
+
+  local threads = entry.session:all_comments()
+  if #threads == 0 then
+    vim.notify("diffly: no comments in this review", vim.log.levels.INFO)
+    return
+  end
+
+  local toplevel = entry.session.spec.repo.toplevel
+  local items = {}
+  for _, thread in ipairs(threads) do
+    local first_line = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
+    table.insert(items, {
+      filename = vim.fs.joinpath(toplevel, thread.path),
+      lnum = thread.anchor.start_line,
+      text = (thread.anchor.outdated and "[outdated] " or "")
+        .. (thread.anchor.side == "base" and "[base] " or "")
+        .. first_line,
+    })
+  end
+
+  vim.fn.setqflist({}, " ", { title = "diffly comments", items = items })
+  -- Full-width at the very bottom of the viewer tab; the panel's winfixwidth/height keep
+  -- its geometry intact.
+  vim.cmd("botright copen")
 end
 
 --- Backing function for `<Plug>(diffly-toggle-viewed)` (see plugin/diffly.lua): toggles the
