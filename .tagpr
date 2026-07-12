@@ -1,0 +1,17 @@
+# Configuration file for tagpr (https://github.com/Songmu/tagpr), in git config format.
+[tagpr]
+	# Branch tagpr tracks; merging its release PR into this branch cuts a release.
+	releaseBranch = main
+	# diffly.nvim is distributed purely via git tags (no in-repo version file), so tags
+	# are the single source of truth. "-" tells tagpr to skip version-file rewriting.
+	versionFile = -
+	# Tags are v-prefixed (v1.2.3), matching the Neovim plugin convention used in the
+	# README install snippet.
+	vPrefix = true
+	# Let tagpr maintain CHANGELOG.md from merged PRs.
+	changelog = true
+	# Cut a GitHub Release when the tag is created.
+	release = true
+	# Labels on the release PR that escalate the bump (default is patch). See docs/releasing.md.
+	majorLabels = major
+	minorLabels = minor
