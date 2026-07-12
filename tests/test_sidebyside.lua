@@ -1046,15 +1046,16 @@ T["comments: base threads render into the left blob, head threads into the right
   })
   view_open(child, built.spec, entry)
 
+  -- Boxed shape: header (✎ draft), body, footer -- the body sits on line 2.
   local left = comment_marks(child, buf_of(child, "left_win"))
   eq(#left, 1)
   eq(left[1][2], 3)
-  eq(left[1][4].virt_lines[1][2][1], "base-side note")
+  eq(left[1][4].virt_lines[2][2][1], "base-side note")
 
   local right = comment_marks(child, buf_of(child, "right_win"))
   eq(#right, 1)
   eq(right[1][2], 3)
-  eq(right[1][4].virt_lines[1][2][1], "head-side note")
+  eq(right[1][4].virt_lines[2][2][1], "head-side note")
 end
 
 ---@param child_ table

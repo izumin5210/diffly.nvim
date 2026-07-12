@@ -181,7 +181,11 @@ float anchored at the cursor — type the note, then save with **`:w`** / **`:wq
 `<C-s>`; `q` (or saving an empty body) cancels. `:q` on an unsaved body warns like any
 unsaved file (`:q!` discards). The `:w` route exists because Ctrl keys are hostage to the
 terminal stack — flow control or multiplexer bindings can eat `<C-s>` before Neovim ever
-sees it. In visual mode the same key comments on the whole selected range. The body renders
+sees it. In visual mode the same key comments on the whole selected range.
+
+Each comment renders as its own boxed block — `╭─ ✎ draft` for your local notes,
+`╭─ @author` for PR review threads — so several comments on the same line stay visually
+separate, and local drafts are never mistaken for conversations already on GitHub. The body renders
 inline right below the commented line (below the *deleted* lines it annotates, for a
 base-side comment on removed code); `<leader>ct` collapses every comment down to a `✎`
 end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`

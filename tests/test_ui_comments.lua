@@ -185,7 +185,7 @@ local function scratch_buf(lines)
   return buf, vim.api.nvim_create_namespace("")
 end
 
-T["render(): expanded comments become virt_lines below their anchor"] = function()
+T["render(): expanded comments are boxed virt_lines below their anchor"] = function()
   local buf, ns = scratch_buf(6)
   local t = thread({ messages = { { body = "first\nsecond", created_at = "x" } } })
 
@@ -198,11 +198,16 @@ T["render(): expanded comments become virt_lines below their anchor"] = function
   eq(got[1][2], 1) -- anchored at row 1
   local details = got[1][4]
   eq(details.virt_lines_above, false)
-  eq(#details.virt_lines, 2) -- one per body line
-  eq(details.virt_lines[1][2][1], "first")
-  eq(details.virt_lines[2][2][1], "second")
-  eq(details.virt_lines[1][1][2], "DifflyCommentMarker")
-  eq(details.virt_lines[1][2][2], "DifflyCommentBody")
+  -- header + one line per body line + footer: the box is what keeps two adjacent
+  -- threads on the same anchor visually separate.
+  eq(#details.virt_lines, 4)
+  eq(details.virt_lines[1][1][1], "╭─ ")
+  eq(details.virt_lines[1][2][1], "✎ draft")
+  eq(details.virt_lines[2][2][1], "first")
+  eq(details.virt_lines[3][2][1], "second")
+  eq(details.virt_lines[4][1][1], "╰─")
+  eq(details.virt_lines[2][1][2], "DifflyCommentMarker")
+  eq(details.virt_lines[2][2][2], "DifflyCommentBody")
 
   vim.api.nvim_buf_delete(buf, { force = true })
 end
@@ -422,7 +427,7 @@ local function remote(opts)
   }
 end
 
-T["render(): remote threads carry author lines, the remote marker, and every message"] = function()
+T["render(): remote threads box the author into the header and keep every message"] = function()
   local buf, ns = scratch_buf(6)
   local t = remote({
     messages = {
@@ -436,20 +441,23 @@ T["render(): remote threads carry author lines, the remote marker, and every mes
   local got = marks(buf, ns)
   eq(#got, 1)
   local lines = got[1][4].virt_lines
-  -- @alice / body / body / @bob / body: one author line per message, then its body lines.
-  eq(#lines, 5)
+  -- header(@alice) / body / body / @bob / body / footer.
+  eq(#lines, 6)
+  eq(lines[1][1][1], "╭─ ")
+  eq(lines[1][1][2], "DifflyCommentRemoteMarker", "remote threads use the remote marker group")
   eq(lines[1][2][1], "@alice")
   eq(lines[1][2][2], "DifflyCommentAuthor")
-  eq(lines[1][1][2], "DifflyCommentRemoteMarker", "remote threads use the remote marker group")
   eq(lines[2][2][1], "first point")
   eq(lines[3][2][1], "second line")
   eq(lines[4][2][1], "@bob")
+  eq(lines[4][2][2], "DifflyCommentAuthor")
   eq(lines[5][2][1], "reply")
+  eq(lines[6][1][1], "╰─")
 
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
-T["render(): a resolved remote thread is tagged on its first author line"] = function()
+T["render(): a resolved remote thread is tagged in its header"] = function()
   local buf, ns = scratch_buf(6)
   local t = remote({ resolved = true, messages = { { author = "alice", body = "done" } } })
 
@@ -459,6 +467,33 @@ T["render(): a resolved remote thread is tagged on its first author line"] = fun
   eq(lines[1][2][1], "@alice")
   eq(lines[1][3][1], " [resolved]")
   eq(lines[1][3][2], "DifflyCommentResolved")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): two threads on the same anchor stay visually separate (adjacent boxes)"] = function()
+  -- The regression this design exists for: a local draft and a remote thread on the SAME
+  -- line used to fuse into one uniform gutter block.
+  local buf, ns = scratch_buf(6)
+  local local_thread = thread({ messages = { { body = "my draft", created_at = "x" } } })
+  local remote_thread = remote({ messages = { { author = "alice", body = "her point" } } })
+
+  ui_comments.render(buf, ns, {
+    { row = 1, above = false, thread = local_thread },
+    { row = 1, above = false, thread = remote_thread },
+  }, { collapsed = false })
+
+  local got = marks(buf, ns)
+  eq(#got, 2)
+  local first, second = got[1][4].virt_lines, got[2][4].virt_lines
+  -- Each block is self-delimited: ...body, ╰─ | ╭─ header...
+  eq(first[#first][1][1], "╰─")
+  eq(second[1][1][1], "╭─ ")
+  -- And the two are distinguishable at a glance: label vs author + different marker hl.
+  eq(first[1][2][1], "✎ draft")
+  eq(first[1][1][2], "DifflyCommentMarker")
+  eq(second[1][2][1], "@alice")
+  eq(second[1][1][2], "DifflyCommentRemoteMarker")
 
   vim.api.nvim_buf_delete(buf, { force = true })
 end
@@ -477,9 +512,9 @@ T["render(): collapsed remote threads show the author in the indicator"] = funct
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
-T["render(): local thread output is byte-identical to the pre-remote shape (golden safety)"] = function()
-  -- Local messages carry no `author`, so the render path must produce EXACTLY the
-  -- Phase-1 chunk shape -- otherwise every existing screenshot golden would shift.
+T["render(): the exact local chunk shape (golden safety)"] = function()
+  -- Any change here shifts every comment screenshot golden -- keep this pin in sync
+  -- with deliberate redesigns only.
   local buf, ns = scratch_buf(6)
   local t = thread({ messages = { { body = "first\nsecond", created_at = "x" } } })
 
@@ -487,8 +522,10 @@ T["render(): local thread output is byte-identical to the pre-remote shape (gold
 
   local details = marks(buf, ns)[1][4]
   eq(details.virt_lines, {
-    { { "┃ ", "DifflyCommentMarker" }, { "first", "DifflyCommentBody" } },
-    { { "┃ ", "DifflyCommentMarker" }, { "second", "DifflyCommentBody" } },
+    { { "╭─ ", "DifflyCommentMarker" }, { "✎ draft", "DifflyCommentMarker" } },
+    { { "│ ", "DifflyCommentMarker" }, { "first", "DifflyCommentBody" } },
+    { { "│ ", "DifflyCommentMarker" }, { "second", "DifflyCommentBody" } },
+    { { "╰─", "DifflyCommentMarker" } },
   })
 
   ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = true })

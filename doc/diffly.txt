@@ -511,7 +511,10 @@ file to resume from); a batch that UNMARKED files never advances.
 difit-style line comments: notes attached to a line (or visual range) on
 either side of the diff, written in a small markdown float and rendered
 inline right below the code they annotate -- below the DELETED lines, for a
-base-side comment on removed code. `<leader>ct` collapses every comment down
+base-side comment on removed code. Each thread is a boxed block: `╭─ ✎ draft`
+for local notes, `╭─ @author` for PR review threads -- so several comments on
+one line stay visually separate and local drafts are never mistaken for
+conversations already on the forge. `<leader>ct` collapses every comment down
 to a `✎` end-of-line marker when the inline text gets in the way. The panel
 shows a per-file `✎N` count.
 

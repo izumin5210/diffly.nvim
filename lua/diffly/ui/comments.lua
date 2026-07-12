@@ -135,11 +135,13 @@ function M.mapped_base_placements(threads, hunks, line_count)
 end
 
 --- Full clear-and-redraw of `ns` on `buf` -- never incremental, mirroring the overlay's
---- own discipline so a stale mark can never linger. Expanded threads render EVERY
---- message (remote threads carry replies; local drafts still have exactly one, keeping
---- their output byte-identical to the pre-remote shape -- golden safety, pinned by
---- test): a message with an `author` opens with an attribution line, the first of which
---- also carries the thread's `[resolved]` tag. Collapsed mode shrinks every thread to an
+--- own discipline so a stale mark can never linger. Expanded threads render as a BOXED
+--- block: a `╭─` header carrying the thread's identity -- `@author` (plus `[resolved]`)
+--- for remote threads, a `✎ draft` label for local ones -- then one `│ ` line per body
+--- line (reply authors as their own `│ @login` lines), closed by `╰─`. The box is
+--- load-bearing, not decoration: two threads anchored to the SAME line would otherwise
+--- fuse into one uniform gutter block, and nothing would say which text is a local
+--- draft and which is already on the forge. Collapsed mode shrinks every thread to an
 --- eol indicator so line geometry stops jumping while still marking where comments live.
 ---@param buf integer
 ---@param ns integer
@@ -159,23 +161,36 @@ function M.render(buf, ns, placements, opts)
         virt_text_pos = "eol",
       })
     else
-      local chunks = {}
+      local header = { { "╭─ ", marker_hl } }
+      if thread.remote then
+        local author = thread.messages[1] and thread.messages[1].author or "ghost"
+        table.insert(header, { "@" .. author, "DifflyCommentAuthor" })
+        if thread.resolved then
+          table.insert(header, { " [resolved]", "DifflyCommentResolved" })
+        end
+      else
+        table.insert(header, { "✎ draft", marker_hl })
+      end
+
+      local chunks = { header }
       for index, message in ipairs(thread.messages) do
-        if message.author then
-          local author_line =
-            { { "┃ ", marker_hl }, { "@" .. message.author, "DifflyCommentAuthor" } }
-          if index == 1 and thread.resolved then
-            table.insert(author_line, { " [resolved]", "DifflyCommentResolved" })
-          end
-          table.insert(chunks, author_line)
+        -- The first message's author lives in the header; replies get their own
+        -- attribution line inside the box.
+        if message.author and index > 1 then
+          table.insert(chunks, {
+            { "│ ", marker_hl },
+            { "@" .. message.author, "DifflyCommentAuthor" },
+          })
         end
         for _, line in ipairs(vim.split(message.body, "\n", { plain = true })) do
           table.insert(chunks, {
-            { "┃ ", marker_hl },
+            { "│ ", marker_hl },
             { line, "DifflyCommentBody" },
           })
         end
       end
+      table.insert(chunks, { { "╰─", marker_hl } })
+
       vim.api.nvim_buf_set_extmark(buf, ns, placement.row, 0, {
         virt_lines = chunks,
         virt_lines_above = placement.above,
