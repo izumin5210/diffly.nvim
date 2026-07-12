@@ -2095,6 +2095,73 @@ T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers an
   eq(vim.tbl_contains(completions, "comments"), true)
 end
 
+--- Two deterministic comments on src/mod.lua for the rendering goldens: a head-side one
+--- under worktree line 4, and a base-side one on base line 4 (the deleted
+--- `  return "hello"`) -- which, in unified mode, must render at the same anchor as the
+--- deletion's own virt_lines run, pinning the comment-below-deletion ordering.
+---@param child_ table
+---@param path string
+local function add_golden_comments(child_, path)
+  child_.lua(
+    [[
+      local path = ...
+      local session = __diffly_entry().session
+      session:add_comment(path, {
+        side = "head", start_line = 4, end_line = 4,
+        body = "tighten this up", snapshot = { '  return "hello, world"' },
+      })
+      session:add_comment(path, {
+        side = "base", start_line = 4, end_line = 4,
+        body = "this used to be fine", snapshot = { '  return "hello"' },
+      })
+    ]],
+    { path }
+  )
+end
+
+T["comments golden: expanded comments in unified, incl. a base comment on the deleted line"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+
+  -- Same `%t` statusline determinism note as scenario 7: the unified window shows the
+  -- real worktree file at a tempname-derived absolute path.
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
+T["comments golden: expanded comments on both sides of the side-by-side view"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
+T["comments golden: ct collapses inline comments to eol indicators"] = function()
+  set_size(child, 24, 100)
+  child.cmd("Diffly")
+  add_golden_comments(child, paths.modified)
+
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  child.type_keys([[\ct]]) -- focus is on the right worktree buffer: universal layer
+  eq(session_field(child, "comments_collapsed"), true)
+
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+end
+
 T["comments: `:Diffly comments` with no comments notifies instead of opening an empty list"] = function()
   child.cmd("Diffly")
   child.lua([[

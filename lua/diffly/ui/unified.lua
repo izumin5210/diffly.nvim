@@ -451,6 +451,9 @@ function View:open(entry, spec)
   if not entry.head_sha then
     local buf = show_deleted(self, entry, spec)
     self.shown = { buf = buf, path = entry.path, hunks = {}, deleted = true }
+    -- No ordering concern here: render_all_deleted paints line highlights only (no
+    -- virt_lines to stack against).
+    render_comments(self)
   else
     local buf
     if spec.right == "worktree" then
@@ -473,19 +476,31 @@ function View:open(entry, spec)
       )
       hunks = {}
     end
-    render_overlay(self, buf, hunks)
+    -- Comments BEFORE the overlay, deliberately: same-(row, above) virt_lines stack by
+    -- creation order with the later-created mark on top, so a base-side comment sharing
+    -- a deletion run's anchor renders BELOW the deleted lines it annotates only when the
+    -- overlay's mark is created after the comment's (see ui/comments.lua; pinned by the
+    -- unified comments golden).
     self.shown = { buf = buf, path = entry.path, hunks = hunks, deleted = false }
+    render_comments(self)
+    render_overlay(self, buf, hunks)
   end
 
-  render_comments(self)
   vim.api.nvim_set_current_win(self.win)
 end
 
---- Optional View-contract method (`Session:_refresh_comment_render`): repaint ONLY the
+--- Optional View-contract method (`Session:_refresh_comment_render`): repaint the
 --- comment namespace of whatever this view currently shows -- no window churn, no cursor
---- movement, exactly what a comment mutation or collapse toggle needs.
+--- movement, exactly what a comment mutation or collapse toggle needs. The overlay is
+--- repainted right after, NOT because its data changed, but to restore the
+--- comments-first creation order that keeps deletion runs above the comments annotating
+--- them (see `View:open`).
 function View:refresh_comments()
   render_comments(self)
+  local shown = self.shown
+  if shown and not shown.deleted and vim.api.nvim_buf_is_valid(shown.buf) then
+    render_overlay(self, shown.buf, shown.hunks)
+  end
 end
 
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer

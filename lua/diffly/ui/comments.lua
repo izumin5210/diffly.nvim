@@ -9,10 +9,12 @@ local scratch = require("diffly.ui.scratch")
 
 local M = {}
 
--- Explicit priority for expanded comment virt_lines. The unified overlay's deletion runs
--- use the extmark default (4096); same-row ordering between the two is pinned by the e2e
--- goldens -- comments render below the deletion text they annotate.
-M.PRIORITY = 4200
+-- Same-(row, above) virt_lines from different extmarks stack by CREATION ORDER, with the
+-- later-created mark rendering closer to the top (empirically -- extmark `priority` has
+-- no effect on virt_lines ordering, only on highlights). ui/unified.lua exploits this to
+-- keep a base-side comment BELOW the deleted lines it annotates: comments render first,
+-- the overlay second, in both `open()` and `refresh_comments()`. Pinned by the unified
+-- comments golden.
 
 ---@class diffly.ui.CommentPlacement
 ---@field row integer     -- 0-based buffer row to anchor at
@@ -162,7 +164,6 @@ function M.render(buf, ns, placements, opts)
       vim.api.nvim_buf_set_extmark(buf, ns, placement.row, 0, {
         virt_lines = chunks,
         virt_lines_above = placement.above,
-        priority = M.PRIORITY,
       })
     end
   end
