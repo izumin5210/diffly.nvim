@@ -1,8 +1,11 @@
 -- Tests for lua/diffly/comments.lua: the pure comment-thread model (CRUD over a
 -- diffly.ReviewState table, snapshot-search re-anchoring, difit-compatible prompt
--- formatting). No git repo and no UI: shas are opaque strings, content is plain string
--- lists, and the state table is built by hand exactly like test_state.lua does.
+-- formatting, submission planning, draft adoption). Mostly no git repo and no UI (shas
+-- are opaque strings, content is plain string lists, state tables built by hand exactly
+-- like test_state.lua) -- the submission-planning cases are the exception, pinning the
+-- hunk math against REAL `git diff` output via helpers.new_repo.
 
+local helpers = dofile("tests/helpers.lua")
 local comments = require("diffly.comments")
 
 local eq = MiniTest.expect.equality
@@ -300,6 +303,232 @@ T["format_prompt(): range"] = function()
   local thread =
     comments.add(st, add_opts({ start_line = 42, end_line = 48, body = "extract a helper" }))
   eq(comments.format_prompt(thread), "src/a.lua:L42-L48\nextract a helper")
+end
+
+-- hunk_line_sets() / plan_submission() -- pinned against real git hunks -------
+
+--- A repo whose head commit makes three well-separated edits to a 30-line file --
+--- replace line 5, delete line 15, append two lines after (old) 25 -- so `git diff -U3`
+--- yields three distinct hunks. Returns everything plan_submission's ctx needs.
+local function submit_fixture()
+  local repo = helpers.new_repo()
+  local lines = {}
+  for i = 1, 30 do
+    lines[i] = "l" .. i
+  end
+  repo:write("f.txt", table.concat(lines, "\n") .. "\n")
+  repo:commit("chore: base")
+  local git = require("diffly.git")
+  local id = git.repo_identity(repo.dir)
+  local base_sha = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+
+  local changed = vim.deepcopy(lines)
+  changed[5] = "l5 CHANGED"
+  table.remove(changed, 15) -- deletes "l15"
+  -- After the removal above, old line 25 sits at index 24; append two lines after it.
+  table.insert(changed, 25, "added B")
+  table.insert(changed, 25, "added A")
+  repo:write("f.txt", table.concat(changed, "\n") .. "\n")
+  repo:commit("feat: head")
+
+  local entry
+  for _, e in ipairs(git.diff_files(id, base_sha, "head", {})) do
+    if e.path == "f.txt" then
+      entry = e
+    end
+  end
+  local hunks = git.hunks(id, entry, base_sha, "head")
+  local head_lines = git.file_content(id, { sha = entry.head_sha })
+
+  return repo, entry, hunks, head_lines
+end
+
+--- plan_submission ctx for the fixture above, keyed by path.
+local function fixture_ctx(entry, hunks, head_lines)
+  return {
+    ["f.txt"] = {
+      in_pr = true,
+      head_sha = entry.head_sha,
+      head_lines = head_lines,
+      line_sets = comments.hunk_line_sets(hunks),
+    },
+  }
+end
+
+--- A local draft thread aimed at the fixture; `sha` defaults to the entry's head sha
+--- (the no-drift case).
+local function draft(overrides)
+  local st = fresh_state()
+  return comments.add(
+    st,
+    vim.tbl_extend("force", {
+      path = "f.txt",
+      side = "head",
+      start_line = 5,
+      end_line = 5,
+      body = "about this line",
+      sha = "HEAD-SHA",
+      snapshot = { "l5 CHANGED" },
+    }, overrides or {})
+  )
+end
+
+T["hunk_line_sets(): context lines valid on both sides, +/- on exactly one"] = function()
+  local repo, _, hunks = submit_fixture()
+  eq(#hunks, 3)
+
+  local sets = comments.hunk_line_sets(hunks)
+  eq(#sets, 3)
+
+  -- Hunk 1 (replace old 5 with new 5): context 2..4/6..8 valid on both sides, the
+  -- replaced line valid on both (old 5 as "-", new 5 as "+").
+  eq(sets[1].head[4], true)
+  eq(sets[1].base[4], true)
+  eq(sets[1].head[5], true)
+  eq(sets[1].base[5], true)
+  eq(sets[1].head[1], nil, "line 1 is outside the -U3 context")
+
+  -- Hunk 2 (delete old 15): the deleted line exists on the base side only.
+  eq(sets[2].base[15], true)
+  -- New-side line 15 is old 16 shifted up -- a context line, so it IS head-valid; the
+  -- base side must not gain any new-side-only line. Spot-check the boundary instead:
+  eq(sets[2].head[15] ~= nil, true)
+
+  -- Hunk 3 (two added lines at new 25/26): head-only.
+  eq(sets[3].head[25], true)
+  eq(sets[3].head[26], true)
+  eq(sets[3].base[25], true, "context around the addition stays base-valid")
+  eq(sets[3].base[26], true)
+
+  repo:destroy()
+end
+
+T["plan_submission(): a clean head-side draft maps as-is (no start_line on single lines)"] = function()
+  local repo, entry, hunks, head_lines = submit_fixture()
+  local thread = draft({ sha = entry.head_sha })
+
+  local plan = comments.plan_submission({ thread }, fixture_ctx(entry, hunks, head_lines))
+
+  eq(#plan.skipped, 0)
+  eq(#plan.items, 1)
+  eq(plan.items[1].payload, {
+    path = "f.txt",
+    side = "head",
+    line = 5,
+    body = "about this line",
+  })
+
+  repo:destroy()
+end
+
+T["plan_submission(): a worktree-drifted draft re-anchors onto the head blob, mutating nothing"] = function()
+  local repo, entry, hunks, head_lines = submit_fixture()
+  -- The draft was written against edited worktree content: wrong sha, wrong line -- but
+  -- the snapshot text exists in the head blob at line 5.
+  local thread = draft({ sha = "worktree-sha", start_line = 7, end_line = 7 })
+  local before = vim.deepcopy(thread)
+
+  local plan = comments.plan_submission({ thread }, fixture_ctx(entry, hunks, head_lines))
+
+  eq(#plan.items, 1)
+  eq(plan.items[1].payload.line, 5, "submitted at the head-blob position, not the drafted one")
+  eq(thread, before, "planning must not mutate the drafts")
+
+  repo:destroy()
+end
+
+T["plan_submission(): skip reasons -- outdated, missing content, out-of-diff, cross-hunk, unknown path"] = function()
+  local repo, entry, hunks, head_lines = submit_fixture()
+  local ctx = fixture_ctx(entry, hunks, head_lines)
+
+  local outdated = draft({ sha = entry.head_sha })
+  outdated.anchor.outdated = true
+  local missing = draft({ sha = "stale", snapshot = { "never existed anywhere" } })
+  local out_of_diff = draft({ sha = entry.head_sha, start_line = 1, end_line = 1 })
+  local cross_hunk = draft({ sha = entry.head_sha, start_line = 5, end_line = 25 })
+  local unknown = draft({ sha = entry.head_sha, path = "other.txt" })
+  unknown.path = "other.txt"
+
+  local plan =
+    comments.plan_submission({ outdated, missing, out_of_diff, cross_hunk, unknown }, ctx)
+
+  eq(#plan.items, 0)
+  eq(#plan.skipped, 5)
+  -- The plan preserves input order (every draft here carries the same fresh-state "c1"
+  -- id, so positions -- not ids -- are the reliable handle).
+  eq(plan.skipped[1].thread, outdated)
+  eq(plan.skipped[1].reason:find("outdated") ~= nil, true)
+  eq(plan.skipped[2].thread, missing)
+  eq(plan.skipped[2].reason:find("not found in the PR head") ~= nil, true)
+  eq(plan.skipped[3].thread, out_of_diff)
+  eq(plan.skipped[3].reason:find("not part of the PR diff") ~= nil, true)
+  eq(plan.skipped[4].thread, cross_hunk)
+  eq(plan.skipped[4].reason:find("spans more than one hunk") ~= nil, true)
+  eq(plan.skipped[5].thread, unknown)
+  eq(plan.skipped[5].reason:find("not in the PR diff") ~= nil, true)
+
+  repo:destroy()
+end
+
+T["plan_submission(): ranges inside one hunk carry start_line; base-side deleted lines map"] = function()
+  local repo, entry, hunks, head_lines = submit_fixture()
+  local ctx = fixture_ctx(entry, hunks, head_lines)
+
+  local range = draft({
+    sha = entry.head_sha,
+    start_line = 4,
+    end_line = 6,
+    snapshot = { "l4", "l5 CHANGED", "l6" },
+  })
+  local base_deleted = draft({
+    side = "base",
+    sha = "BASE-SHA",
+    start_line = 15,
+    end_line = 15,
+    snapshot = { "l15" },
+  })
+
+  local plan = comments.plan_submission({ range, base_deleted }, ctx)
+
+  eq(#plan.skipped, 0)
+  eq(plan.items[1].payload.start_line, 4)
+  eq(plan.items[1].payload.line, 6)
+  eq(plan.items[2].payload, {
+    path = "f.txt",
+    side = "base",
+    line = 15,
+    body = "about this line",
+  })
+
+  repo:destroy()
+end
+
+-- adopt() ---------------------------------------------------------------------
+
+T["adopt(): moves drafts with FRESH ids, emptying the source"] = function()
+  local src = fresh_state()
+  local a = comments.add(src, add_opts({ body = "first" }))
+  local b = comments.add(src, add_opts({ start_line = 9, end_line = 9, body = "second" }))
+  local a_anchor = vim.deepcopy(a.anchor)
+
+  local dst = fresh_state()
+  dst.comment_seq = 5
+  comments.add(dst, add_opts({ body = "already here" }))
+
+  eq(comments.adopt(src, dst), 2)
+
+  eq(src.comments, {}, "the source is emptied (viewed marks are not this function's business)")
+  local moved = dst.comments["src/a.lua"]
+  eq(#moved, 3)
+  eq(moved[2].id, "c7", "fresh ids from the destination's sequence")
+  eq(moved[3].id, "c8")
+  eq(moved[2].anchor, a_anchor, "anchors travel verbatim")
+  eq(moved[2].messages[1].body, "first")
+  eq(moved[3].messages[1].body, "second")
+  eq(dst.comment_seq, 8)
+
+  -- Nothing left to adopt on a second pass.
+  eq(comments.adopt(src, dst), 0)
 end
 
 T["format_prompt_all(): joins with ===== separators"] = function()

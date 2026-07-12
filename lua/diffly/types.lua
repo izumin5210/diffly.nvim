@@ -118,3 +118,35 @@
 ---@field detect_pr fun(repo: diffly.RepoIdentity): diffly.PrInfo|nil, string|nil
 ---@field fetch_threads fun(repo: diffly.RepoIdentity, pr: diffly.PrInfo, on_done: fun(threads_by_path: table<string, diffly.RemoteThread[]>|nil, err: string|nil)): diffly.FetchHandle|nil, string|nil
 ---@field submit_review fun(repo: diffly.RepoIdentity, pr: diffly.PrInfo, submission: diffly.ReviewSubmission): boolean|nil, string|nil
+
+--- One review comment as it goes over the wire -- still diffly-neutral (`side`
+--- base/head); the provider translates to forge vocabulary (GitHub LEFT/RIGHT) at the
+--- last moment.
+---@class diffly.ReviewCommentPayload
+---@field path string
+---@field side "base"|"head"
+---@field line integer          -- the range's LAST line (forge semantics)
+---@field start_line integer?   -- multi-line ranges only; < line, same hunk
+---@field body string
+
+---@class diffly.ReviewSubmission
+---@field commit_id string      -- the PR head oid (PrInfo.head_oid)
+---@field event "COMMENT"|"APPROVE"|"REQUEST_CHANGES"
+---@field body string?          -- optional review summary
+---@field comments diffly.ReviewCommentPayload[]
+
+--- `comments.plan_submission`'s outcome: what goes over the wire, and what stays local
+--- (with a human-readable reason each).
+---@class diffly.SubmissionPlan
+---@field items { thread: diffly.CommentThread, payload: diffly.ReviewCommentPayload }[]
+---@field skipped { thread: diffly.CommentThread, reason: string }[]
+
+--- Everything `plan_submission` needs to know about one path's place in the PR diff --
+--- assembled by `Session:prepare_submission` (which owns the git calls; the planning
+--- itself stays pure).
+---@class diffly.SubmitCtx
+---@field in_pr boolean         -- the path appears in the PR's own (merge-base..HEAD) diff
+---@field head_sha string?      -- the HEAD-commit blob sha for the path
+---@field head_lines string[]?  -- that blob's content (re-anchor target for drifted drafts)
+---@field line_sets { base: table<integer, true>, head: table<integer, true> }[]
+--- -- per-hunk valid submit positions (comments.hunk_line_sets)
