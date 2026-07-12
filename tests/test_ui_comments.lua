@@ -322,6 +322,18 @@ T["compose(): closing the window externally funnels into cancel (teardown-safe)"
   vim.cmd("stopinsert")
 end
 
+T["compose(): allow_empty submits an empty body (the review-summary flow)"] = function()
+  local win, buf, record = composed({ allow_empty = true })
+
+  mapping_by_desc(buf, "n", "diffly: submit comment")()
+
+  eq(record.submit_count, 1)
+  eq(record.submitted, { "" })
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
 T["compose(): initial prefills the buffer for the edit flow"] = function()
   local win, buf, _ = composed({ initial = { "existing body" } })
   eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "existing body" })

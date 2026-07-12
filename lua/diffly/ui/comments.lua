@@ -187,6 +187,8 @@ end
 ---@class diffly.ui.ComposeOpts
 ---@field title string          -- "path:L42" / "path:L42-L48", shown in the border
 ---@field initial string[]?     -- prefill for the edit flow; empty/nil starts in insert mode
+---@field allow_empty boolean?  -- submit even a whitespace-only body (the optional
+--- review-summary flow); default: an empty body submits as a cancel
 ---@field on_submit fun(lines: string[])
 ---@field on_cancel fun()?
 
@@ -246,7 +248,7 @@ function M.compose(opts)
     -- keys they type become text edits instead of commands).
     vim.cmd("stopinsert")
 
-    if submitted and vim.trim(table.concat(lines, "\n")) ~= "" then
+    if submitted and (opts.allow_empty or vim.trim(table.concat(lines, "\n")) ~= "") then
       opts.on_submit(lines)
     elseif opts.on_cancel then
       opts.on_cancel()
