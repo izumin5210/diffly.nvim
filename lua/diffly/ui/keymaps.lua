@@ -37,6 +37,7 @@ local M = {}
 ---@field comment_edit fun(path: string, side: "base"|"head", line: integer)
 ---@field comment_delete fun(path: string, side: "base"|"head", line: integer)
 ---@field comment_toggle fun()
+---@field comment_toggle_resolved fun()
 ---@field comment_copy fun(path: string, side: "base"|"head", line: integer)
 ---@field comment_copy_all fun()
 
@@ -167,6 +168,12 @@ local function comment_entries(actions, path, cfg, side)
       key = cfg.comment_toggle,
       callback = function()
         actions.comment_toggle()
+      end,
+    },
+    comment_toggle_resolved = {
+      key = cfg.comment_toggle_resolved,
+      callback = function()
+        actions.comment_toggle_resolved()
       end,
     },
     comment_copy = {

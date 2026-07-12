@@ -21,6 +21,7 @@
 
 local comments = require("diffly.comments")
 local config = require("diffly.config")
+local github = require("diffly.github")
 local session = require("diffly.session")
 local state = require("diffly.state")
 local panel = require("diffly.ui.panel")
@@ -36,6 +37,8 @@ local M = {}
 ---@field panel diffly.Panel
 ---@field origin_tab integer  -- tabpage handle the user was on before this review opened
 ---@field refresh_timer uv.uv_timer_t?             -- BufWritePost/FocusGained debounce
+---@field remote_fetch diffly.FetchHandle?         -- in-flight review-thread fetch, if any;
+--- cancelled in `close_entry` right after the timer, same teardown discipline
 
 --- The session registry itself: one entry per open review, keyed by the dedicated
 --- viewer tabpage's handle. Underscore-prefixed, in the same spirit as
@@ -177,9 +180,81 @@ local function debounced_refresh(entry)
   entry.refresh_timer:start(REFRESH_DEBOUNCE_MS, 0, function()
     stop_entry_timer(entry)
     vim.schedule(function()
+      -- Local diff only, DELIBERATELY: this debounced path fires on every save and
+      -- focus change, and must never turn into network traffic. Remote-thread refetches
+      -- belong exclusively to explicit user actions (`manual_refresh` below).
       entry.session:refresh()
     end)
   end)
+end
+
+-- One-time notice when the overlay can't even start (e.g. a repo identity with no
+-- parsable remote): the review still works fully locally, so a single INFO per Neovim
+-- session -- same rationale as session.lua's gh-missing notice.
+local overlay_degraded_notified = false
+
+--- Kick off (or restart) the async review-thread fetch for `tab`'s review -- the
+--- codebase's one async subprocess (github.fetch_threads). Captures the tabpage int,
+--- never the entry/session: the completion re-resolves `entries[tab]` and degrades to a
+--- silent no-op when the review closed mid-flight, mirroring the render getters. A
+--- silent no-op too for branch-keyed sessions (no PR is the normal case).
+---@param tab integer
+local function start_remote_fetch(tab)
+  local entry = entries[tab]
+  if not entry then
+    return
+  end
+  local sess = entry.session
+  if not sess.pr then
+    return
+  end
+
+  -- Manual-refresh spam: the last request wins, anything still in flight is cancelled.
+  if entry.remote_fetch then
+    entry.remote_fetch.cancel()
+    entry.remote_fetch = nil
+  end
+
+  local handle, err = github.fetch_threads(sess.spec.repo, sess.pr, function(by_path, fetch_err)
+    local live = entries[tab]
+    if not live then
+      return
+    end
+    live.remote_fetch = nil
+    if not by_path then
+      vim.notify(
+        "diffly: failed to fetch PR review threads: " .. (fetch_err or "unknown error"),
+        vim.log.levels.WARN
+      )
+      return
+    end
+    live.session:set_remote_threads(by_path)
+  end)
+
+  if not handle then
+    if not overlay_degraded_notified then
+      overlay_degraded_notified = true
+      vim.notify(
+        "diffly: PR review-thread overlay unavailable: " .. (err or "unknown error"),
+        vim.log.levels.INFO
+      )
+    end
+    return
+  end
+  entry.remote_fetch = handle
+end
+
+--- An EXPLICIT user refresh (`:Diffly refresh`, a bare `:Diffly` on the viewer tab, the
+--- panel's `R`): recompute the local diff AND refetch the remote overlay. The debounced
+--- auto-refresh above never comes here.
+---@param tab integer
+local function manual_refresh(tab)
+  local entry = entries[tab]
+  if not entry then
+    return
+  end
+  entry.session:refresh()
+  start_remote_fetch(tab)
 end
 
 ---@param tab integer
@@ -234,6 +309,12 @@ local function close_entry(tab)
   entries[tab] = nil
 
   stop_entry_timer(entry)
+  -- An in-flight thread fetch dies with the review; its completion re-resolves the
+  -- registry anyway (already emptied above), so this is belt and suspenders.
+  if entry.remote_fetch then
+    entry.remote_fetch.cancel()
+    entry.remote_fetch = nil
+  end
   clear_entry_autocmds(tab)
 
   entry.session:close()
@@ -566,6 +647,12 @@ local function build_actions(tab)
         entry.session:toggle_comments_collapsed()
       end
     end,
+    comment_toggle_resolved = function()
+      local entry = resolve_live_entry(tab, "comment_toggle_resolved")
+      if entry then
+        entry.session:toggle_remote_resolved()
+      end
+    end,
     comment_copy = function(path, side, line)
       local entry = resolve_live_entry(tab, "comment_copy")
       if not entry then
@@ -596,12 +683,15 @@ local function build_actions(tab)
     -- Render-time reads (the views' comment repaint), not user actions: a stale call
     -- degrades to empty data SILENTLY -- `resolve_live_entry`'s notify is for ignored
     -- keypresses, and a repaint racing teardown is not something to warn about.
+    -- `threads_for_render`, not `comments_for`: the render feed carries local drafts
+    -- PLUS the displayable remote overlay; cursor actions above keep operating on the
+    -- local store only.
     comments_for = function(path)
       local entry = entries[tab]
       if not entry then
         return {}
       end
-      return entry.session:comments_for(path)
+      return entry.session:threads_for_render(path)
     end,
     comments_collapsed = function()
       local entry = entries[tab]
@@ -854,7 +944,14 @@ local function open_new(base)
     end
   end
 
-  local pnl = panel.open(sess, { sweep = sweep_action })
+  -- Same injection shape as `sweep_action`: the panel's `R` must behave exactly like
+  -- `:Diffly refresh` (an EXPLICIT refresh, overlay refetch included) without
+  -- `ui/panel.lua` ever requiring this module.
+  local function refresh_action()
+    manual_refresh(viewer_tab)
+  end
+
+  local pnl = panel.open(sess, { sweep = sweep_action, refresh = refresh_action })
 
   -- Now that the tabpage/panel exist, the view factory closure's `ctx` can be filled in:
   -- `ctx.anchor` is the panel window every view splits rightward from; `ctx.claim` is the
@@ -869,8 +966,13 @@ local function open_new(base)
     panel = pnl,
     origin_tab = origin_tab,
     refresh_timer = nil,
+    remote_fetch = nil,
   }
   entries[viewer_tab] = entry
+
+  -- The overlay kickoff -- async, AFTER the registry entry exists so the completion can
+  -- find it. Opening never waits on the network; the panel/views repaint when it lands.
+  start_remote_fetch(viewer_tab)
 
   local first_unviewed = sess:next_unviewed(nil)
   if first_unviewed then
@@ -906,7 +1008,8 @@ end
 function M.refresh()
   local entry = current_entry()
   if entry then
-    entry.session:refresh()
+    -- An explicit user action: local diff AND the remote-thread overlay.
+    manual_refresh(vim.api.nvim_get_current_tabpage())
   end
 end
 
@@ -1095,11 +1198,14 @@ function M.open(args)
     return M.sweep(vim.list_slice(args, 2))
   elseif first == "comments" then
     return M.comments()
+  elseif first == "submit" then
+    return M.submit()
   end
 
   local entry = current_entry()
   if entry then
-    entry.session:refresh()
+    -- A bare `:Diffly` on an already-open viewer tab is an explicit refresh.
+    manual_refresh(vim.api.nvim_get_current_tabpage())
     return
   end
 
@@ -1121,22 +1227,60 @@ function M.comments()
     return
   end
 
-  local threads = entry.session:all_comments()
-  if #threads == 0 then
+  local locals = entry.session:all_comments()
+  local remotes = entry.session:remote_thread_list()
+  if #locals == 0 and #remotes == 0 then
     vim.notify("diffly: no comments in this review", vim.log.levels.INFO)
     return
   end
 
-  local toplevel = entry.session.spec.repo.toplevel
-  local items = {}
-  for _, thread in ipairs(threads) do
+  -- Both layers merged into one (path, line) ordering; the seq tiebreak keeps the merge
+  -- deterministic (table.sort is not stable) with local drafts before remote threads on
+  -- the exact same line.
+  local rows = {}
+  for _, thread in ipairs(locals) do
     local first_line = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
-    table.insert(items, {
-      filename = vim.fs.joinpath(toplevel, thread.path),
+    table.insert(rows, {
+      path = thread.path,
       lnum = thread.anchor.start_line,
+      seq = #rows,
       text = (thread.anchor.outdated and "[outdated] " or "")
         .. (thread.anchor.side == "base" and "[base] " or "")
         .. first_line,
+    })
+  end
+  for _, thread in ipairs(remotes) do
+    local first_line = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
+    table.insert(rows, {
+      path = thread.path,
+      lnum = thread.anchor.start_line,
+      seq = #rows,
+      text = "[@"
+        .. thread.messages[1].author
+        .. "] "
+        .. (thread.resolved and "[resolved] " or "")
+        .. (thread.anchor.outdated and "[outdated] " or "")
+        .. (thread.anchor.side == "base" and "[base] " or "")
+        .. first_line,
+    })
+  end
+  table.sort(rows, function(a, b)
+    if a.path ~= b.path then
+      return a.path < b.path
+    end
+    if a.lnum ~= b.lnum then
+      return a.lnum < b.lnum
+    end
+    return a.seq < b.seq
+  end)
+
+  local toplevel = entry.session.spec.repo.toplevel
+  local items = {}
+  for _, row in ipairs(rows) do
+    table.insert(items, {
+      filename = vim.fs.joinpath(toplevel, row.path),
+      lnum = row.lnum,
+      text = row.text,
     })
   end
 
@@ -1144,6 +1288,107 @@ function M.comments()
   -- Full-width at the very bottom of the viewer tab; the panel's winfixwidth/height keep
   -- its geometry intact.
   vim.cmd("botright copen")
+end
+
+--- `:Diffly submit`: every mappable local draft into ONE review on the PR
+--- (docs/design.md "Comments"). Flow: validate/map against the PR's real diff
+--- (`Session:prepare_submission`) -> report what stays local -> pick the review event
+--- (`vim.ui.select`, COMMENT first as the safe default -- APPROVE/REQUEST_CHANGES are
+--- rejected by the forge on one's own PR) -> optional summary via the compose float
+--- (`allow_empty`) -> POST. Only a SUCCESSFUL post mutates the local store (the endpoint
+--- is atomic: on a 422 nothing landed and every draft is intact, with the forge's reason
+--- notified verbatim); submitted drafts then reappear through the overlay refetch.
+function M.submit()
+  local entry = current_entry()
+  if not entry then
+    vim.notify("diffly: no review is open on this tabpage", vim.log.levels.INFO)
+    return
+  end
+  local tab = vim.api.nvim_get_current_tabpage()
+
+  local plan, err = entry.session:prepare_submission()
+  if not plan then
+    vim.notify(err or "diffly: cannot submit", vim.log.levels.WARN)
+    return
+  end
+
+  if #plan.skipped > 0 then
+    local lines = { string.format("diffly: %d draft(s) stay local:", #plan.skipped) }
+    for _, skip in ipairs(plan.skipped) do
+      table.insert(
+        lines,
+        string.format(
+          "  %s:L%d — %s",
+          skip.thread.path,
+          skip.thread.anchor.start_line,
+          skip.reason
+        )
+      )
+    end
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.WARN)
+  end
+  if #plan.items == 0 then
+    vim.notify("diffly: nothing to submit", vim.log.levels.INFO)
+    return
+  end
+
+  vim.ui.select({
+    { event = "COMMENT", display = "Comment" },
+    { event = "APPROVE", display = "Approve" },
+    { event = "REQUEST_CHANGES", display = "Request changes" },
+  }, {
+    prompt = string.format("diffly: submit %d comment(s) as:", #plan.items),
+    format_item = function(choice)
+      return choice.display
+    end,
+  }, function(choice)
+    if not choice then
+      return -- cancelling any diffly menu is always consequence-free
+    end
+
+    ui_comments.compose({
+      title = "review summary (optional)",
+      allow_empty = true,
+      on_submit = function(lines)
+        -- Re-resolve at submit time: the float can outlive the review.
+        local live = resolve_live_entry(tab, "submit")
+        if not live or not live.session.pr then
+          return
+        end
+
+        local payloads = {}
+        for _, item in ipairs(plan.items) do
+          table.insert(payloads, item.payload)
+        end
+        local body = vim.trim(table.concat(lines, "\n"))
+
+        local ok, submit_err = github.submit_review(live.session.spec.repo, live.session.pr, {
+          commit_id = live.session.pr.head_oid,
+          event = choice.event,
+          body = body ~= "" and body or nil,
+          comments = payloads,
+        })
+        if not ok then
+          vim.notify(
+            "diffly: review submission failed: " .. (submit_err or "unknown error"),
+            vim.log.levels.ERROR
+          )
+          return
+        end
+
+        live.session:remove_submitted(plan.items)
+        start_remote_fetch(tab)
+        vim.notify(
+          string.format(
+            "diffly: submitted %d comment(s)%s",
+            #plan.items,
+            #plan.skipped > 0 and string.format(" (%d kept locally)", #plan.skipped) or ""
+          ),
+          vim.log.levels.INFO
+        )
+      end,
+    })
+  end)
 end
 
 --- Backing function for `<Plug>(diffly-toggle-viewed)` (see plugin/diffly.lua): toggles the

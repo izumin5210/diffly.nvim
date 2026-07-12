@@ -70,6 +70,7 @@ M.defaults = {
       comment_edit = "ce",
       comment_delete = "cd",
       comment_toggle = "ct", -- collapse/expand inline comment rendering, session-wide
+      comment_toggle_resolved = "cr", -- reveal/hide resolved remote threads, session-wide
       comment_copy = "cy", -- difit-format prompt for the comment at the cursor
       comment_copy_all = "cY", -- ditto, every comment in the review
     },
@@ -100,6 +101,7 @@ M.defaults = {
       comment_edit = "<leader>ce",
       comment_delete = "<leader>cd",
       comment_toggle = "<leader>ct",
+      comment_toggle_resolved = "<leader>cr",
       comment_copy = "<leader>cy",
       comment_copy_all = "<leader>cY",
     },

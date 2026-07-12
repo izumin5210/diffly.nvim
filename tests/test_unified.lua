@@ -1147,7 +1147,8 @@ T["comments: a head thread renders below its line; refresh_comments repaints wit
   eq(#got, 1)
   eq(got[1][2], 3) -- 0-based row of worktree line 4
   eq(got[1][4].virt_lines_above, false)
-  eq(got[1][4].virt_lines[1][2][1], "why?")
+  -- Boxed shape: header (✎ draft), body, footer.
+  eq(got[1][4].virt_lines[2][2][1], "why?")
 
   -- The thread moves (a re-anchor, or edit/delete): a comment-only repaint follows it.
   set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 8, "why?") } })

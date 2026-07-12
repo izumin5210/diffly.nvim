@@ -185,7 +185,7 @@ local function scratch_buf(lines)
   return buf, vim.api.nvim_create_namespace("")
 end
 
-T["render(): expanded comments become virt_lines below their anchor"] = function()
+T["render(): expanded comments are boxed virt_lines below their anchor"] = function()
   local buf, ns = scratch_buf(6)
   local t = thread({ messages = { { body = "first\nsecond", created_at = "x" } } })
 
@@ -198,11 +198,16 @@ T["render(): expanded comments become virt_lines below their anchor"] = function
   eq(got[1][2], 1) -- anchored at row 1
   local details = got[1][4]
   eq(details.virt_lines_above, false)
-  eq(#details.virt_lines, 2) -- one per body line
-  eq(details.virt_lines[1][2][1], "first")
-  eq(details.virt_lines[2][2][1], "second")
-  eq(details.virt_lines[1][1][2], "DifflyCommentMarker")
-  eq(details.virt_lines[1][2][2], "DifflyCommentBody")
+  -- header + one line per body line + footer: the box is what keeps two adjacent
+  -- threads on the same anchor visually separate.
+  eq(#details.virt_lines, 4)
+  eq(details.virt_lines[1][1][1], "╭─ ")
+  eq(details.virt_lines[1][2][1], "✎ draft")
+  eq(details.virt_lines[2][2][1], "first")
+  eq(details.virt_lines[3][2][1], "second")
+  eq(details.virt_lines[4][1][1], "╰─")
+  eq(details.virt_lines[2][1][2], "DifflyCommentMarker")
+  eq(details.virt_lines[2][2][2], "DifflyCommentBody")
 
   vim.api.nvim_buf_delete(buf, { force = true })
 end
@@ -265,7 +270,8 @@ T["compose(): a markdown float scratch that never sets 'filetype'"] = function()
   -- `relative = "cursor"` is normalized to a win-relative position once created; any
   -- non-empty `relative` means "a floating window".
   eq(vim.api.nvim_win_get_config(win).relative ~= "", true)
-  eq(vim.bo[buf].buftype, "nofile")
+  -- 'acwrite', not 'nofile': :w/:wq must route through BufWriteCmd (see the cases below).
+  eq(vim.bo[buf].buftype, "acwrite")
   -- The hard invariant: markdown highlighting WITHOUT a FileType event (LSP didOpen on a
   -- non-file buffer can crash servers) -- treesitter when available, 'syntax' otherwise.
   eq(vim.bo[buf].filetype, "")
@@ -322,10 +328,210 @@ T["compose(): closing the window externally funnels into cancel (teardown-safe)"
   vim.cmd("stopinsert")
 end
 
+T["compose(): :w submits exactly once and closes the float"] = function()
+  -- Ctrl keys are hostage to the terminal stack (flow control, multiplexers); vim's own
+  -- save gesture must work everywhere.
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "written body" })
+
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("write")
+  end)
+  vim.wait(200, function()
+    return not vim.api.nvim_win_is_valid(win)
+  end, 10)
+
+  eq(record.submit_count, 1)
+  eq(record.submitted, { "written body" })
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): :wq submits and quits without touching any other window"] = function()
+  local wins_before = #vim.api.nvim_tabpage_list_wins(0)
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "written body" })
+  vim.cmd("stopinsert")
+
+  -- The float is the current window (compose enters it); :wq = write (submit via
+  -- BufWriteCmd) then quit THIS window -- the quit must consume the float, never the
+  -- window focus falls back to.
+  vim.api.nvim_set_current_win(win)
+  vim.cmd("wq")
+  vim.wait(200, function()
+    return not vim.api.nvim_win_is_valid(win)
+  end, 10)
+
+  eq(record.submit_count, 1)
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  eq(#vim.api.nvim_tabpage_list_wins(0), wins_before, "no other window was quit")
+end
+
+T["compose(): :q warns on an unsaved body (E37); :q! cancels; a pristine :q cancels silently"] = function()
+  -- A typed-but-unsaved comment is real work: quitting without submitting warns exactly
+  -- like an unsaved file, and :q! is the explicit discard.
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "precious draft" })
+  vim.cmd("stopinsert")
+  vim.api.nvim_set_current_win(win)
+
+  local ok, err = pcall(vim.cmd, "q")
+  eq(ok, false)
+  eq(tostring(err):find("E37") ~= nil, true)
+  eq(record.submit_count, 0)
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), true, "the float survives the refused quit")
+
+  vim.cmd("q!")
+  eq(record.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win), false)
+
+  -- Untouched float (prefill included): plain :q cancels without complaining.
+  local win2, _, record2 = composed({ initial = { "existing body" } })
+  vim.api.nvim_set_current_win(win2)
+  vim.cmd("q")
+  eq(record2.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win2), false)
+end
+
+T["compose(): allow_empty submits an empty body (the review-summary flow)"] = function()
+  local win, buf, record = composed({ allow_empty = true })
+
+  mapping_by_desc(buf, "n", "diffly: submit comment")()
+
+  eq(record.submit_count, 1)
+  eq(record.submitted, { "" })
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
 T["compose(): initial prefills the buffer for the edit flow"] = function()
   local win, buf, _ = composed({ initial = { "existing body" } })
   eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "existing body" })
   vim.api.nvim_win_close(win, true)
+end
+
+--- A minimal diffly.RemoteThread for render tests.
+---@param opts {resolved: boolean?, messages: table[]}
+local function remote(opts)
+  return {
+    id = "T1",
+    path = "src/a.lua",
+    remote = true,
+    resolved = opts.resolved == true,
+    anchor = { side = "head", start_line = 2, end_line = 2 },
+    messages = opts.messages,
+  }
+end
+
+T["render(): remote threads box the author into the header and keep every message"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({
+    messages = {
+      { author = "alice", body = "first point\nsecond line" },
+      { author = "bob", body = "reply" },
+    },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local got = marks(buf, ns)
+  eq(#got, 1)
+  local lines = got[1][4].virt_lines
+  -- header(@alice) / body / body / @bob / body / footer.
+  eq(#lines, 6)
+  eq(lines[1][1][1], "╭─ ")
+  eq(lines[1][1][2], "DifflyCommentRemoteMarker", "remote threads use the remote marker group")
+  eq(lines[1][2][1], "@alice")
+  eq(lines[1][2][2], "DifflyCommentAuthor")
+  eq(lines[2][2][1], "first point")
+  eq(lines[3][2][1], "second line")
+  eq(lines[4][2][1], "@bob")
+  eq(lines[4][2][2], "DifflyCommentAuthor")
+  eq(lines[5][2][1], "reply")
+  eq(lines[6][1][1], "╰─")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): a resolved remote thread is tagged in its header"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({ resolved = true, messages = { { author = "alice", body = "done" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  eq(lines[1][2][1], "@alice")
+  eq(lines[1][3][1], " [resolved]")
+  eq(lines[1][3][2], "DifflyCommentResolved")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): two threads on the same anchor stay visually separate (adjacent boxes)"] = function()
+  -- The regression this design exists for: a local draft and a remote thread on the SAME
+  -- line used to fuse into one uniform gutter block.
+  local buf, ns = scratch_buf(6)
+  local local_thread = thread({ messages = { { body = "my draft", created_at = "x" } } })
+  local remote_thread = remote({ messages = { { author = "alice", body = "her point" } } })
+
+  ui_comments.render(buf, ns, {
+    { row = 1, above = false, thread = local_thread },
+    { row = 1, above = false, thread = remote_thread },
+  }, { collapsed = false })
+
+  local got = marks(buf, ns)
+  eq(#got, 2)
+  local first, second = got[1][4].virt_lines, got[2][4].virt_lines
+  -- Each block is self-delimited: ...body, ╰─ | ╭─ header...
+  eq(first[#first][1][1], "╰─")
+  eq(second[1][1][1], "╭─ ")
+  -- And the two are distinguishable at a glance: label vs author + different marker hl.
+  eq(first[1][2][1], "✎ draft")
+  eq(first[1][1][2], "DifflyCommentMarker")
+  eq(second[1][2][1], "@alice")
+  eq(second[1][1][2], "DifflyCommentRemoteMarker")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): collapsed remote threads show the author in the indicator"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({ messages = { { author = "alice", body = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 2, above = false, thread = t } }, { collapsed = true })
+
+  local details = marks(buf, ns)[1][4]
+  eq(details.virt_lines, nil)
+  eq(details.virt_text[1][1], " ✎ @alice")
+  eq(details.virt_text[1][2], "DifflyCommentRemoteMarker")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): the exact local chunk shape (golden safety)"] = function()
+  -- Any change here shifts every comment screenshot golden -- keep this pin in sync
+  -- with deliberate redesigns only.
+  local buf, ns = scratch_buf(6)
+  local t = thread({ messages = { { body = "first\nsecond", created_at = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local details = marks(buf, ns)[1][4]
+  eq(details.virt_lines, {
+    { { "╭─ ", "DifflyCommentMarker" }, { "✎ draft", "DifflyCommentMarker" } },
+    { { "│ ", "DifflyCommentMarker" }, { "first", "DifflyCommentBody" } },
+    { { "│ ", "DifflyCommentMarker" }, { "second", "DifflyCommentBody" } },
+    { { "╰─", "DifflyCommentMarker" } },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = true })
+  eq(marks(buf, ns)[1][4].virt_text, { { " ✎ comment", "DifflyCommentMarker" } })
+
+  vim.api.nvim_buf_delete(buf, { force = true })
 end
 
 T["render(): clear-and-redraw removes stale marks"] = function()

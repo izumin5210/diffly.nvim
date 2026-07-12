@@ -2177,4 +2177,435 @@ T["comments: `:Diffly comments` with no comments notifies instead of opening an 
   eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype") ~= "quickfix", true)
 end
 
+---------------------------------------------------------------------------------------
+-- comments: the remote overlay (PR review threads) ---------------------------------------
+---------------------------------------------------------------------------------------
+
+-- One-page GraphQL review-thread fixture for src/mod.lua: an unresolved thread from
+-- @alice on worktree line 4 and a resolved one from @bob on line 8.
+local THREADS_JSON = [[{"data":{"repository":{"pullRequest":{"reviewThreads":{]]
+  .. [["pageInfo":{"hasNextPage":false,"endCursor":null},]]
+  .. [["nodes":[{"id":"T1","isResolved":false,"isOutdated":false,]]
+  .. [["line":4,"originalLine":4,"startLine":null,"originalStartLine":null,]]
+  .. [["diffSide":"RIGHT","path":"src/mod.lua","comments":{"nodes":[]]
+  .. [[{"author":{"login":"alice"},"body":"tighten the greeting"}]}},]]
+  .. [[{"id":"T2","isResolved":true,"isOutdated":false,]]
+  .. [["line":8,"originalLine":8,"startLine":null,"originalStartLine":null,]]
+  .. [["diffSide":"RIGHT","path":"src/mod.lua","comments":{"nodes":[]]
+  .. [[{"author":{"login":"bob"},"body":"resolved earlier"}]}}]}}}}}]]
+
+--- gh shim dispatching `gh pr view` vs `gh api graphql`, logging one args line per
+--- invocation into `log` (newlines in the embedded GraphQL query flattened).
+---@param log string
+---@param api_body string? @sh statements answering the `api` case; default prints THREADS_JSON
+---@return function restore
+local function overlay_gh_shim(log, api_body)
+  local body = ([[
+LOG=%q
+printf 'ARGS %%s' "$*" | tr '\n' ' ' >> "$LOG"
+printf '\n' >> "$LOG"
+case "$1" in
+  api) %s ;;
+  *) printf '%%s' '{"number":7,"baseRefName":"main","headRefOid":"abc123","url":"https://example.com/pr/7"}' ;;
+esac
+]]):format(log, api_body or ("printf '%s' '" .. THREADS_JSON .. "'"))
+  return helpers.child_path_shim(child, "gh", body)
+end
+
+--- Poll the runner side until `expr` evaluates true in the child (no vim.wait in this
+--- suite; extends the vim.uv.sleep debounce precedent above).
+---@param expr string
+---@param timeout_ms integer?
+---@return boolean
+local function wait_child(expr, timeout_ms)
+  for _ = 1, math.floor((timeout_ms or 5000) / 50) do
+    if child.lua_get("(" .. expr .. ") == true") then
+      return true
+    end
+    vim.uv.sleep(50)
+  end
+  return child.lua_get("(" .. expr .. ") == true")
+end
+
+--- Count the `gh api` invocations the shim logged.
+---@param log string
+---@return integer
+local function api_call_count(log)
+  local count = 0
+  for _, line in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+    if line:find("^ARGS api") then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+--- Poll until the shim has logged at least `n` `gh api` calls.
+---@param log string
+---@param n integer
+---@return boolean
+local function wait_api_calls(log, n)
+  for _ = 1, 100 do
+    if api_call_count(log) >= n then
+      return true
+    end
+    vim.uv.sleep(50)
+  end
+  return api_call_count(log) >= n
+end
+
+T["overlay: review threads fetch async on open and render with authors (golden)"] = function()
+  set_size(child, 24, 100)
+  -- The fixture repo has no remote; the overlay needs a parsable repo identity.
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local log = vim.fn.tempname()
+  local restore = overlay_gh_shim(log)
+
+  child.cmd("Diffly")
+  eq(session_field(child, "spec.review_key.kind"), "pr")
+  eq(wait_child("next(__diffly_entry().session.remote_threads) ~= nil"), true, "fetch lands")
+
+  -- A local draft alongside, then open mod.lua: both layers render together.
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 9, end_line = 9, body = "my local draft",
+        snapshot = { "end" } })]],
+    { paths.modified }
+  )
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+
+  -- Panel: 1 local + 1 unresolved remote (the resolved thread never counts).
+  eq(panel_lines(child)[5]:find("✎2", 1, true) ~= nil, true)
+
+  -- The right worktree buffer carries @alice's thread in the view's comment namespace.
+  local virt_texts = child.lua_get([[(function()
+    local view = __diffly_entry().session._view
+    local marks = vim.api.nvim_buf_get_extmarks(view.shown.right_buf, view.comment_ns, 0, -1, { details = true })
+    local texts = {}
+    for _, m in ipairs(marks) do
+      for _, vline in ipairs(m[4].virt_lines or {}) do
+        for _, chunk in ipairs(vline) do
+          table.insert(texts, chunk[1])
+        end
+      end
+    end
+    return texts
+  end)()]])
+  eq(vim.tbl_contains(virt_texts, "@alice"), true)
+  eq(vim.tbl_contains(virt_texts, "tighten the greeting"), true)
+  eq(vim.tbl_contains(virt_texts, "my local draft"), true)
+  eq(vim.tbl_contains(virt_texts, "@bob"), false, "resolved threads hidden by default")
+
+  child.o.statusline = "%<%t %m"
+  expect_screenshot(child)
+
+  -- <leader>cr reveals the resolved thread (focus sits on the right worktree buffer).
+  child.type_keys([[\cr]])
+  eq(session_field(child, "show_resolved_remote"), true)
+
+  restore()
+end
+
+T["overlay: quickfix merges local and remote threads in (path, line) order"] = function()
+  -- The fixture repo has no remote; the overlay needs a parsable repo identity.
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local log = vim.fn.tempname()
+  local restore = overlay_gh_shim(log)
+
+  child.cmd("Diffly")
+  eq(wait_child("next(__diffly_entry().session.remote_threads) ~= nil"), true)
+
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 9, end_line = 9, body = "my local draft",
+        snapshot = { "end" } })]],
+    { paths.modified }
+  )
+
+  child.cmd("Diffly comments")
+  local qf = child.lua_get([[vim.fn.getqflist({ items = 1, title = 1 })]])
+  eq(qf.title, "diffly comments")
+  eq(#qf.items, 2, "local draft + unresolved remote; resolved stays hidden")
+  eq(qf.items[1].lnum, 4)
+  eq(qf.items[1].text, "[@alice] tighten the greeting")
+  eq(qf.items[2].lnum, 9)
+  eq(qf.items[2].text, "my local draft")
+
+  -- Revealing resolved threads adds them to the list too.
+  child.cmd("cclose")
+  child.lua([[__diffly_entry().session:toggle_remote_resolved()]])
+  child.cmd("Diffly comments")
+  qf = child.lua_get([[vim.fn.getqflist({ items = 1 })]])
+  eq(#qf.items, 3)
+  eq(qf.items[2].text, "[@bob] [resolved] resolved earlier")
+
+  restore()
+end
+
+T["overlay: the debounced auto-refresh never refetches; panel R and :Diffly refresh do"] = function()
+  -- The fixture repo has no remote; the overlay needs a parsable repo identity.
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local log = vim.fn.tempname()
+  local restore = overlay_gh_shim(log)
+
+  child.cmd("Diffly")
+  eq(wait_child("next(__diffly_entry().session.remote_threads) ~= nil"), true)
+  eq(api_call_count(log), 1)
+
+  -- BufWritePost -> the 200ms debounced refresh: local diff only, NO network.
+  child.lua(
+    [[vim.api.nvim_exec_autocmds("BufWritePost", { pattern = (...) .. "/src/mod.lua" })]],
+    { repo.dir }
+  )
+  vim.uv.sleep(400)
+  eq(api_call_count(log), 1, "the debounced auto-refresh must never hit the network")
+
+  -- Panel R is an explicit user action: it refetches.
+  focus_panel(child)
+  child.type_keys("R")
+  eq(wait_api_calls(log, 2), true, "panel R refetches the overlay")
+
+  -- :Diffly refresh likewise.
+  child.cmd("Diffly refresh")
+  eq(wait_api_calls(log, 3), true, ":Diffly refresh refetches the overlay")
+
+  restore()
+end
+
+T["overlay: closing the review mid-fetch cancels cleanly"] = function()
+  local log = vim.fn.tempname()
+  local restore = overlay_gh_shim(log, [[sleep 3; printf '%s' '{}']])
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+
+  child.cmd("Diffly")
+  eq(session_field(child, "spec.review_key.kind"), "pr")
+  child.cmd("Diffly close")
+  eq(is_open(child), false)
+
+  vim.uv.sleep(400)
+  -- No errors surfaced, and nothing resurrected the entry.
+  eq(child.lua_get([[vim.v.errmsg]]), "")
+  eq(is_open(child), false)
+
+  restore()
+end
+
+T["overlay: a branch-keyed review (no PR) never fetches"] = function()
+  -- gh answers `pr view` with a failure: the session falls back to the branch key and
+  -- the overlay silently stays empty -- no fetch attempt, no error.
+  local log = vim.fn.tempname()
+  local restore = overlay_gh_shim(log, [[printf '%s' '{}']])
+  -- Re-shim `pr view` to fail: dispatch answers `api` normally but `pr` with exit 1.
+  restore()
+  restore = helpers.child_path_shim(
+    child,
+    "gh",
+    ([[
+LOG=%q
+printf 'ARGS %%s\n' "$*" >> "$LOG"
+case "$1" in
+  api) printf '%%s' '{}' ;;
+  *) echo "no pull requests found" >&2; exit 1 ;;
+esac
+]]):format(log)
+  )
+
+  child.cmd("Diffly")
+  eq(session_field(child, "spec.review_key.kind"), "branch")
+  vim.uv.sleep(300)
+  eq(api_call_count(log), 0, "no PR, no fetch")
+  eq(child.lua_get([[next(__diffly_entry().session.remote_threads) == nil]]), true)
+
+  restore()
+end
+
+---------------------------------------------------------------------------------------
+-- comments: :Diffly submit ---------------------------------------------------------------
+---------------------------------------------------------------------------------------
+
+local EMPTY_THREADS_JSON = [[{"data":{"repository":{"pullRequest":{"reviewThreads":{]]
+  .. [["pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}]]
+
+--- gh shim for the submit flow: `pr view` reports the REAL local HEAD as the PR head
+--- (prepare_submission requires them to match), `api graphql` answers an empty thread
+--- page, and the REST submit (`gh api repos/...`) swallows its stdin payload into `log`.
+---@param log string
+---@param head_oid string
+---@return function restore
+local function submit_gh_shim(log, head_oid)
+  local body = ([[
+LOG=%q
+printf 'ARGS %%s' "$*" | tr '\n' ' ' >> "$LOG"
+printf '\n' >> "$LOG"
+case "$1" in
+  api)
+    case "$*" in
+      *graphql*) printf '%%s' '%s' ;;
+      *) cat >> "$LOG"; printf '\n' >> "$LOG"; printf '%%s' '{}' ;;
+    esac ;;
+  *) printf '%%s' '{"number":7,"baseRefName":"main","headRefOid":"%s","url":"u"}' ;;
+esac
+]]):format(log, EMPTY_THREADS_JSON, head_oid)
+  return helpers.child_path_shim(child, "gh", body)
+end
+
+--- The JSON payload the REST submit piped through the shim (the first log line that
+--- parses as a JSON object).
+---@param log string
+---@return table|nil
+local function submitted_payload(log)
+  for _, line in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+    if line:sub(1, 1) == "{" then
+      local ok, decoded = pcall(vim.json.decode, line, { luanil = { object = true } })
+      if ok then
+        return decoded
+      end
+    end
+  end
+  return nil
+end
+
+---@param log string
+---@return integer
+local function graphql_call_count(log)
+  local count = 0
+  for _, line in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+    if line:find("^ARGS api graphql") then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+T["submit: validates, reports kept-locally drafts, POSTs one review, refetches"] = function()
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+  local log = vim.fn.tempname()
+  local restore = submit_gh_shim(log, head_oid)
+
+  child.cmd("Diffly")
+  eq(session_field(child, "spec.review_key.kind"), "pr")
+
+  -- A mappable draft on the committed change in src/mod.lua...
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4, body = "tighten this up",
+        snapshot = { '  return "hello, world"' } })]],
+    { paths.modified }
+  )
+  -- ...and an unmappable one on an untracked scratch file (present in the session's
+  -- worktree diff, absent from the PR's committed diff).
+  child.lua(
+    [[vim.fn.writefile({ "wip" }, __diffly_entry().session.spec.repo.toplevel .. "/scratch.txt")]]
+  )
+  child.lua([[__diffly_entry().session:refresh()]])
+  child.lua([[__diffly_entry().session:add_comment("scratch.txt", {
+      side = "head", start_line = 1, end_line = 1, body = "untracked musing",
+      snapshot = { "wip" } })]])
+
+  -- Pick "Request changes" at the event menu; capture notifications.
+  stub_ui_select(child, "function(items) return items[3] end")
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  local graphql_before = graphql_call_count(log)
+  child.cmd("Diffly submit")
+  -- The event picker ran synchronously (stubbed); the summary float is now open in
+  -- insert mode. Type the summary and submit.
+  child.type_keys("looks solid overall")
+  child.type_keys("<C-s>")
+
+  -- The POSTed payload, verbatim from the shim's stdin capture.
+  local payload
+  for _ = 1, 100 do
+    payload = submitted_payload(log)
+    if payload then
+      break
+    end
+    vim.uv.sleep(50)
+  end
+  eq(payload ~= nil, true, "the review POST went out")
+  eq(payload.commit_id, head_oid)
+  eq(payload.event, "REQUEST_CHANGES")
+  eq(payload.body, "looks solid overall")
+  eq(#payload.comments, 1)
+  eq(payload.comments[1].path, paths.modified)
+  eq(payload.comments[1].line, 4)
+  eq(payload.comments[1].side, "RIGHT")
+
+  -- The submitted draft left the local store; the kept-locally one is still there.
+  eq(#child.lua_get(([[__diffly_entry().session:comments_for(%q)]]):format(paths.modified)), 0)
+  eq(#child.lua_get([[__diffly_entry().session:comments_for("scratch.txt")]]), 1)
+
+  -- The kept-locally report and the success notice both fired.
+  local notes = child.lua_get("_G.__notifications")
+  local saw_kept, saw_success = false, false
+  for _, note in ipairs(notes) do
+    if note.msg:find("stay local", 1, true) and note.msg:find("scratch.txt", 1, true) then
+      saw_kept = true
+    end
+    if note.msg:find("submitted 1 comment", 1, true) then
+      saw_success = true
+    end
+  end
+  eq(saw_kept, true)
+  eq(saw_success, true)
+
+  -- And the overlay refetched after the submit.
+  local grew = false
+  for _ = 1, 100 do
+    if graphql_call_count(log) > graphql_before then
+      grew = true
+      break
+    end
+    vim.uv.sleep(50)
+  end
+  eq(grew, true, "a successful submit refetches the overlay")
+
+  restore()
+end
+
+T["submit: cancelling the event picker changes nothing; zero drafts just notifies"] = function()
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+  local log = vim.fn.tempname()
+  local restore = submit_gh_shim(log, head_oid)
+
+  child.cmd("Diffly")
+
+  -- Zero drafts: an INFO notice, no picker consequence.
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+  child.cmd("Diffly submit")
+  eq(#child.lua_get("_G.__notifications") >= 1, true)
+  eq(submitted_payload(log), nil)
+
+  -- With a draft but a cancelled picker: nothing goes out, the draft stays.
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4, body = "tighten this up",
+        snapshot = { '  return "hello, world"' } })]],
+    { paths.modified }
+  )
+  stub_ui_select(child) -- default: always cancel
+  child.cmd("Diffly submit")
+  eq(submitted_payload(log), nil)
+  eq(#child.lua_get(([[__diffly_entry().session:comments_for(%q)]]):format(paths.modified)), 1)
+
+  -- Completion offers the new subcommand.
+  local completions = child.lua_get([[vim.fn.getcompletion("Diffly sub", "cmdline")]])
+  eq(vim.tbl_contains(completions, "submit"), true)
+
+  restore()
+end
+
 return T

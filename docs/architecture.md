@@ -14,7 +14,7 @@ warnings, not history trivia.
 | `lua/diffly/init.lua` | Orchestration: the tabpage-keyed session registry, open/close lifecycle, autocmds, the per-session `actions` table, sweep selector UI. |
 | `lua/diffly/session.lua` | One review session: diff spec construction, entries, viewed toggles (single + batch), mode switching, subscriber notifications. No UI. |
 | `lua/diffly/git.lua` | Synchronous git plumbing (`vim.system(...):wait()`): identity, refs, `diff_files` (NUL-parsed `--raw`/`--numstat`), blob content, hunks, batched `check_attrs`. |
-| `lua/diffly/github.lua` | `gh` wrapper. PR detection only (base ref + PR number); every failure returns `nil, err` — never raises. |
+| `lua/diffly/github.lua` | `gh` wrapper — the sole `diffly.Provider` implementation (types.lua): PR detection and the async review-thread fetch. GitHub vocabulary (LEFT/RIGHT, GraphQL shapes) never leaves this module; every failure returns `nil, err` — never raises. |
 | `lua/diffly/state.lua` | Viewed-state + comment persistence under `stdpath('data')/diffly/`; blob-SHA invalidation; `clean`. |
 | `lua/diffly/comments.lua` | Pure comment-thread model: CRUD over `ReviewState.comments`, snapshot-search re-anchoring (`resolve`/`apply_resolution`), difit-compatible prompt formatting. No UI, no git subprocesses, no `vim.api` — callers supply shas and content lines. |
 | `lua/diffly/tree.lua` | Pure tree model: build (single-child dir compression), flatten (folds), file_order. |
@@ -262,6 +262,44 @@ Behavior-level decisions in [design.md](./design.md)'s "Comments" section; mecha
   matches" always means "content identical to when the snapshot went missing" and the
   next refresh short-circuits; rehabilitation happens on the search path when content
   changes again. `outdated` is stored true-or-absent, never `false`.
+- **The remote overlay** (`diffly.RemoteThread`) is a session-held, read-only layer:
+  `Session:threads_for_render` (local drafts ++ displayable remote threads) is what the
+  views' `comments_for` getter feeds on, while `find_at`/edit/delete keep reading
+  `state.comments` directly — remote threads are read-only *by construction*, and the
+  persisted ReviewState never contains them (pinned by test). Deliberately a separate
+  class from `diffly.CommentThread` (no sha/snapshot — never re-anchored) that stays
+  placement-compatible, so `ui/comments.lua`'s placement math handles both unchanged.
+- **The one async subprocess pattern** (`github.fetch_threads`, kicked off by init.lua's
+  `start_remote_fetch`): completion bodies are wholly `vim.schedule`d out of vim.system's
+  fast context, capture the tabpage int and re-resolve `entries[tab]` (a closed review
+  degrades to a silent no-op, like the render getters), and the in-flight handle lives on
+  the Entry next to the debounce timer, cancelled in `close_entry`. `on_done` fires
+  exactly once. *Why one pattern*: the rejected-designs list below still stands — this is
+  a single network call with a cancel, not an async framework; git plumbing stays
+  synchronous.
+- **Explicit vs. automatic refresh**: `manual_refresh` (`:Diffly refresh`, bare `:Diffly`
+  on the viewer tab, panel `R` via the injected `opts.refresh`) refreshes the local diff
+  AND refetches the overlay; the debounced `BufWritePost`/`FocusGained` path calls
+  `session:refresh()` only. *Why*: saving a file must never turn into network traffic —
+  pinned by an e2e test against the gh shim's call log.
+- **Submission** splits three ways: `comments.plan_submission` (pure decisions:
+  per-hunk valid-line sets — the per-hunk grouping IS the forge's range-in-one-hunk rule
+  — worktree-drift re-anchoring via `resolve` with only the payload using the moved
+  position, skip reasons; mutates nothing), `Session:prepare_submission` (the git half:
+  the PR's own `merge_base..HEAD` diff, per-path hunks/head blobs, the HEAD == PR-head
+  guard), and `github.submit_review` (synchronous POST — the async pattern stays
+  reserved for the fetch; neutral→LEFT/RIGHT translation at the last moment; stderr
+  verbatim so a 422's reason reaches the user). `init.lua`'s `M.submit` sequences
+  report-skipped → event picker → summary compose (`allow_empty`) → POST, and ONLY a
+  successful post calls `Session:remove_submitted` (one save) + a refetch. *Why local
+  mutation last*: the endpoint is atomic — on failure nothing landed and every draft is
+  intact; a crash between POST and save merely double-displays (drafts + overlay), zero
+  data loss.
+- **Draft adoption** (`comments.adopt`, run in `session.new` for PR-keyed builds before
+  re-anchoring): moves the sibling branch-pair store's drafts in with FRESH ids from the
+  destination sequence (independently allocated ids could collide), empties the source's
+  `comments` (viewed marks untouched), saves both stores, notifies once. Naturally
+  once-only: the source has nothing left afterwards.
 
 ## Deliberately rejected designs
 

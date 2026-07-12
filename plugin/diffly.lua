@@ -7,7 +7,8 @@ if vim.g.loaded_diffly then
 end
 vim.g.loaded_diffly = true
 
-local SUBCOMMANDS = { "close", "toggle", "clean", "refresh", "focus", "sweep", "comments" }
+local SUBCOMMANDS =
+  { "close", "toggle", "clean", "refresh", "focus", "sweep", "comments", "submit" }
 
 ---@return string[]
 local function local_branches()
@@ -50,7 +51,7 @@ end, {
   nargs = "*",
   complete = complete,
   desc = "Open/control the diffly review UI (subcommands: close, toggle, clean, refresh, "
-    .. "focus, sweep [group], comments)",
+    .. "focus, sweep [group], comments, submit)",
 })
 
 vim.keymap.set("n", "<Plug>(diffly-toggle-viewed)", function()

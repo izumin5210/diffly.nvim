@@ -232,6 +232,142 @@ function M.apply_resolution(thread, resolution)
   return true
 end
 
+--- Per-hunk valid submit positions, walking each hunk's body with both side counters
+--- exactly like ui/comments.lua's `base_target`: context lines (" ") are valid on BOTH
+--- sides, "-" lines only as base positions, "+" lines only as head positions. Grouped
+--- PER HUNK (not one flat set) because that grouping IS the "a multi-line range must sit
+--- inside one hunk" rule the forge enforces -- and within a hunk each side's valid lines
+--- are contiguous, so checking a range's two ends suffices.
+---@param hunks diffly.Hunk[]
+---@return { base: table<integer, true>, head: table<integer, true> }[]
+function M.hunk_line_sets(hunks)
+  local sets = {}
+  for _, hunk in ipairs(hunks) do
+    local base, head = {}, {}
+    local cur_old = hunk.old_start
+    local cur_new = hunk.new_start
+    for _, body_line in ipairs(hunk.lines) do
+      local marker = body_line:sub(1, 1)
+      if marker == " " then
+        base[cur_old] = true
+        head[cur_new] = true
+        cur_old = cur_old + 1
+        cur_new = cur_new + 1
+      elseif marker == "-" then
+        base[cur_old] = true
+        cur_old = cur_old + 1
+      elseif marker == "+" then
+        head[cur_new] = true
+        cur_new = cur_new + 1
+      end
+      -- "\ No newline at end of file": neither side has a line here.
+    end
+    table.insert(sets, { base = base, head = head })
+  end
+  return sets
+end
+
+--- Map every local draft onto the PR's real diff, or explain why it can't go: the pure
+--- decision half of `:Diffly submit` (`Session:prepare_submission` assembles `ctx_by_path`
+--- and owns the git calls). MUTATES NOTHING -- a worktree-anchored draft whose sha
+--- doesn't match the PR head re-anchors via `M.resolve` against the head blob, but only
+--- the derived payload uses the moved position; the draft itself stays untouched (it
+--- still points at what the user is looking at).
+---@param threads diffly.CommentThread[]
+---@param ctx_by_path table<string, diffly.SubmitCtx>
+---@return diffly.SubmissionPlan
+function M.plan_submission(threads, ctx_by_path)
+  ---@type diffly.SubmissionPlan
+  local plan = { items = {}, skipped = {} }
+
+  ---@param thread diffly.CommentThread
+  ---@param reason string
+  local function skip(thread, reason)
+    table.insert(plan.skipped, { thread = thread, reason = reason })
+  end
+
+  for _, thread in ipairs(threads) do
+    local anchor = thread.anchor
+    local ctx = ctx_by_path[thread.path]
+
+    if anchor.outdated then
+      skip(thread, "outdated (its code is gone)")
+    elseif not ctx or not ctx.in_pr then
+      skip(thread, "the file is not in the PR diff")
+    else
+      -- Where the range sits in FORGE coordinates. Base anchors are immutable (the
+      -- merge-base blob never changes), so they submit as-is; head anchors may have been
+      -- written against edited worktree content and re-anchor onto the head blob first.
+      local start_line, end_line = anchor.start_line, anchor.end_line
+      local ok = true
+      if anchor.side == "head" and anchor.sha ~= ctx.head_sha then
+        local resolution = M.resolve(thread, ctx.head_sha or "", ctx.head_lines or {})
+        if resolution.outdated then
+          skip(thread, "its content was not found in the PR head")
+          ok = false
+        elseif resolution.start_line then
+          start_line = resolution.start_line
+          end_line = resolution.start_line + #anchor.snapshot - 1
+        end
+      end
+
+      if ok then
+        -- The range's END decides which hunk the comment belongs to; the START must sit
+        -- in the SAME hunk (forge rule). Within a hunk a side's valid lines are
+        -- contiguous, so the two ends are all that needs checking.
+        local hunk_set
+        for _, set in ipairs(ctx.line_sets) do
+          if set[anchor.side][end_line] then
+            hunk_set = set
+            break
+          end
+        end
+        if not hunk_set then
+          skip(thread, "its line is not part of the PR diff")
+        elseif not hunk_set[anchor.side][start_line] then
+          skip(thread, "its range spans more than one hunk of the PR diff")
+        else
+          ---@type diffly.ReviewCommentPayload
+          local payload = {
+            path = thread.path,
+            side = anchor.side,
+            line = end_line,
+            start_line = start_line ~= end_line and start_line or nil,
+            body = thread.messages[1].body,
+          }
+          table.insert(plan.items, { thread = thread, payload = payload })
+        end
+      end
+    end
+  end
+
+  return plan
+end
+
+--- One-way draft adoption (docs/design.md "Comments": drafts written under the
+--- branch-pair key follow the review into its PR key): move every thread of `src` into
+--- `dst` under FRESH ids from `dst.comment_seq` -- the two stores allocated ids
+--- independently, so keeping the originals could collide -- anchors/messages/timestamps
+--- verbatim, and empty `src.comments` out. Pure table surgery; the caller persists both
+--- states (and leaves `src`'s viewed marks alone -- they deliberately never migrate).
+---@param src diffly.ReviewState
+---@param dst diffly.ReviewState
+---@return integer adopted
+function M.adopt(src, dst)
+  local adopted = 0
+  for path, threads in pairs(src.comments) do
+    for _, thread in ipairs(threads) do
+      dst.comment_seq = dst.comment_seq + 1
+      thread.id = "c" .. dst.comment_seq
+      dst.comments[path] = dst.comments[path] or {}
+      table.insert(dst.comments[path], thread)
+      adopted = adopted + 1
+    end
+  end
+  src.comments = {}
+  return adopted
+end
+
 --- difit-compatible prompt block: `path:L42` (or `path:L42-L48` for a range) on the
 --- first line, then the body verbatim -- the format difit's "Copy Prompt" feature
 --- established for feeding review comments to AI coding agents.

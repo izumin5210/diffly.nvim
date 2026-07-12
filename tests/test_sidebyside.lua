@@ -1046,15 +1046,16 @@ T["comments: base threads render into the left blob, head threads into the right
   })
   view_open(child, built.spec, entry)
 
+  -- Boxed shape: header (✎ draft), body, footer -- the body sits on line 2.
   local left = comment_marks(child, buf_of(child, "left_win"))
   eq(#left, 1)
   eq(left[1][2], 3)
-  eq(left[1][4].virt_lines[1][2][1], "base-side note")
+  eq(left[1][4].virt_lines[2][2][1], "base-side note")
 
   local right = comment_marks(child, buf_of(child, "right_win"))
   eq(#right, 1)
   eq(right[1][2], 3)
-  eq(right[1][4].virt_lines[1][2][1], "head-side note")
+  eq(right[1][4].virt_lines[2][2][1], "head-side note")
 end
 
 ---@param child_ table
@@ -1083,18 +1084,22 @@ T["comments: owned buffers get comment keys (x-mode add included); real and plac
   new_view(child)
   view_open(child, built.spec, entry_by_path(built.entries, paths.modified))
 
-  -- Owned left blob: single-key comment family, including the visual-range add.
+  -- Owned left blob: single-key comment family, including the visual-range add and the
+  -- resolved-remote toggle.
   local left = buf_of(child, "left_win")
   eq(has_buf_map(child, left, "n", "ca"), true)
   eq(has_buf_map(child, left, "x", "ca"), true)
   eq(has_buf_map(child, left, "n", "ce"), true)
   eq(has_buf_map(child, left, "n", "cY"), true)
+  eq(has_buf_map(child, left, "n", "cr"), true)
 
   -- Real right buffer: leader-prefixed universal family ONLY, never single keys.
   local right = buf_of(child, "right_win")
   eq(has_buf_map(child, right, "n", "ca"), false)
   eq(has_buf_map(child, right, "n", [[\ca]]), true)
   eq(has_buf_map(child, right, "x", [[\ca]]), true)
+  eq(has_buf_map(child, right, "n", "cr"), false)
+  eq(has_buf_map(child, right, "n", [[\cr]]), true)
 
   -- Binary placeholder: no comment keys in either layer (side == nil).
   view_open(child, built.spec, {

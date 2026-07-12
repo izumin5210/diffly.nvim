@@ -78,6 +78,18 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
   them): unified renders comments before the overlay, and `refresh_comments` repaints the
   overlay right after the comment layer, to keep deleted lines above the comments
   annotating them. Don't reorder those calls; the unified comments golden pins this.
+- Remote review threads are session-held and read-only — never written into the
+  persisted ReviewState. The views render them through `threads_for_render`; cursor
+  actions read `state.comments` only.
+- `github.fetch_threads` is the ONE async subprocess pattern: completions wholly
+  `vim.schedule`d, re-resolving `entries[tab]` (silent when closed), handle cancelled in
+  `close_entry`. Don't add more async seams; git stays synchronous.
+- The debounced `BufWritePost`/`FocusGained` refresh NEVER refetches remote threads —
+  only explicit user actions (`:Diffly refresh`, panel `R`, post-submit) do. Saving a
+  file must not become network traffic (e2e pins this against the gh shim's call log).
+- Submitting a review mutates the local store ONLY after a successful POST (the endpoint
+  is atomic; on failure every draft must remain intact), and `plan_submission` never
+  mutates the drafts it maps.
 
 ## Git workflow
 

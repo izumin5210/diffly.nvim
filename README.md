@@ -29,13 +29,19 @@ that persist across viewer sessions for the same pull request.
   re-anchoring — an AI agent rewriting the file under review won't strand your notes), and
   copy out as AI-agent-ready prompts in difit's `path:L42` format. `:Diffly comments`
   lists every comment in quickfix.
+- **PR review threads, inline**: when the review is a GitHub PR, the existing review
+  conversations are fetched (async, never blocking open) and rendered read-only right in
+  the diff with `@author` attribution — unresolved threads by default, resolved ones a
+  toggle away.
+- **Submit your notes as one review**: `:Diffly submit` validates every draft against the
+  PR's real diff, reports what can't go (kept locally), and posts the rest as a single
+  GitHub review — comment / approve / request changes, optional summary — in one
+  notification. Drafts written before the PR existed follow it automatically.
 - Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
   buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
 
 Out of scope for v1 (deliberately): arbitrary rev comparison (`difit A B`), staged/working-
-only modes, a flat-list panel toggle, filesystem-watch-based refresh. Planned next for
-comments: a read-only overlay of a PR's existing review threads, then batch submission of
-local drafts as a GitHub review (see `docs/design.md`, "Comments").
+only modes, a flat-list panel toggle, filesystem-watch-based refresh.
 
 ## Requirements
 
@@ -74,6 +80,7 @@ the plugin works with its defaults untouched.
 :Diffly sweep          " bulk-toggle a `viewed_patterns` group (prompts if 2+; see below)
 :Diffly sweep {name}   " bulk-toggle one specific group by name, no prompt
 :Diffly comments       " list every comment in the review in quickfix
+:Diffly submit         " post your local drafts as ONE GitHub review (PR reviews only)
 :Diffly clean          " remove viewed state for the current review (prompts first)
 :Diffly clean all
 ```
@@ -105,6 +112,7 @@ collide with a real file's own, unrelated keymaps).
 | `<leader>ce` | Edit the comment under the cursor                     |
 | `<leader>cd` | Delete the comment under the cursor (confirms first)  |
 | `<leader>ct` | Collapse/expand inline comment rendering (session-wide) |
+| `<leader>cr` | Reveal/hide resolved PR review threads (session-wide) |
 | `<leader>cy` | Copy the comment under the cursor as an AI prompt     |
 | `<leader>cY` | Copy every comment in the review as one AI prompt     |
 
@@ -155,6 +163,7 @@ only the universal layer above.
 | `ce` | Edit the comment under the cursor    |
 | `cd` | Delete the comment under the cursor  |
 | `ct` | Collapse/expand inline comments      |
+| `cr` | Reveal/hide resolved PR review threads |
 | `cy` | Copy the comment under the cursor as an AI prompt |
 | `cY` | Copy every comment as one AI prompt  |
 
@@ -168,8 +177,15 @@ deleted lines).
 ![diffly.nvim local comments demo — adding a single-line and a visual-range comment through the markdown compose float, collapsing them to eol markers, copying them as an AI-agent prompt, and listing them in quickfix via :Diffly comments](assets/demo_comments.gif)
 
 `<leader>ca` (real file buffers) / `ca` (diffly-owned buffers) opens a small markdown
-float anchored at the cursor — type the note, `<C-s>` to save, `q` (or an empty body) to
-cancel. In visual mode the same key comments on the whole selected range. The body renders
+float anchored at the cursor — type the note, then save with **`:w`** / **`:wq`** or
+`<C-s>`; `q` (or saving an empty body) cancels. `:q` on an unsaved body warns like any
+unsaved file (`:q!` discards). The `:w` route exists because Ctrl keys are hostage to the
+terminal stack — flow control or multiplexer bindings can eat `<C-s>` before Neovim ever
+sees it. In visual mode the same key comments on the whole selected range.
+
+Each comment renders as its own boxed block — `╭─ ✎ draft` for your local notes,
+`╭─ @author` for PR review threads — so several comments on the same line stay visually
+separate, and local drafts are never mistaken for conversations already on GitHub. The body renders
 inline right below the commented line (below the *deleted* lines it annotates, for a
 base-side comment on removed code); `<leader>ct` collapses every comment down to a `✎`
 end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`
@@ -182,6 +198,31 @@ searching for that exact text near its old position. If the commented lines are 
 entirely, the comment turns **outdated**: it stops rendering inline (a note pinned to the
 wrong line is worse than none) but stays in the panel count and `:Diffly comments`, where
 `[outdated]` / `[base]` markers flag each entry.
+
+**PR review threads.** When the review is keyed to a GitHub PR, the PR's existing review
+conversations are fetched through `gh` — asynchronously on open (the UI never waits on
+the network), and again on any explicit refresh (`R`, `:Diffly refresh`); saving a file
+never triggers a fetch. Threads render read-only in the diff exactly like your local
+notes, but attributed (`@author`, replies included) and visually distinct. Unresolved
+threads show by default; `<leader>cr` reveals resolved ones. Outdated threads (whose code
+is gone from the PR) stay out of the diff but appear in `:Diffly comments` with an
+`[outdated]` marker, and every remote entry there is tagged `[@author]`. The panel's `✎N`
+count includes unresolved remote threads.
+
+**Submitting a review.** `:Diffly submit` turns your local drafts into one GitHub review.
+Every draft is validated against the PR's *real* diff first — drafts on uncommitted
+edits, lines outside the diff, ranges crossing hunks, or outdated anchors are reported
+and stay local (nothing is ever lost; GitHub's reviews endpoint is all-or-nothing, so
+pre-validation is what keeps one bad line from failing the batch). Then you pick the
+review event (comment / approve / request changes), optionally type a summary, and one
+review lands on the PR — one notification for your reviewers, not one per comment.
+Submitted drafts leave the local store and come back through the read-only overlay, so
+nothing shows twice. Local `HEAD` must be the PR's head commit (push, pull, or
+`gh pr checkout` first — the diff you reviewed must be what you comment on).
+
+Drafts written *before* the PR existed are adopted automatically: the first time the
+branch's review opens PR-keyed, comments move from the branch-pair store into the PR
+store (viewed marks stay behind, by design).
 
 `<leader>cy` / `<leader>cY` copy comments to the unnamed register (and the system
 clipboard when available) in difit's AI-agent prompt format — ready to paste into any
@@ -245,6 +286,7 @@ require("diffly").setup({
       comment_edit = "ce",
       comment_delete = "cd",
       comment_toggle = "ct",   -- collapse/expand inline comments (session-wide)
+      comment_toggle_resolved = "cr", -- reveal/hide resolved PR review threads
       comment_copy = "cy",     -- AI prompt for the comment under the cursor
       comment_copy_all = "cY", -- AI prompt for every comment in the review
     },
@@ -260,6 +302,7 @@ require("diffly").setup({
       comment_edit = "<leader>ce",
       comment_delete = "<leader>cd",
       comment_toggle = "<leader>ct",
+      comment_toggle_resolved = "<leader>cr",
       comment_copy = "<leader>cy",
       comment_copy_all = "<leader>cY",
     },

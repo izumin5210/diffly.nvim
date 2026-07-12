@@ -24,6 +24,10 @@ local M = {}
 ---@field mode "sidebyside"|"unified"
 ---@field current_path string?
 ---@field comments_collapsed boolean -- session-wide runtime flag (never persisted)
+---@field pr diffly.PrInfo? -- the detected PR, when any; what the overlay/submission target
+---@field remote_threads table<string, diffly.RemoteThread[]> -- the read-only overlay
+--- layer, session-held ONLY (never persisted into ReviewState); path-keyed like comments
+---@field show_resolved_remote boolean -- session-wide runtime flag (never persisted)
 local Session = {}
 Session.__index = Session
 
@@ -325,6 +329,32 @@ function M.new(opts)
   -- 6. Viewed state.
   local review_state = state.load(review_key)
 
+  -- 6b. Draft adoption (docs/design.md "Comments"): comments written before the PR
+  -- existed live under the branch-pair key; the moment the review is PR-keyed, they
+  -- follow -- drafts are user text and must never silently strand. One-way and naturally
+  -- once (the branch store is emptied); viewed marks deliberately stay behind (the two
+  -- keyspaces never mix for them, per the original v1 decision).
+  if review_key.kind == "pr" then
+    local branch_key = {
+      kind = "branch",
+      repo = repo.id,
+      base = short_name(base_ref),
+      head = git.current_branch(repo) or "HEAD",
+    }
+    local branch_state = state.load(branch_key)
+    if next(branch_state.comments) ~= nil then
+      local adopted = comments.adopt(branch_state, review_state)
+      if adopted > 0 then
+        state.save(branch_state)
+        state.save(review_state)
+        vim.notify(
+          string.format("diffly: adopted %d comment draft(s) from the branch review", adopted),
+          vim.log.levels.INFO
+        )
+      end
+    end
+  end
+
   local self = setmetatable({
     spec = spec,
     entries = entries,
@@ -333,6 +363,9 @@ function M.new(opts)
     mode = "sidebyside",
     current_path = nil,
     comments_collapsed = false,
+    pr = pr_info,
+    remote_threads = {},
+    show_resolved_remote = false,
     _view_factory = opts.view_factory,
     _subscribers = {},
   }, Session)
@@ -547,12 +580,20 @@ function Session:all_comments()
   return comments.list_all(self.state)
 end
 
---- Thread count for a path, INCLUDING outdated threads -- the panel indicator is the
---- discoverability channel for comments that no longer render inline.
+--- Thread count for a path: local drafts (outdated included -- the panel indicator is
+--- the discoverability channel for comments that no longer render inline) plus
+--- UNRESOLVED remote threads. Deliberately independent of the resolved toggle, so the
+--- panel number never jumps just because someone peeked at resolved conversations.
 ---@param path string
 ---@return integer
 function Session:comment_count(path)
-  return #comments.list(self.state, path)
+  local count = #comments.list(self.state, path)
+  for _, thread in ipairs(self.remote_threads[path] or {}) do
+    if not thread.resolved then
+      count = count + 1
+    end
+  end
+  return count
 end
 
 --- Session-wide collapse toggle for inline comment rendering. A runtime flag, not
@@ -562,6 +603,140 @@ function Session:toggle_comments_collapsed()
   self.comments_collapsed = not self.comments_collapsed
   self:_refresh_comment_render()
   self:_notify()
+end
+
+--- Replace the read-only remote overlay layer with a fresh fetch result. Remote threads
+--- live ONLY here -- never in `self.state` (the persisted ReviewState is local-draft
+--- data; the forge already stores its own threads). Repaints the comment layer and
+--- notifies once (the panel's per-file counts include remote threads).
+---@param by_path table<string, diffly.RemoteThread[]>
+function Session:set_remote_threads(by_path)
+  self.remote_threads = by_path
+  self:_refresh_comment_render()
+  self:_notify()
+end
+
+--- Assemble everything `comments.plan_submission` needs and run it: the git-owning half
+--- of `:Diffly submit` (the decision logic stays pure in comments.lua). The PR's diff is
+--- `merge_base..HEAD` -- committed content only, untracked files excluded -- which is
+--- exactly what the forge will diff too, PROVIDED local HEAD is the PR head: submitting
+--- a review against anything else would comment on code the PR doesn't show, so that
+--- mismatch aborts.
+---@return diffly.SubmissionPlan|nil plan, string|nil err
+function Session:prepare_submission()
+  if not self.pr or not self.pr.head_oid then
+    return nil, "diffly: this review has no PR (or gh did not report its head); cannot submit"
+  end
+  local head = git.rev_parse(self.spec.repo, "HEAD")
+  if head ~= self.pr.head_oid then
+    return nil,
+      string.format(
+        "diffly: local HEAD is not the PR head (%s); push, pull, or `gh pr checkout` first",
+        self.pr.head_oid:sub(1, 7)
+      )
+  end
+
+  local pr_entries, err =
+    git.diff_files(self.spec.repo, self.spec.merge_base, "head", { include_untracked = false })
+  if not pr_entries then
+    return nil, err
+  end
+  local pr_by_path = index_by_path(pr_entries)
+
+  ---@type table<string, diffly.SubmitCtx>
+  local ctx_by_path = {}
+  for path in pairs(self.state.comments) do
+    local entry = pr_by_path[path]
+    if entry then
+      local hunks = git.hunks(self.spec.repo, entry, self.spec.merge_base, "head")
+      local head_lines = entry.head_sha
+          and git.file_content(self.spec.repo, { sha = entry.head_sha })
+        or nil
+      ctx_by_path[path] = {
+        in_pr = true,
+        head_sha = entry.head_sha,
+        head_lines = head_lines,
+        line_sets = comments.hunk_line_sets(hunks or {}),
+      }
+    end
+    -- No entry: the path isn't in the PR diff; plan_submission's missing-ctx branch
+    -- reports it.
+  end
+
+  return comments.plan_submission(self:all_comments(), ctx_by_path), nil
+end
+
+--- Post-submit cleanup: drop every submitted draft from the local store -- they live on
+--- the forge now and reappear through the overlay refetch, so keeping them would render
+--- everything twice. Batch discipline: ONE save, one comment repaint, ONE notify.
+---@param items { thread: diffly.CommentThread, payload: diffly.ReviewCommentPayload }[]
+function Session:remove_submitted(items)
+  if #items == 0 then
+    return
+  end
+  for _, item in ipairs(items) do
+    comments.delete(self.state, item.thread.path, item.thread.id)
+  end
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+end
+
+--- Session-wide toggle revealing resolved remote threads (hidden by default: a resolved
+--- conversation is finished business). Runtime flag, same family as
+--- `toggle_comments_collapsed`.
+function Session:toggle_remote_resolved()
+  self.show_resolved_remote = not self.show_resolved_remote
+  self:_refresh_comment_render()
+  self:_notify()
+end
+
+--- Whether a remote thread is currently displayable (resolved ones only behind the
+--- toggle). Outdated-ness is NOT a display concern here -- inline placement already
+--- skips outdated anchors, and lists deliberately include them.
+---@param self diffly.Session
+---@param thread diffly.RemoteThread
+---@return boolean
+local function remote_shown(self, thread)
+  return not thread.resolved or self.show_resolved_remote
+end
+
+--- THE render feed: local drafts first, then the displayable remote threads. The views'
+--- `comments_for` getter points here, so both layers render through the identical
+--- placement pipeline -- while `find_at`/edit/delete keep reading `state.comments`
+--- directly, which is what makes remote threads read-only by construction.
+---@param path string
+---@return (diffly.CommentThread|diffly.RemoteThread)[]
+function Session:threads_for_render(path)
+  local result = comments.list(self.state, path)
+  for _, thread in ipairs(self.remote_threads[path] or {}) do
+    if remote_shown(self, thread) then
+      table.insert(result, thread)
+    end
+  end
+  return result
+end
+
+--- Flat, (path, start_line)-ordered list of displayable remote threads -- the quickfix
+--- merge source. Outdated threads ARE included: `:Diffly comments` is their
+--- discoverability channel, exactly like local outdated drafts.
+---@return diffly.RemoteThread[]
+function Session:remote_thread_list()
+  local result = {}
+  for _, threads in pairs(self.remote_threads) do
+    for _, thread in ipairs(threads) do
+      if remote_shown(self, thread) then
+        table.insert(result, thread)
+      end
+    end
+  end
+  table.sort(result, function(a, b)
+    if a.path ~= b.path then
+      return a.path < b.path
+    end
+    return a.anchor.start_line < b.anchor.start_line
+  end)
+  return result
 end
 
 --- Tri-state bulk toggle over `paths`, shared by `sweep_patterns()` and the panel's
