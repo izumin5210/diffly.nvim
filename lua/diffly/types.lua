@@ -46,8 +46,35 @@
 ---@field head_sha string|vim.NIL
 ---@field marked_at string         -- ISO8601 UTC
 
+---@class diffly.CommentAnchor
+---@field side "base"|"head"    -- diffly-neutral vocabulary; provider-specific side names
+--- (GitHub's LEFT/RIGHT etc.) never appear in core types
+---@field start_line integer    -- 1-based, inclusive, within the side's own content
+---@field end_line integer      -- >= start_line; == start_line for a single-line comment
+---@field sha string            -- blob sha of the side's content this anchor was last
+--- valid against (base: FileEntry.base_sha; head: FileEntry.head_sha)
+---@field snapshot string[]     -- exact text of start_line..end_line at anchor time; the
+--- re-anchor search key. Never rewritten on a successful move (an exact match means
+--- identical text anyway).
+---@field outdated boolean?     -- true when the last re-anchor pass could not find the
+--- snapshot; absent (nil) otherwise -- never false, so JSON stays minimal
+
+---@class diffly.CommentMessage
+---@field body string           -- markdown
+---@field created_at string     -- ISO8601 UTC
+---@field updated_at string?
+
+---@class diffly.CommentThread
+---@field id string             -- "c<N>" from ReviewState.comment_seq; unique per review
+---@field path string           -- FileEntry.path at creation time
+---@field anchor diffly.CommentAnchor
+---@field messages diffly.CommentMessage[]  -- thread-shaped for future replies; the v1 UI
+--- only ever creates/edits messages[1]
+
 ---@class diffly.ReviewState
 ---@field version integer
 ---@field key diffly.ReviewKey
 ---@field last_opened string
 ---@field viewed table<string, diffly.ViewedRecord>  -- keyed by FileEntry.path
+---@field comments table<string, diffly.CommentThread[]>  -- keyed by FileEntry.path
+---@field comment_seq integer   -- monotonic thread-id counter; only ever incremented
