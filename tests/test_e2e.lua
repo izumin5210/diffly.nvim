@@ -2420,4 +2420,192 @@ esac
   restore()
 end
 
+---------------------------------------------------------------------------------------
+-- comments: :Diffly submit ---------------------------------------------------------------
+---------------------------------------------------------------------------------------
+
+local EMPTY_THREADS_JSON = [[{"data":{"repository":{"pullRequest":{"reviewThreads":{]]
+  .. [["pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}]]
+
+--- gh shim for the submit flow: `pr view` reports the REAL local HEAD as the PR head
+--- (prepare_submission requires them to match), `api graphql` answers an empty thread
+--- page, and the REST submit (`gh api repos/...`) swallows its stdin payload into `log`.
+---@param log string
+---@param head_oid string
+---@return function restore
+local function submit_gh_shim(log, head_oid)
+  local body = ([[
+LOG=%q
+printf 'ARGS %%s' "$*" | tr '\n' ' ' >> "$LOG"
+printf '\n' >> "$LOG"
+case "$1" in
+  api)
+    case "$*" in
+      *graphql*) printf '%%s' '%s' ;;
+      *) cat >> "$LOG"; printf '\n' >> "$LOG"; printf '%%s' '{}' ;;
+    esac ;;
+  *) printf '%%s' '{"number":7,"baseRefName":"main","headRefOid":"%s","url":"u"}' ;;
+esac
+]]):format(log, EMPTY_THREADS_JSON, head_oid)
+  return helpers.child_path_shim(child, "gh", body)
+end
+
+--- The JSON payload the REST submit piped through the shim (the first log line that
+--- parses as a JSON object).
+---@param log string
+---@return table|nil
+local function submitted_payload(log)
+  for _, line in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+    if line:sub(1, 1) == "{" then
+      local ok, decoded = pcall(vim.json.decode, line, { luanil = { object = true } })
+      if ok then
+        return decoded
+      end
+    end
+  end
+  return nil
+end
+
+---@param log string
+---@return integer
+local function graphql_call_count(log)
+  local count = 0
+  for _, line in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+    if line:find("^ARGS api graphql") then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+T["submit: validates, reports kept-locally drafts, POSTs one review, refetches"] = function()
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+  local log = vim.fn.tempname()
+  local restore = submit_gh_shim(log, head_oid)
+
+  child.cmd("Diffly")
+  eq(session_field(child, "spec.review_key.kind"), "pr")
+
+  -- A mappable draft on the committed change in src/mod.lua...
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4, body = "tighten this up",
+        snapshot = { '  return "hello, world"' } })]],
+    { paths.modified }
+  )
+  -- ...and an unmappable one on an untracked scratch file (present in the session's
+  -- worktree diff, absent from the PR's committed diff).
+  child.lua(
+    [[vim.fn.writefile({ "wip" }, __diffly_entry().session.spec.repo.toplevel .. "/scratch.txt")]]
+  )
+  child.lua([[__diffly_entry().session:refresh()]])
+  child.lua([[__diffly_entry().session:add_comment("scratch.txt", {
+      side = "head", start_line = 1, end_line = 1, body = "untracked musing",
+      snapshot = { "wip" } })]])
+
+  -- Pick "Request changes" at the event menu; capture notifications.
+  stub_ui_select(child, "function(items) return items[3] end")
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  local graphql_before = graphql_call_count(log)
+  child.cmd("Diffly submit")
+  -- The event picker ran synchronously (stubbed); the summary float is now open in
+  -- insert mode. Type the summary and submit.
+  child.type_keys("looks solid overall")
+  child.type_keys("<C-s>")
+
+  -- The POSTed payload, verbatim from the shim's stdin capture.
+  local payload
+  for _ = 1, 100 do
+    payload = submitted_payload(log)
+    if payload then
+      break
+    end
+    vim.uv.sleep(50)
+  end
+  eq(payload ~= nil, true, "the review POST went out")
+  eq(payload.commit_id, head_oid)
+  eq(payload.event, "REQUEST_CHANGES")
+  eq(payload.body, "looks solid overall")
+  eq(#payload.comments, 1)
+  eq(payload.comments[1].path, paths.modified)
+  eq(payload.comments[1].line, 4)
+  eq(payload.comments[1].side, "RIGHT")
+
+  -- The submitted draft left the local store; the kept-locally one is still there.
+  eq(#child.lua_get(([[__diffly_entry().session:comments_for(%q)]]):format(paths.modified)), 0)
+  eq(#child.lua_get([[__diffly_entry().session:comments_for("scratch.txt")]]), 1)
+
+  -- The kept-locally report and the success notice both fired.
+  local notes = child.lua_get("_G.__notifications")
+  local saw_kept, saw_success = false, false
+  for _, note in ipairs(notes) do
+    if note.msg:find("stay local", 1, true) and note.msg:find("scratch.txt", 1, true) then
+      saw_kept = true
+    end
+    if note.msg:find("submitted 1 comment", 1, true) then
+      saw_success = true
+    end
+  end
+  eq(saw_kept, true)
+  eq(saw_success, true)
+
+  -- And the overlay refetched after the submit.
+  local grew = false
+  for _ = 1, 100 do
+    if graphql_call_count(log) > graphql_before then
+      grew = true
+      break
+    end
+    vim.uv.sleep(50)
+  end
+  eq(grew, true, "a successful submit refetches the overlay")
+
+  restore()
+end
+
+T["submit: cancelling the event picker changes nothing; zero drafts just notifies"] = function()
+  repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
+  local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+  local log = vim.fn.tempname()
+  local restore = submit_gh_shim(log, head_oid)
+
+  child.cmd("Diffly")
+
+  -- Zero drafts: an INFO notice, no picker consequence.
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+  child.cmd("Diffly submit")
+  eq(#child.lua_get("_G.__notifications") >= 1, true)
+  eq(submitted_payload(log), nil)
+
+  -- With a draft but a cancelled picker: nothing goes out, the draft stays.
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4, body = "tighten this up",
+        snapshot = { '  return "hello, world"' } })]],
+    { paths.modified }
+  )
+  stub_ui_select(child) -- default: always cancel
+  child.cmd("Diffly submit")
+  eq(submitted_payload(log), nil)
+  eq(#child.lua_get(([[__diffly_entry().session:comments_for(%q)]]):format(paths.modified)), 1)
+
+  -- Completion offers the new subcommand.
+  local completions = child.lua_get([[vim.fn.getcompletion("Diffly sub", "cmdline")]])
+  eq(vim.tbl_contains(completions, "submit"), true)
+
+  restore()
+end
+
 return T

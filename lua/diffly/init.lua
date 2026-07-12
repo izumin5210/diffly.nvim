@@ -1198,6 +1198,8 @@ function M.open(args)
     return M.sweep(vim.list_slice(args, 2))
   elseif first == "comments" then
     return M.comments()
+  elseif first == "submit" then
+    return M.submit()
   end
 
   local entry = current_entry()
@@ -1286,6 +1288,107 @@ function M.comments()
   -- Full-width at the very bottom of the viewer tab; the panel's winfixwidth/height keep
   -- its geometry intact.
   vim.cmd("botright copen")
+end
+
+--- `:Diffly submit`: every mappable local draft into ONE review on the PR
+--- (docs/design.md "Comments"). Flow: validate/map against the PR's real diff
+--- (`Session:prepare_submission`) -> report what stays local -> pick the review event
+--- (`vim.ui.select`, COMMENT first as the safe default -- APPROVE/REQUEST_CHANGES are
+--- rejected by the forge on one's own PR) -> optional summary via the compose float
+--- (`allow_empty`) -> POST. Only a SUCCESSFUL post mutates the local store (the endpoint
+--- is atomic: on a 422 nothing landed and every draft is intact, with the forge's reason
+--- notified verbatim); submitted drafts then reappear through the overlay refetch.
+function M.submit()
+  local entry = current_entry()
+  if not entry then
+    vim.notify("diffly: no review is open on this tabpage", vim.log.levels.INFO)
+    return
+  end
+  local tab = vim.api.nvim_get_current_tabpage()
+
+  local plan, err = entry.session:prepare_submission()
+  if not plan then
+    vim.notify(err or "diffly: cannot submit", vim.log.levels.WARN)
+    return
+  end
+
+  if #plan.skipped > 0 then
+    local lines = { string.format("diffly: %d draft(s) stay local:", #plan.skipped) }
+    for _, skip in ipairs(plan.skipped) do
+      table.insert(
+        lines,
+        string.format(
+          "  %s:L%d — %s",
+          skip.thread.path,
+          skip.thread.anchor.start_line,
+          skip.reason
+        )
+      )
+    end
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.WARN)
+  end
+  if #plan.items == 0 then
+    vim.notify("diffly: nothing to submit", vim.log.levels.INFO)
+    return
+  end
+
+  vim.ui.select({
+    { event = "COMMENT", display = "Comment" },
+    { event = "APPROVE", display = "Approve" },
+    { event = "REQUEST_CHANGES", display = "Request changes" },
+  }, {
+    prompt = string.format("diffly: submit %d comment(s) as:", #plan.items),
+    format_item = function(choice)
+      return choice.display
+    end,
+  }, function(choice)
+    if not choice then
+      return -- cancelling any diffly menu is always consequence-free
+    end
+
+    ui_comments.compose({
+      title = "review summary (optional)",
+      allow_empty = true,
+      on_submit = function(lines)
+        -- Re-resolve at submit time: the float can outlive the review.
+        local live = resolve_live_entry(tab, "submit")
+        if not live or not live.session.pr then
+          return
+        end
+
+        local payloads = {}
+        for _, item in ipairs(plan.items) do
+          table.insert(payloads, item.payload)
+        end
+        local body = vim.trim(table.concat(lines, "\n"))
+
+        local ok, submit_err = github.submit_review(live.session.spec.repo, live.session.pr, {
+          commit_id = live.session.pr.head_oid,
+          event = choice.event,
+          body = body ~= "" and body or nil,
+          comments = payloads,
+        })
+        if not ok then
+          vim.notify(
+            "diffly: review submission failed: " .. (submit_err or "unknown error"),
+            vim.log.levels.ERROR
+          )
+          return
+        end
+
+        live.session:remove_submitted(plan.items)
+        start_remote_fetch(tab)
+        vim.notify(
+          string.format(
+            "diffly: submitted %d comment(s)%s",
+            #plan.items,
+            #plan.skipped > 0 and string.format(" (%d kept locally)", #plan.skipped) or ""
+          ),
+          vim.log.levels.INFO
+        )
+      end,
+    })
+  end)
 end
 
 --- Backing function for `<Plug>(diffly-toggle-viewed)` (see plugin/diffly.lua): toggles the
