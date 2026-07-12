@@ -328,6 +328,94 @@ T["compose(): initial prefills the buffer for the edit flow"] = function()
   vim.api.nvim_win_close(win, true)
 end
 
+--- A minimal diffly.RemoteThread for render tests.
+---@param opts {resolved: boolean?, messages: table[]}
+local function remote(opts)
+  return {
+    id = "T1",
+    path = "src/a.lua",
+    remote = true,
+    resolved = opts.resolved == true,
+    anchor = { side = "head", start_line = 2, end_line = 2 },
+    messages = opts.messages,
+  }
+end
+
+T["render(): remote threads carry author lines, the remote marker, and every message"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({
+    messages = {
+      { author = "alice", body = "first point\nsecond line" },
+      { author = "bob", body = "reply" },
+    },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local got = marks(buf, ns)
+  eq(#got, 1)
+  local lines = got[1][4].virt_lines
+  -- @alice / body / body / @bob / body: one author line per message, then its body lines.
+  eq(#lines, 5)
+  eq(lines[1][2][1], "@alice")
+  eq(lines[1][2][2], "DifflyCommentAuthor")
+  eq(lines[1][1][2], "DifflyCommentRemoteMarker", "remote threads use the remote marker group")
+  eq(lines[2][2][1], "first point")
+  eq(lines[3][2][1], "second line")
+  eq(lines[4][2][1], "@bob")
+  eq(lines[5][2][1], "reply")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): a resolved remote thread is tagged on its first author line"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({ resolved = true, messages = { { author = "alice", body = "done" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  eq(lines[1][2][1], "@alice")
+  eq(lines[1][3][1], " [resolved]")
+  eq(lines[1][3][2], "DifflyCommentResolved")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): collapsed remote threads show the author in the indicator"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({ messages = { { author = "alice", body = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 2, above = false, thread = t } }, { collapsed = true })
+
+  local details = marks(buf, ns)[1][4]
+  eq(details.virt_lines, nil)
+  eq(details.virt_text[1][1], " ✎ @alice")
+  eq(details.virt_text[1][2], "DifflyCommentRemoteMarker")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): local thread output is byte-identical to the pre-remote shape (golden safety)"] = function()
+  -- Local messages carry no `author`, so the render path must produce EXACTLY the
+  -- Phase-1 chunk shape -- otherwise every existing screenshot golden would shift.
+  local buf, ns = scratch_buf(6)
+  local t = thread({ messages = { { body = "first\nsecond", created_at = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local details = marks(buf, ns)[1][4]
+  eq(details.virt_lines, {
+    { { "┃ ", "DifflyCommentMarker" }, { "first", "DifflyCommentBody" } },
+    { { "┃ ", "DifflyCommentMarker" }, { "second", "DifflyCommentBody" } },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = true })
+  eq(marks(buf, ns)[1][4].virt_text, { { " ✎ comment", "DifflyCommentMarker" } })
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
 T["render(): clear-and-redraw removes stale marks"] = function()
   local buf, ns = scratch_buf(6)
 

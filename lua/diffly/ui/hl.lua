@@ -33,6 +33,12 @@ local LINKS = {
   -- panel's per-file comment count).
   DifflyCommentBody = "NormalFloat",
   DifflyCommentMarker = "Special",
+  -- Remote review threads (the read-only overlay): a distinct marker so fetched
+  -- conversations never masquerade as local drafts, plus author attribution and the
+  -- resolved tag.
+  DifflyCommentRemoteMarker = "Identifier",
+  DifflyCommentAuthor = "Title",
+  DifflyCommentResolved = "Comment",
 }
 
 function M.setup()

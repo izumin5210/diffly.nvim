@@ -135,10 +135,12 @@ function M.mapped_base_placements(threads, hunks, line_count)
 end
 
 --- Full clear-and-redraw of `ns` on `buf` -- never incremental, mirroring the overlay's
---- own discipline so a stale mark can never linger. Expanded threads render their (v1:
---- single) message body as one virt_lines block per thread; collapsed mode shrinks every
---- thread to an eol indicator so line geometry stops jumping while still marking where
---- comments live.
+--- own discipline so a stale mark can never linger. Expanded threads render EVERY
+--- message (remote threads carry replies; local drafts still have exactly one, keeping
+--- their output byte-identical to the pre-remote shape -- golden safety, pinned by
+--- test): a message with an `author` opens with an attribution line, the first of which
+--- also carries the thread's `[resolved]` tag. Collapsed mode shrinks every thread to an
+--- eol indicator so line geometry stops jumping while still marking where comments live.
 ---@param buf integer
 ---@param ns integer
 ---@param placements diffly.ui.CommentPlacement[]
@@ -147,19 +149,32 @@ function M.render(buf, ns, placements, opts)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
 
   for _, placement in ipairs(placements) do
+    local thread = placement.thread
+    local marker_hl = thread.remote and "DifflyCommentRemoteMarker" or "DifflyCommentMarker"
+
     if opts.collapsed then
+      local indicator = thread.remote and (" ✎ @" .. thread.messages[1].author) or " ✎ comment"
       vim.api.nvim_buf_set_extmark(buf, ns, placement.row, 0, {
-        virt_text = { { " ✎ comment", "DifflyCommentMarker" } },
+        virt_text = { { indicator, marker_hl } },
         virt_text_pos = "eol",
       })
     else
       local chunks = {}
-      local body = placement.thread.messages[1].body
-      for _, line in ipairs(vim.split(body, "\n", { plain = true })) do
-        table.insert(chunks, {
-          { "┃ ", "DifflyCommentMarker" },
-          { line, "DifflyCommentBody" },
-        })
+      for index, message in ipairs(thread.messages) do
+        if message.author then
+          local author_line =
+            { { "┃ ", marker_hl }, { "@" .. message.author, "DifflyCommentAuthor" } }
+          if index == 1 and thread.resolved then
+            table.insert(author_line, { " [resolved]", "DifflyCommentResolved" })
+          end
+          table.insert(chunks, author_line)
+        end
+        for _, line in ipairs(vim.split(message.body, "\n", { plain = true })) do
+          table.insert(chunks, {
+            { "┃ ", marker_hl },
+            { line, "DifflyCommentBody" },
+          })
+        end
       end
       vim.api.nvim_buf_set_extmark(buf, ns, placement.row, 0, {
         virt_lines = chunks,
