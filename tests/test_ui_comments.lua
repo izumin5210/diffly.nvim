@@ -265,7 +265,8 @@ T["compose(): a markdown float scratch that never sets 'filetype'"] = function()
   -- `relative = "cursor"` is normalized to a win-relative position once created; any
   -- non-empty `relative` means "a floating window".
   eq(vim.api.nvim_win_get_config(win).relative ~= "", true)
-  eq(vim.bo[buf].buftype, "nofile")
+  -- 'acwrite', not 'nofile': :w/:wq must route through BufWriteCmd (see the cases below).
+  eq(vim.bo[buf].buftype, "acwrite")
   -- The hard invariant: markdown highlighting WITHOUT a FileType event (LSP didOpen on a
   -- non-file buffer can crash servers) -- treesitter when available, 'syntax' otherwise.
   eq(vim.bo[buf].filetype, "")
@@ -320,6 +321,74 @@ T["compose(): closing the window externally funnels into cancel (teardown-safe)"
   eq(record.submit_count, 0)
   eq(record.cancel_count, 1)
   vim.cmd("stopinsert")
+end
+
+T["compose(): :w submits exactly once and closes the float"] = function()
+  -- Ctrl keys are hostage to the terminal stack (flow control, multiplexers); vim's own
+  -- save gesture must work everywhere.
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "written body" })
+
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("write")
+  end)
+  vim.wait(200, function()
+    return not vim.api.nvim_win_is_valid(win)
+  end, 10)
+
+  eq(record.submit_count, 1)
+  eq(record.submitted, { "written body" })
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): :wq submits and quits without touching any other window"] = function()
+  local wins_before = #vim.api.nvim_tabpage_list_wins(0)
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "written body" })
+  vim.cmd("stopinsert")
+
+  -- The float is the current window (compose enters it); :wq = write (submit via
+  -- BufWriteCmd) then quit THIS window -- the quit must consume the float, never the
+  -- window focus falls back to.
+  vim.api.nvim_set_current_win(win)
+  vim.cmd("wq")
+  vim.wait(200, function()
+    return not vim.api.nvim_win_is_valid(win)
+  end, 10)
+
+  eq(record.submit_count, 1)
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  eq(#vim.api.nvim_tabpage_list_wins(0), wins_before, "no other window was quit")
+end
+
+T["compose(): :q warns on an unsaved body (E37); :q! cancels; a pristine :q cancels silently"] = function()
+  -- A typed-but-unsaved comment is real work: quitting without submitting warns exactly
+  -- like an unsaved file, and :q! is the explicit discard.
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "precious draft" })
+  vim.cmd("stopinsert")
+  vim.api.nvim_set_current_win(win)
+
+  local ok, err = pcall(vim.cmd, "q")
+  eq(ok, false)
+  eq(tostring(err):find("E37") ~= nil, true)
+  eq(record.submit_count, 0)
+  eq(record.cancel_count, 0)
+  eq(vim.api.nvim_win_is_valid(win), true, "the float survives the refused quit")
+
+  vim.cmd("q!")
+  eq(record.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win), false)
+
+  -- Untouched float (prefill included): plain :q cancels without complaining.
+  local win2, _, record2 = composed({ initial = { "existing body" } })
+  vim.api.nvim_set_current_win(win2)
+  vim.cmd("q")
+  eq(record2.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win2), false)
 end
 
 T["compose(): allow_empty submits an empty body (the review-summary flow)"] = function()

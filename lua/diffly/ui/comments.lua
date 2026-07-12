@@ -192,11 +192,22 @@ end
 ---@field on_submit fun(lines: string[])
 ---@field on_cancel fun()?
 
+-- Unique suffix for compose buffer names: 'acwrite' buffers need a name (:w on an
+-- unnamed buffer is E32), and a fixed name would collide (E95) if two floats ever
+-- overlap.
+local compose_seq = 0
+
 --- The comment compose/edit float: a small markdown scratch anchored at the cursor.
 --- Deliberately NOT a diffly.View -- it is action-owned (opened from a keypress, where
 --- "the current window" is exactly the right reference point via `relative = "cursor"`),
 --- so the views' "never read the current window" contract doesn't apply here (documented
 --- in docs/architecture.md).
+---
+--- Submitting: `<C-s>` (insert or normal) or vim's own save gestures -- the buffer is
+--- 'acwrite', so `:w`/`:wq` route through a BufWriteCmd that submits. Ctrl keys are
+--- hostage to the terminal stack (flow control, multiplexer bindings), so a plain `:w`
+--- must always work. The 'modified' flag stays honest on purpose: `:q` on an unsaved
+--- body warns exactly like an unsaved file (`q`/`:q!` discard explicitly).
 ---
 --- Lifecycle: every exit funnels through one `finish()` closure via a one-shot WinClosed
 --- autocmd -- the submit/cancel keys below, but also `:q`, `:close`, and the whole
@@ -207,13 +218,17 @@ end
 ---@return integer win, integer buf
 function M.compose(opts)
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].buftype = "nofile"
+  compose_seq = compose_seq + 1
+  vim.api.nvim_buf_set_name(buf, "diffly://comment/" .. compose_seq)
+  vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
   local initial = opts.initial or {}
   if #initial > 0 then
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial)
   end
+  -- The prefill isn't a user edit: an immediately-quit edit flow must not warn.
+  vim.bo[buf].modified = false
   -- Markdown highlighting WITHOUT 'filetype' (the LSP-didOpen invariant, see
   -- ui/scratch.lua): treesitter when a parser exists, legacy 'syntax' otherwise.
   scratch.highlight(buf, { lang = "markdown" })
@@ -232,7 +247,9 @@ function M.compose(opts)
 
   local finished = false
   ---@param submitted boolean
-  local function finish(submitted)
+  ---@param defer_close boolean? -- close the window on the NEXT tick instead of now;
+  --- the BufWriteCmd path needs this (see below)
+  local function finish(submitted, defer_close)
     if finished then
       return
     end
@@ -240,13 +257,26 @@ function M.compose(opts)
 
     local lines = vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_lines(buf, 0, -1, false)
       or {}
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
+    if vim.api.nvim_buf_is_valid(buf) then
+      -- The content is captured: clearing 'modified' lets any pending :wq/:q and the
+      -- bufhidden=wipe teardown proceed without "no write since last change" noise.
+      vim.bo[buf].modified = false
     end
-    -- Insert mode SURVIVES the float closing (submitting with <C-s> from insert would
-    -- otherwise dump the user into insert mode in the underlying buffer, where the next
-    -- keys they type become text edits instead of commands).
-    vim.cmd("stopinsert")
+
+    local function close_window()
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+      -- Insert mode SURVIVES the float closing (submitting with <C-s> from insert would
+      -- otherwise dump the user into insert mode in the underlying buffer, where the
+      -- next keys they type become text edits instead of commands).
+      vim.cmd("stopinsert")
+    end
+    if defer_close then
+      vim.schedule(close_window)
+    else
+      close_window()
+    end
 
     if submitted and (opts.allow_empty or vim.trim(table.concat(lines, "\n")) ~= "") then
       opts.on_submit(lines)
@@ -260,6 +290,18 @@ function M.compose(opts)
     once = true,
     callback = function()
       finish(false)
+    end,
+  })
+
+  -- :w / :wq -> submit. The close is DEFERRED here: :wq quits the current window right
+  -- after this handler, so closing the float synchronously would hand that quit
+  -- whatever window focus fell back to. By the next tick, :wq's own quit has consumed
+  -- the float (the valid-guard makes the deferred close a no-op) and a plain :w sees it
+  -- close immediately after.
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    buffer = buf,
+    callback = function()
+      finish(true, true)
     end,
   })
 

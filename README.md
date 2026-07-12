@@ -177,8 +177,11 @@ deleted lines).
 ![diffly.nvim local comments demo — adding a single-line and a visual-range comment through the markdown compose float, collapsing them to eol markers, copying them as an AI-agent prompt, and listing them in quickfix via :Diffly comments](assets/demo_comments.gif)
 
 `<leader>ca` (real file buffers) / `ca` (diffly-owned buffers) opens a small markdown
-float anchored at the cursor — type the note, `<C-s>` to save, `q` (or an empty body) to
-cancel. In visual mode the same key comments on the whole selected range. The body renders
+float anchored at the cursor — type the note, then save with **`:w`** / **`:wq`** or
+`<C-s>`; `q` (or saving an empty body) cancels. `:q` on an unsaved body warns like any
+unsaved file (`:q!` discards). The `:w` route exists because Ctrl keys are hostage to the
+terminal stack — flow control or multiplexer bindings can eat `<C-s>` before Neovim ever
+sees it. In visual mode the same key comments on the whole selected range. The body renders
 inline right below the commented line (below the *deleted* lines it annotates, for a
 base-side comment on removed code); `<leader>ct` collapses every comment down to a `✎`
 end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`

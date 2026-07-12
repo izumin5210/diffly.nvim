@@ -157,8 +157,11 @@ overlay, batch submission + draft adoption) are implemented.
   commented line (below the *deleted* lines it annotates, for a base-side comment on a
   removed line) — with a session-wide collapse toggle down to an eol indicator. Both
   views render both sides; the panel shows a per-file `✎N` count (outdated included).
-- **Compose**: a small markdown float at the cursor (`<C-s>` submit, `q` cancel; empty
-  body cancels), reused for editing. Deleting asks for confirmation via `vim.ui.select`.
+- **Compose**: a small markdown float at the cursor, reused for editing. Submit with
+  `:w`/`:wq` (the buffer is `acwrite` with a `BufWriteCmd`; Ctrl keys can be eaten by
+  terminal flow control or multiplexer bindings, so vim's own save gesture must always
+  work) or `<C-s>`; `q` cancels, an empty body cancels, and `:q` on an unsaved body
+  warns like an unsaved file. Deleting asks for confirmation via `vim.ui.select`.
 - **Writing a base-side comment from the unified view is deferred** (deleted lines are
   virtual there — the cursor can't reach them); side-by-side's left window is the
   affordance. Base-side comments *render* in both views.
