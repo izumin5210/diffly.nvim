@@ -5,7 +5,7 @@ Inspired by [difit](https://github.com/yoshiko-pg/difit).
 A file-tree diff viewer for Neovim (like diffview.nvim) with per-file **viewed** marks
 that persist across viewer sessions for the same pull request.
 
-![diffly.nvim demo — reviewing a Go branch: unified inline-overlay diff with a live gopls hover card, marking files viewed with auto-advance, and sweeping generated files](assets/demo.gif)
+![diffly.nvim demo — reviewing a Go branch: unified inline-overlay diff with a live gopls hover card and marking files viewed with auto-advance](assets/demo.gif)
 
 ## Features
 
@@ -332,6 +332,8 @@ effect of scrolling, opening, or refreshing a diff. `S` (panel) / `:Diffly sweep
 `V` (panel) are just two more explicit triggers, for when you want to mark (or unmark)
 several files at once instead of one `v` press per file — e.g. lockfiles and generated
 output you never intend to read line-by-line.
+
+![diffly.nvim sweep demo — one :Diffly sweep marks every file of the "generated" pattern group as viewed at once, and sweeping the fully-viewed group again un-marks the whole batch](assets/demo_sweep.gif)
 
 **`viewed_patterns`** — an ordered list of pattern **groups**, matched against every file in
 the current diff. Each item is either:

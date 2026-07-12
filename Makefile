@@ -1,4 +1,4 @@
-.PHONY: deps test lint fmt
+.PHONY: deps test lint fmt demo
 
 deps:
 	@if [ ! -d deps/mini.nvim ]; then \
@@ -20,7 +20,8 @@ fmt:
 	stylua lua tests
 
 # Regenerate the README demo GIFs + screenshot. Needs vhs and ttyd (aqua.yaml) plus
-# ffmpeg on PATH; records a throwaway repo built by scripts/demo_repo.sh.
+# ffmpeg on PATH; records throwaway repos built by scripts/demo_repo.sh.
 demo:
 	vhs scripts/demo.tape
+	vhs scripts/demo_sweep.tape
 	vhs scripts/demo_comments.tape
