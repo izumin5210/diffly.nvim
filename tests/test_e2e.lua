@@ -2044,4 +2044,70 @@ T["comments: editing via ce reopens the float prefilled and updates the body"] =
   eq(type(threads[1].messages[1].updated_at), "string")
 end
 
+T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers and completes"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- One head-side comment via the real keystroke flow...
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("inline note")
+  child.type_keys("<C-s>")
+  -- ...one base-side comment on the deleted file via the session API (multi-line body:
+  -- quickfix must show only the first line)...
+  child.lua(
+    [[__diffly_entry().session:add_comment((...), {
+        side = "base", start_line = 1, end_line = 1, body = "base note\nsecond line",
+        snapshot = { "x" } })]],
+    { paths.deleted }
+  )
+  -- ...and flip the head-side one to outdated to exercise the marker.
+  child.lua(
+    [[__diffly_entry().session.state.comments[(...)][1].anchor.outdated = true]],
+    { paths.modified }
+  )
+
+  child.cmd("Diffly comments")
+
+  local qf = child.lua_get([[vim.fn.getqflist({ items = 1, title = 1 })]])
+  eq(qf.title, "diffly comments")
+  eq(#qf.items, 2)
+  -- all_comments() orders by (path, start_line): gone.lua before mod.lua.
+  eq(qf.items[1].lnum, 1)
+  eq(qf.items[1].text, "[base] base note")
+  -- Compare via the realpath'd repo dir: `tempname()` hands out `/var/...` on macOS
+  -- while git (whose toplevel the quickfix filenames are built from) reports the
+  -- resolved `/private/var/...`. The file itself is deleted, so only the directory can
+  -- be resolved.
+  eq(
+    child.lua_get("vim.api.nvim_buf_get_name(...)", { qf.items[1].bufnr }),
+    vim.uv.fs_realpath(repo.dir) .. "/" .. paths.deleted
+  )
+  eq(qf.items[2].lnum, 4)
+  eq(qf.items[2].text, "[outdated] inline note")
+
+  -- The quickfix window opened and has focus.
+  eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype"), "quickfix")
+
+  -- Command completion offers the new subcommand.
+  local completions = child.lua_get([[vim.fn.getcompletion("Diffly com", "cmdline")]])
+  eq(vim.tbl_contains(completions, "comments"), true)
+end
+
+T["comments: `:Diffly comments` with no comments notifies instead of opening an empty list"] = function()
+  child.cmd("Diffly")
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  child.cmd("Diffly comments")
+
+  eq(#child.lua_get("_G.__notifications"), 1)
+  eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype") ~= "quickfix", true)
+end
+
 return T

@@ -1093,6 +1093,8 @@ function M.open(args)
     return M.focus()
   elseif first == "sweep" then
     return M.sweep(vim.list_slice(args, 2))
+  elseif first == "comments" then
+    return M.comments()
   end
 
   local entry = current_entry()
@@ -1102,6 +1104,46 @@ function M.open(args)
   end
 
   open_new(first)
+end
+
+--- `:Diffly comments`: every comment thread in the current review into the quickfix
+--- list -- the review-wide overview and the discoverability channel for outdated threads
+--- (which never render inline; see ui/comments.lua). One item per thread at its
+--- last-known start line, first body line only, with `[outdated]`/`[base]` markers. A
+--- base-side item's line number references BASE content while quickfix jumps into the
+--- worktree file -- an accepted approximation, which is exactly what the `[base]` marker
+--- flags. No dedicated comment-list UI: quickfix already does navigation, persistence
+--- across the review, and :cdo-style batching for free.
+function M.comments()
+  local entry = current_entry()
+  if not entry then
+    vim.notify("diffly: no review is open on this tabpage", vim.log.levels.INFO)
+    return
+  end
+
+  local threads = entry.session:all_comments()
+  if #threads == 0 then
+    vim.notify("diffly: no comments in this review", vim.log.levels.INFO)
+    return
+  end
+
+  local toplevel = entry.session.spec.repo.toplevel
+  local items = {}
+  for _, thread in ipairs(threads) do
+    local first_line = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
+    table.insert(items, {
+      filename = vim.fs.joinpath(toplevel, thread.path),
+      lnum = thread.anchor.start_line,
+      text = (thread.anchor.outdated and "[outdated] " or "")
+        .. (thread.anchor.side == "base" and "[base] " or "")
+        .. first_line,
+    })
+  end
+
+  vim.fn.setqflist({}, " ", { title = "diffly comments", items = items })
+  -- Full-width at the very bottom of the viewer tab; the panel's winfixwidth/height keep
+  -- its geometry intact.
+  vim.cmd("botright copen")
 end
 
 --- Backing function for `<Plug>(diffly-toggle-viewed)` (see plugin/diffly.lua): toggles the
