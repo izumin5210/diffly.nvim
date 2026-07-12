@@ -1623,6 +1623,214 @@ T["M.new(): re-anchors persisted comments that drifted since the last session"] 
   repo:destroy()
 end
 
+-- 13. remote thread layer (read-only overlay) --------------------------------------------
+
+--- A minimal diffly.RemoteThread-shaped table for driving the session-side layer.
+---@param path string
+---@param opts {id: string?, side: string?, line: integer, resolved: boolean?, outdated: boolean?, body: string?}
+local function remote_thread(path, opts)
+  return {
+    id = opts.id or "T1",
+    path = path,
+    remote = true,
+    resolved = opts.resolved == true,
+    anchor = {
+      side = opts.side or "head",
+      start_line = opts.line,
+      end_line = opts.line,
+      outdated = opts.outdated,
+    },
+    messages = { { author = "alice", body = opts.body or "remote note" } },
+  }
+end
+
+T["M.new(): stores the detected PR on session.pr"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main", head_oid = "abc123" }, nil)
+
+  eq(new_session(child, {}).ok, true)
+  eq(session_field(child, "pr.number"), 999)
+  eq(session_field(child, "pr.head_oid"), "abc123")
+
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  eq(session_field(child, "pr"), nil)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["set_remote_threads()/threads_for_render(): merge order, resolved behind the toggle, repaint+notify"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "local draft",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+
+  install_notify_counter(child)
+  child.lua([[_G.__session:set_remote_threads(...)]], {
+    {
+      ["src/one.lua"] = {
+        remote_thread("src/one.lua", { id = "T1", line = 4, body = "open thread" }),
+        remote_thread("src/one.lua", { id = "T2", line = 5, resolved = true }),
+      },
+    },
+  })
+  eq(notify_count(child), 1, "set_remote_threads notifies once (panel counts)")
+  eq(
+    view_log(child)[#view_log(child)].event,
+    "refresh_comments",
+    "set_remote_threads repaints the comment layer"
+  )
+
+  local rendered = child.lua_get([[_G.__session:threads_for_render("src/one.lua")]])
+  eq(#rendered, 2, "local draft + unresolved remote; resolved hidden by default")
+  eq(rendered[1].messages[1].body, "local draft", "local drafts come first")
+  eq(rendered[2].id, "T1")
+
+  child.lua("_G.__session:toggle_remote_resolved()")
+  eq(session_field(child, "show_resolved_remote"), true)
+  eq(notify_count(child), 2)
+  rendered = child.lua_get([[_G.__session:threads_for_render("src/one.lua")]])
+  eq(#rendered, 3, "the toggle reveals resolved threads")
+
+  child.lua("_G.__session:toggle_remote_resolved()")
+  eq(#child.lua_get([[_G.__session:threads_for_render("src/one.lua")]]), 2)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["comment_count() adds unresolved remote threads, independent of the resolved toggle"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "local draft",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+  child.lua([[_G.__session:set_remote_threads(...)]], {
+    {
+      ["src/one.lua"] = {
+        remote_thread("src/one.lua", { id = "T1", line = 4 }),
+        remote_thread("src/one.lua", { id = "T2", line = 5, resolved = true }),
+        remote_thread("src/one.lua", { id = "T3", line = 9, outdated = true }),
+      },
+    },
+  })
+
+  eq(
+    child.lua_get([[_G.__session:comment_count("src/one.lua")]]),
+    3,
+    "1 local + 2 unresolved remote"
+  )
+  child.lua("_G.__session:toggle_remote_resolved()")
+  eq(
+    child.lua_get([[_G.__session:comment_count("src/one.lua")]]),
+    3,
+    "the panel number must not jump when peeking at resolved threads"
+  )
+
+  child.stop()
+  repo:destroy()
+end
+
+T["remote_thread_list(): flat (path, start_line) order, outdated included, toggle-sensitive"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  child.lua([[_G.__session:set_remote_threads(...)]], {
+    {
+      ["src/one.lua"] = {
+        remote_thread("src/one.lua", { id = "T2", line = 9, outdated = true }),
+        remote_thread("src/one.lua", { id = "T1", line = 2 }),
+        remote_thread("src/one.lua", { id = "T3", line = 5, resolved = true }),
+      },
+      ["src/added.lua"] = {
+        remote_thread("src/added.lua", { id = "T4", line = 1 }),
+      },
+    },
+  })
+
+  local list = child.lua_get([[_G.__session:remote_thread_list()]])
+  eq(#list, 3, "resolved hidden by default; outdated included")
+  eq(list[1].id, "T4")
+  eq(list[2].id, "T1")
+  eq(list[3].id, "T2")
+
+  child.lua("_G.__session:toggle_remote_resolved()")
+  eq(#child.lua_get([[_G.__session:remote_thread_list()]]), 4)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["remote threads never reach the persisted ReviewState"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  child.lua(
+    [[_G.__session:set_remote_threads(...)]],
+    { { ["src/one.lua"] = { remote_thread("src/one.lua", { id = "T1", line = 4 }) } } }
+  )
+  -- Force a save through a normal mutation, then inspect the file from disk.
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "local draft",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+
+  local reloaded = child.lua_get([[require("diffly.state").load(_G.__session.spec.review_key)]])
+  eq(#reloaded.comments["src/one.lua"], 1)
+  eq(reloaded.comments["src/one.lua"][1].messages[1].body, "local draft")
+  eq(reloaded.remote_threads, nil, "no remote field may ever be persisted")
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
 T["sweep_patterns(nil): sweeps the UNION of every group, de-duplicating a path matched by more than one group"] = function()
   local repo = group_repo()
 
