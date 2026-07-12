@@ -11,6 +11,8 @@ local M = {}
 
 ---@class diffly.ui.KeymapAction
 ---@field key string|false|nil  -- falsy disables the mapping (config.lua convention)
+---@field modes string[]?       -- map modes, default {"n"}; "x" enables visual-range
+--- actions (comment_add over a selection)
 ---@field callback fun()
 
 --- docs/architecture.md "View contract": the seam both diff views (`ui/sidebyside.lua`, `ui/unified.lua`)
@@ -64,7 +66,7 @@ function M.apply(bufnr, spec)
   for action, def in pairs(spec) do
     if def.key then
       vim.keymap.set(
-        "n",
+        def.modes or { "n" },
         def.key,
         def.callback,
         { buffer = bufnr, silent = true, nowait = true, desc = "diffly: " .. action }
@@ -77,7 +79,10 @@ end
 
 --- Delete buffer-local mappings for `keys` from `bufnr`. Guards buffer validity itself
 --- (callers track bufnrs across `open()` calls; by the time cleanup runs the buffer may
---- already be gone, e.g. wiped by `:bwipeout` from outside diffly).
+--- already be gone, e.g. wiped by `:bwipeout` from outside diffly). Deletion tries every
+--- mode `apply` can set rather than tracking (key, mode) pairs -- the pcall already
+--- tolerates keys that were never mapped in a given mode, so the applied-keys list keeps
+--- its simple flat shape.
 ---@param bufnr integer
 ---@param keys string[]
 function M.remove(bufnr, keys)
@@ -85,7 +90,9 @@ function M.remove(bufnr, keys)
     return
   end
   for _, key in ipairs(keys) do
-    pcall(vim.keymap.del, "n", key, { buffer = bufnr })
+    for _, mode in ipairs({ "n", "x" }) do
+      pcall(vim.keymap.del, mode, key, { buffer = bufnr })
+    end
   end
 end
 
