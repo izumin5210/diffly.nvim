@@ -5,6 +5,7 @@
 -- `diffly.SessionOpts.view_factory`), so this module is fully testable without any
 -- `lua/diffly/ui/*` dependency, and the real factories are wired up by WP-I.
 
+local comments = require("diffly.comments")
 local config = require("diffly.config")
 local git = require("diffly.git")
 local state = require("diffly.state")
@@ -22,6 +23,7 @@ local M = {}
 ---@field state diffly.ReviewState
 ---@field mode "sidebyside"|"unified"
 ---@field current_path string?
+---@field comments_collapsed boolean -- session-wide runtime flag (never persisted)
 local Session = {}
 Session.__index = Session
 
@@ -138,6 +140,85 @@ local function load_generated_attrs(repo, entries)
   return git.check_attrs(repo, "linguist-generated", paths) or {}
 end
 
+--- Re-anchor every persisted comment against the current entry list -- the ONLY place
+--- anchors are ever rewritten (render code never writes state; see docs/architecture.md).
+--- Returns whether anything moved or expired, so callers persist exactly once and only
+--- when needed.
+---
+--- Cost discipline: a side's content is loaded at most once per (path, side), and only
+--- when at least one of its threads' anchor sha differs from the entry's current side
+--- sha -- the steady-state refresh (nothing changed) does zero I/O here. Paths with no
+--- live entry (the file left the diff) are left untouched: there is nothing current to
+--- verify against, and expiring or dropping them would destroy user text over a
+--- transient state (e.g. a temporarily reverted worktree).
+---@param self diffly.Session
+---@return boolean dirty
+local function reanchor_comments(self)
+  local dirty = false
+  for path, threads in pairs(self.state.comments) do
+    local entry = self._entries_by_path[path]
+    if entry then
+      for _, side in ipairs({ "base", "head" }) do
+        -- NOT `side == "base" and entry.base_sha or entry.head_sha`: a nil base_sha
+        -- (added file) would fall through the `or` to the HEAD sha.
+        local current_sha
+        if side == "base" then
+          current_sha = entry.base_sha
+        else
+          current_sha = entry.head_sha
+        end
+
+        local side_threads = {}
+        for _, thread in ipairs(threads) do
+          if thread.anchor.side == side then
+            table.insert(side_threads, thread)
+          end
+        end
+
+        if not current_sha then
+          -- The side has no content anymore (e.g. head side of a now-deleted file):
+          -- nothing to search, so the threads are outdated by definition.
+          for _, thread in ipairs(side_threads) do
+            if not thread.anchor.outdated then
+              thread.anchor.outdated = true
+              dirty = true
+            end
+          end
+        else
+          local needs_content = false
+          for _, thread in ipairs(side_threads) do
+            if thread.anchor.sha ~= current_sha then
+              needs_content = true
+              break
+            end
+          end
+
+          if needs_content then
+            -- Base blobs and head-mode right sides are immutable objects; the worktree
+            -- right side is read straight from disk.
+            local locator
+            if side == "base" or self.spec.right == "head" then
+              locator = { sha = current_sha }
+            else
+              locator = { path = path }
+            end
+            local lines = git.file_content(self.spec.repo, locator)
+            if lines then
+              for _, thread in ipairs(side_threads) do
+                local resolution = comments.resolve(thread, current_sha, lines)
+                if comments.apply_resolution(thread, resolution) then
+                  dirty = true
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return dirty
+end
+
 --- Call every subscriber. Errors from one subscriber must not stop the others (a
 --- crashing render callback shouldn't corrupt session state or hide other subscribers'
 --- updates).
@@ -251,10 +332,17 @@ function M.new(opts)
     state = review_state,
     mode = "sidebyside",
     current_path = nil,
+    comments_collapsed = false,
     _view_factory = opts.view_factory,
     _subscribers = {},
   }, Session)
   self._view = self._view_factory(self.mode)
+
+  -- Catch comment drift since the last session (the file changed while nothing was
+  -- watching); dirty-flag save keeps the no-drift open from writing anything.
+  if reanchor_comments(self) then
+    state.save(self.state)
+  end
 
   return self
 end
@@ -280,6 +368,12 @@ function Session:refresh()
       self.spec.generated_attrs = load_generated_attrs(self.spec.repo, entries)
       self.entries = entries
       self._entries_by_path = index_by_path(entries)
+
+      -- Re-anchor BEFORE reopening current_path below, so the reopened view already
+      -- renders fresh comment positions.
+      if reanchor_comments(self) then
+        state.save(self.state)
+      end
 
       if self.current_path then
         local entry = self._entries_by_path[self.current_path]
@@ -353,6 +447,121 @@ function Session:is_viewed(path)
     return false
   end
   return state.is_viewed(self.state, entry)
+end
+
+--- Repaint just the comment layer of whatever the view currently shows. Comment
+--- mutations must NOT go through `open_file`/`View:open` -- reopening runs the view's
+--- cursor placement (`]c`-style jumps) and would yank the cursor away right after the
+--- user typed a comment. `refresh_comments` is an OPTIONAL View-contract method: fake
+--- views in session tests implement it, placeholder-only flows may not.
+function Session:_refresh_comment_render()
+  if self._view.refresh_comments then
+    self._view:refresh_comments()
+  end
+end
+
+---@class diffly.session.CommentOpts
+---@field side "base"|"head"
+---@field start_line integer
+---@field end_line integer
+---@field body string
+---@field snapshot string[]  -- the commented lines' text, captured by the caller from
+--- the buffer the user was looking at when the comment was written
+
+--- Create a comment thread on `path`. The anchor's sha is filled in here from the
+--- entry's current side -- callers never handle shas. Mutation discipline (shared by
+--- update/delete below, mirroring `toggle_viewed`): mutate, ONE `state.save`, repaint
+--- the comment layer, ONE subscriber notify.
+---@param path string
+---@param opts diffly.session.CommentOpts
+---@return diffly.CommentThread|nil, string|nil err
+function Session:add_comment(path, opts)
+  local entry = self._entries_by_path[path]
+  if not entry then
+    return nil, string.format("diffly: %s is not part of this review", path)
+  end
+
+  -- NOT the `and-or` idiom: a nil base_sha (added file) must stay nil, not fall through
+  -- to the head sha.
+  local sha
+  if opts.side == "base" then
+    sha = entry.base_sha
+  else
+    sha = entry.head_sha
+  end
+  if not sha then
+    return nil, string.format("diffly: %s has no %s-side content to comment on", path, opts.side)
+  end
+
+  local thread = comments.add(self.state, {
+    path = path,
+    side = opts.side,
+    start_line = opts.start_line,
+    end_line = opts.end_line,
+    body = opts.body,
+    sha = sha,
+    snapshot = opts.snapshot,
+  })
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+  return thread, nil
+end
+
+---@param path string
+---@param id string
+---@param body string
+---@return diffly.CommentThread|nil @nil (and no save/notify) when no such thread exists
+function Session:update_comment(path, id, body)
+  local thread = comments.update(self.state, path, id, body)
+  if not thread then
+    return nil
+  end
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+  return thread
+end
+
+---@param path string
+---@param id string
+---@return boolean deleted
+function Session:delete_comment(path, id)
+  if not comments.delete(self.state, path, id) then
+    return false
+  end
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+  return true
+end
+
+---@param path string
+---@return diffly.CommentThread[]
+function Session:comments_for(path)
+  return comments.list(self.state, path)
+end
+
+---@return diffly.CommentThread[]
+function Session:all_comments()
+  return comments.list_all(self.state)
+end
+
+--- Thread count for a path, INCLUDING outdated threads -- the panel indicator is the
+--- discoverability channel for comments that no longer render inline.
+---@param path string
+---@return integer
+function Session:comment_count(path)
+  return #comments.list(self.state, path)
+end
+
+--- Session-wide collapse toggle for inline comment rendering. A runtime flag, not
+--- persisted -- like the panel's hide-viewed filter, it describes how this session is
+--- being looked at, not review data.
+function Session:toggle_comments_collapsed()
+  self.comments_collapsed = not self.comments_collapsed
+  self:_refresh_comment_render()
+  self:_notify()
 end
 
 --- Tri-state bulk toggle over `paths`, shared by `sweep_patterns()` and the panel's

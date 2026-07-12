@@ -36,6 +36,9 @@ local INSTALL_FAKES = [[
       close = function(self)
         table.insert(_G.__log, { event = "close", mode = self.mode })
       end,
+      refresh_comments = function(self)
+        table.insert(_G.__log, { event = "refresh_comments", mode = self.mode })
+      end,
     }
   end
 
@@ -1279,6 +1282,343 @@ T["sweep_patterns(unknown name): returns nil plus an error, without touching any
   eq(save_count(child), 0, "an unknown group must never touch disk")
   eq(is_viewed(child, "a.lock"), false)
 
+  child.stop()
+  repo:destroy()
+end
+
+-- 12. comments: CRUD + re-anchoring ------------------------------------------------------
+
+--- Purpose-built repo for comment tests: one file modified on the feature branch (both
+--- base and head content exist) and one file added there (no base side -- the reject
+--- case). src/one.lua's worktree content is what comments anchor against.
+---@return diffly.test.Repo
+local function comment_repo()
+  local repo = helpers.new_repo()
+  repo:write("src/one.lua", { "line one", "line two", "line three", "line four", "line five" })
+  repo:commit("chore: base")
+  repo:branch("feature")
+  repo:write(
+    "src/one.lua",
+    { "line one", "line two", "line three CHANGED", "line four", "line five" }
+  )
+  repo:write("src/added.lua", { "new file line" })
+  repo:commit("feat: change one, add added")
+  return repo
+end
+
+---@param child table
+---@param path string
+---@param opts {side: string, start_line: integer, end_line: integer, body: string, snapshot: string[]}
+---@return {ok: boolean, id: string?, err: string?}
+local function add_comment(child, path, opts)
+  return child.lua(
+    [[
+      local path, opts = ...
+      local thread, err = _G.__session:add_comment(path, opts)
+      return { ok = thread ~= nil, id = thread and thread.id or nil, err = err }
+    ]],
+    { path, opts }
+  )
+end
+
+--- The review's state as re-read from DISK (not the in-memory table), for asserting that
+--- comment mutations/re-anchors actually persisted.
+---@param child table
+---@param expr string @expression relative to the reloaded state, e.g. ".comments['p'][1]"
+local function reloaded_state_field(child, expr)
+  return denil(child.lua_get("require('diffly.state').load(_G.__session.spec.review_key)" .. expr))
+end
+
+T["add_comment(): persists, saves and notifies exactly once, and records the side's sha"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  local res = add_comment(child, "src/one.lua", {
+    side = "head",
+    start_line = 3,
+    end_line = 3,
+    body = "why did this change?",
+    snapshot = { "line three CHANGED" },
+  })
+  eq(res.ok, true)
+  eq(res.id, "c1")
+  eq(save_count(child), 1)
+  eq(notify_count(child), 1)
+  eq(view_log(child), { { event = "refresh_comments", mode = "sidebyside" } })
+
+  -- The anchor sha is filled in by the session from the entry's head side.
+  eq(
+    session_field(child, "state.comments['src/one.lua'][1].anchor.sha"),
+    session_field(child, "_entries_by_path['src/one.lua'].head_sha")
+  )
+
+  -- And it all reached disk, not just the in-memory table.
+  eq(
+    reloaded_state_field(child, ".comments['src/one.lua'][1].messages[1].body"),
+    "why did this change?"
+  )
+  eq(reloaded_state_field(child, ".comment_seq"), 1)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["add_comment(): rejects a side without content and an unknown path, touching nothing"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  -- src/added.lua only exists on the head side; its base side has nothing to anchor to.
+  local res = add_comment(child, "src/added.lua", {
+    side = "base",
+    start_line = 1,
+    end_line = 1,
+    body = "x",
+    snapshot = { "y" },
+  })
+  eq(res.ok, false)
+  eq(type(res.err), "string")
+
+  res = add_comment(child, "does/not/exist.lua", {
+    side = "head",
+    start_line = 1,
+    end_line = 1,
+    body = "x",
+    snapshot = { "y" },
+  })
+  eq(res.ok, false)
+  eq(type(res.err), "string")
+
+  eq(save_count(child), 0)
+  eq(notify_count(child), 0)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["update_comment()/delete_comment(): persist and notify once each; comment_count tracks"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  local res = add_comment(child, "src/one.lua", {
+    side = "head",
+    start_line = 3,
+    end_line = 3,
+    body = "first draft",
+    snapshot = { "line three CHANGED" },
+  })
+  eq(res.ok, true)
+  eq(child.lua_get("_G.__session:comment_count('src/one.lua')"), 1)
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  eq(
+    child.lua("return _G.__session:update_comment('src/one.lua', 'c1', 'second draft') ~= nil"),
+    true
+  )
+  eq(save_count(child), 1)
+  eq(notify_count(child), 1)
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].messages[1].body"), "second draft")
+
+  eq(child.lua("return _G.__session:delete_comment('src/one.lua', 'c1')"), true)
+  eq(save_count(child), 2)
+  eq(notify_count(child), 2)
+  eq(child.lua_get("_G.__session:comment_count('src/one.lua')"), 0)
+  eq(reloaded_state_field(child, ".comments['src/one.lua']"), nil)
+
+  -- Unknown ids are a no-op: no save, no notify.
+  eq(child.lua("return _G.__session:delete_comment('src/one.lua', 'c9')"), false)
+  eq(child.lua("return _G.__session:update_comment('src/one.lua', 'c9', 'x') ~= nil"), false)
+  eq(save_count(child), 2)
+  eq(notify_count(child), 2)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["toggle_comments_collapsed(): flips the session flag, notifies, and repaints via the view"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  install_notify_counter(child)
+  eq(session_field(child, "comments_collapsed"), false)
+
+  child.lua("_G.__session:toggle_comments_collapsed()")
+  eq(session_field(child, "comments_collapsed"), true)
+  eq(notify_count(child), 1)
+  eq(view_log(child), { { event = "refresh_comments", mode = "sidebyside" } })
+
+  child.lua("_G.__session:toggle_comments_collapsed()")
+  eq(session_field(child, "comments_collapsed"), false)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["refresh(): re-anchors comments after worktree edits, persisting only when something moved"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "why did this change?",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+
+  install_save_spy(child)
+
+  -- Nothing changed: the steady-state fast path must not touch disk at all.
+  refresh(child)
+  eq(save_count(child), 0)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.start_line"), 3)
+
+  -- Two lines land above the commented one (an external edit, exactly what an AI agent
+  -- rewriting the file looks like): the anchor must follow and the move must persist.
+  repo:write("src/one.lua", {
+    "pad a",
+    "pad b",
+    "line one",
+    "line two",
+    "line three CHANGED",
+    "line four",
+    "line five",
+  })
+  refresh(child)
+  eq(save_count(child), 1)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.start_line"), 5)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.outdated"), nil)
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].anchor.start_line"), 5)
+
+  -- The commented line itself disappears: outdated, once, persisted.
+  repo:write("src/one.lua", { "pad a", "pad b", "line one", "line two", "line four", "line five" })
+  refresh(child)
+  eq(save_count(child), 2)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.outdated"), true)
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].anchor.outdated"), true)
+
+  -- Unchanged content after the miss: the advanced sha short-circuits, no rescan-rewrite.
+  refresh(child)
+  eq(save_count(child), 2)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["refresh(): comments for a path that left the diff are kept untouched"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "note to self",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+
+  install_save_spy(child)
+
+  -- Revert the worktree to the merge-base content: src/one.lua drops out of the diff
+  -- entirely, so there is no content to verify the comment against -- it must survive
+  -- unmodified (and un-saved) rather than being invalidated or dropped.
+  repo:write("src/one.lua", { "line one", "line two", "line three", "line four", "line five" })
+  refresh(child)
+
+  eq(entry_paths(child), { "src/added.lua" })
+  eq(save_count(child), 0)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.start_line"), 3)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.outdated"), nil)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["M.new(): re-anchors persisted comments that drifted since the last session"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "why did this change?",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+
+  -- The file changes while NO session is watching (edit between sessions).
+  repo:write("src/one.lua", {
+    "pad a",
+    "line one",
+    "line two",
+    "line three CHANGED",
+    "line four",
+    "line five",
+  })
+
+  eq(new_session(child, {}).ok, true)
+  eq(session_field(child, "state.comments['src/one.lua'][1].anchor.start_line"), 4)
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].anchor.start_line"), 4)
+
+  vim.fn.delete(tmp_state, "rf")
   child.stop()
   repo:destroy()
 end
