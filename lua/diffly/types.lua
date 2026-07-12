@@ -79,3 +79,42 @@
 ---@field viewed table<string, diffly.ViewedRecord>  -- keyed by FileEntry.path
 ---@field comments table<string, diffly.CommentThread[]>  -- keyed by FileEntry.path
 ---@field comment_seq integer   -- monotonic thread-id counter; only ever incremented
+
+---@class diffly.RemoteAnchor
+---@field side "base"|"head"    -- provider-translated; GitHub's LEFT/RIGHT never leaves github.lua
+---@field start_line integer    -- startLine (or line when single-line); the ORIGINAL position
+--- when the thread is outdated -- GitHub nulls the live line, but quickfix needs one
+---@field end_line integer
+---@field outdated boolean?     -- isOutdated verbatim; true-or-absent like the local convention
+
+---@class diffly.RemoteMessage
+---@field author string         -- comment author login; "ghost" when the account is gone
+---@field body string
+
+--- A review thread fetched from the forge -- session-held and read-only, NEVER written
+--- into diffly.ReviewState. Deliberately a separate class from diffly.CommentThread (no
+--- sha/snapshot: remote threads are never re-anchored or persisted) while staying
+--- placement-compatible: ui/comments.lua's placement math only reads
+--- anchor.side/start_line/end_line/outdated, which both classes share.
+---@class diffly.RemoteThread
+---@field id string             -- provider thread node id (opaque)
+---@field path string
+---@field anchor diffly.RemoteAnchor
+---@field messages diffly.RemoteMessage[]  -- the full thread, replies included
+---@field remote true
+---@field resolved boolean      -- isResolved verbatim
+
+--- Cancellation handle for an in-flight `fetch_threads` (the codebase's one async
+--- subprocess pattern). `cancel` is idempotent: kills the underlying process and
+--- suppresses the completion callback.
+---@class diffly.FetchHandle
+---@field cancel fun()
+
+--- The forge-provider contract (docs/design.md "Comments"): the functions the comment
+--- feature consumes, in diffly-neutral vocabulary. `lua/diffly/github.lua` is the sole
+--- implementation -- deliberately no registry/config until a second forge exists.
+---@class diffly.Provider
+---@field available fun(): boolean
+---@field detect_pr fun(repo: diffly.RepoIdentity): diffly.PrInfo|nil, string|nil
+---@field fetch_threads fun(repo: diffly.RepoIdentity, pr: diffly.PrInfo, on_done: fun(threads_by_path: table<string, diffly.RemoteThread[]>|nil, err: string|nil)): diffly.FetchHandle|nil, string|nil
+---@field submit_review fun(repo: diffly.RepoIdentity, pr: diffly.PrInfo, submission: diffly.ReviewSubmission): boolean|nil, string|nil
