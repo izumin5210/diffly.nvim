@@ -15,7 +15,8 @@ warnings, not history trivia.
 | `lua/diffly/session.lua` | One review session: diff spec construction, entries, viewed toggles (single + batch), mode switching, subscriber notifications. No UI. |
 | `lua/diffly/git.lua` | Synchronous git plumbing (`vim.system(...):wait()`): identity, refs, `diff_files` (NUL-parsed `--raw`/`--numstat`), blob content, hunks, batched `check_attrs`. |
 | `lua/diffly/github.lua` | `gh` wrapper. PR detection only (base ref + PR number); every failure returns `nil, err` — never raises. |
-| `lua/diffly/state.lua` | Viewed-state persistence under `stdpath('data')/diffly/`; blob-SHA invalidation; `clean`. |
+| `lua/diffly/state.lua` | Viewed-state + comment persistence under `stdpath('data')/diffly/`; blob-SHA invalidation; `clean`. |
+| `lua/diffly/comments.lua` | Pure comment-thread model: CRUD over `ReviewState.comments`, snapshot-search re-anchoring (`resolve`/`apply_resolution`), difit-compatible prompt formatting. No UI, no git subprocesses, no `vim.api` — callers supply shas and content lines. |
 | `lua/diffly/tree.lua` | Pure tree model: build (single-child dir compression), flatten (folds), file_order. |
 | `lua/diffly/config.lua` | Defaults, `setup()`, `viewed_patterns` group normalization. |
 | `lua/diffly/types.lua` | `---@meta` LuaCATS contracts shared across modules. |
@@ -23,7 +24,8 @@ warnings, not history trivia.
 | `lua/diffly/ui/panel.lua` | File-tree panel: render pipeline, cursor preservation, panel-local keys, hide-viewed filter. |
 | `lua/diffly/ui/sidebyside.lua` | Native diff-mode view: blob left, real file (or head blob) right. |
 | `lua/diffly/ui/unified.lua` | Inline-overlay view: real buffer + extmark overlay, deletions as `virt_lines`. |
-| `lua/diffly/ui/keymaps.lua` | Keymap specs (diff/universal layers), attach/detach lifecycle, ownership tokens. |
+| `lua/diffly/ui/comments.lua` | Comment placement math (direct + base-line→unified-row mapping), extmark rendering into a view-owned namespace, and the compose float. Never creates a namespace itself. |
+| `lua/diffly/ui/keymaps.lua` | Keymap specs (diff/universal layers incl. the side-gated comment family), attach/detach lifecycle, ownership tokens. |
 | `lua/diffly/ui/scratch.lua` | All `diffly://` buffer naming/options/reuse + LSP-safe highlighting. |
 | `lua/diffly/ui/guard.lua` | `config.max_file_size` AND `config.collapse_generated` decisions + placeholder messages/`L` key, shared by both views (formerly `ui/size_guard.lua`, generalized once the generated-file guard needed the same shape). |
 | `lua/diffly/ui/hl.lua` | Highlight groups (`default = true` links). |
@@ -76,10 +78,24 @@ Both views implement `diffly.View`: `open(entry, spec)` / `close()`, built by
   mid-switch. Consequence: two views' lifetimes overlap briefly, which is why keymap
   attach/detach uses per-buffer ownership tokens (below).
 - `ctx.actions` (`toggle_viewed(path)`, `toggle_mode`, `focus_panel`, `close`,
-  `next_file`, `prev_file`) is built once per session in `init.lua`; each action
-  captures the **tabpage handle** and resolves the live registry entry at call time.
-  Stale invocations notify instead of erroring. *Why*: module-level callback slots were
-  process-global mutable state — two sessions clobbered each other.
+  `next_file`, `prev_file`, the `comment_*` family, and the render-time getters
+  `comments_for`/`comments_collapsed`) is built once per session in `init.lua`; each
+  action captures the **tabpage handle** and resolves the live registry entry at call
+  time. Stale invocations notify instead of erroring — except the two render-time
+  getters, which degrade to empty data silently (a repaint racing teardown is not worth a
+  warning). *Why*: module-level callback slots were process-global mutable state — two
+  sessions clobbered each other.
+- `refresh_comments()` is an OPTIONAL View method: `Session:_refresh_comment_render`
+  calls it after every comment mutation/collapse toggle to repaint only the comment
+  namespace. *Why not `open_file`*: reopening runs the view's cursor placement (`gg]c`),
+  which would yank the cursor away right after the user typed a comment.
+- The compose float (`ui/comments.lua`'s `M.compose`) is deliberately NOT a View: it is
+  action-owned, opens `relative = "cursor"` (a keypress context is exactly where "the
+  current window" is the right reference), and funnels every exit — submit key, `q`,
+  `:q`, session teardown closing the tab — through a one-shot `WinClosed` autocmd, so
+  exactly one of on_submit/on_cancel fires with no float bookkeeping anywhere else.
+  Its `on_submit` re-resolves the live entry, so a float outliving the review degrades
+  to the standard stale-action notify.
 
 ## Keymap system
 
@@ -87,9 +103,15 @@ Three layers, all buffer-local **and `nowait`**:
 
 | Layer | Keys (defaults) | Applied to |
 |---|---|---|
-| `keymaps.universal` | `<leader>v/s/e`, `]f`, `[f` | every diffly context: panel, owned buffers, and the real file buffer currently shown |
+| `keymaps.universal` | `<leader>v/s/e`, `]f`, `[f`, `<leader>c a/e/d/t/y/Y` | every diffly context: panel (comment keys excluded — its own explicit list), owned buffers, and the real file buffer currently shown |
 | `keymaps.panel` | `v s R q za H S V <CR>` | panel buffer only |
-| `keymaps.diff` | `v s q <leader>e` | diffly-owned diff buffers only (blob, head blob) — never real buffers |
+| `keymaps.diff` | `v s q <leader>e`, `c a/e/d/t/y/Y` | diffly-owned diff buffers only (blob, head blob) — never real buffers |
+
+- The comment family is **side-gated**: both spec builders take the side the buffer shows
+  (`base`/`head`), and a nil side (binary/oversized/generated placeholders, no-content
+  scratches) omits the comment entries entirely — the keys must not exist where nothing
+  can be anchored. `comment_add` also maps in x-mode (visual-range comments); `apply`
+  supports per-action mode lists for exactly this.
 
 - `nowait` is what makes buffer-local maps actually win: without it, a longer global
   mapping sharing the prefix (`<leader>vx`) drags the keypress into the ambiguity
@@ -164,6 +186,22 @@ Three layers, all buffer-local **and `nowait`**:
      `M.generated_check_lines`): linguist itself classifies one blob at a time with no
      diff/side concept, and GitHub's own choice of which side of a PR diff it runs its
      collapsing heuristics against isn't documented or observable.
+- **Comment layer** (`ui/comments.lua`): each view instance owns ONE anonymous comment
+  namespace, separate from unified's overlay ns ("one ns per concern") — the overlay's
+  clear-and-redraw can never eat comment marks and a comment-only repaint never disturbs
+  the overlay. Expanded threads render as `virt_lines` below their anchor; collapsed
+  mode is an eol `virt_text` indicator. Head-side threads map 1:1 onto the shown buffer;
+  base-side threads go through `base_target`, a both-sides hunk walk mirroring
+  `compute_overlay` (this is what `diffly.Hunk.old_start` exists for) that lands a
+  deleted base line on its deletion run's exact anchor. Outdated threads are never
+  placed. Real buffers are stripped of the comment ns whenever the view stops showing
+  them (same rule as `keymaps.universal`), and `close()` clears it from surviving shared
+  owned buffers so the incoming view's repaint can't double-render.
+  **virt_lines ordering**: same-(row, above) virt_lines from different extmarks stack by
+  creation order (later-created on top; extmark `priority` has no effect on virt_lines) —
+  unified renders comments BEFORE the overlay, and `refresh_comments` repaints the
+  overlay again right after the comment layer, so a base-side comment always sits below
+  the deleted lines it annotates. Pinned by the unified comments golden.
 - **Owned-buffer close() vs. shared names**: a binary/head-mode/oversized/generated
   placeholder's buffer name (`ui/scratch.lua`) has no per-view component, so sidebyside and
   unified can end up sharing the exact same buffer for the same file. `Session:set_mode`
@@ -199,6 +237,32 @@ Three layers, all buffer-local **and `nowait`**:
 - Marking is always explicit (`v`, `<leader>v`, `V`, `S`, `<Plug>` mappings) — never
   automatic.
 
+## Comments
+
+Behavior-level decisions in [design.md](./design.md)'s "Comments" section; mechanisms:
+
+- **Storage**: the `comments` field of the same per-review state file (`comment_seq`
+  backs the monotonic `c<N>` thread ids). `state.lua` only supplies load-time defaults;
+  all comment logic lives in `comments.lua`, which never does I/O — `session.lua` feeds
+  it shas and content lines.
+- **Re-anchoring runs in exactly two places** — `session.new` (drift since the last
+  session) and `Session:refresh()` (before `current_path` reopens, so the reopened view
+  renders fresh anchors) — via `reanchor_comments`: per (path, side), content is loaded
+  at most once and ONLY when some thread's anchor sha differs from the entry's current
+  side sha; a `state.save` happens only when something actually moved or expired. The
+  steady-state refresh does zero extra I/O and zero writes. Render code never writes
+  state. A path with no live entry is left untouched (nothing current to verify against —
+  expiring it would destroy user text over a transient worktree state); a side with no
+  content anymore (head of a deleted file) expires its threads outright.
+- **Mutation discipline** (`add/update/delete_comment`, `toggle_comments_collapsed`):
+  mutate → one `state.save` (toggle: none — the collapse flag is runtime-only) → comment
+  repaint via the optional `refresh_comments` View method → one subscriber notify.
+  Mirrors `toggle_viewed`.
+- **Anchor sha advances on a failed re-anchor** alongside the `outdated` flag, so "sha
+  matches" always means "content identical to when the snapshot went missing" and the
+  next refresh short-circuits; rehabilitation happens on the search path when content
+  changes again. `outdated` is stored true-or-absent, never `false`.
+
 ## Deliberately rejected designs
 
 Studied (diffview.nvim, codediff.nvim) and rejected — do not reintroduce without new
@@ -216,6 +280,13 @@ evidence, e.g. profiling data or a concrete user problem:
   scale; caches add invalidation bugs.
 - **TabLeave suspend/resume for keymaps**: unnecessary once attach/detach is scoped to
   "the buffer currently shown" with ownership tokens.
+- **Fuzzy/partial snapshot matching for comment re-anchoring**: exact-block-or-outdated
+  only — a silently mis-anchored comment is worse than an outdated one.
+- **Rendering outdated comments at the top of the file**: misattribution noise; the
+  panel `✎N` count and `:Diffly comments` are the discoverability channels instead.
+- **Persisting comment buffer rows / file-level sha invalidation for comments**: rows
+  are derived state that drifts; file-level shas would expire every comment in a file on
+  any edit anywhere in it (wrong for the agent-rewrites-the-file workflow).
 
 ## Testing architecture
 

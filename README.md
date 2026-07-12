@@ -23,11 +23,19 @@ that persist across viewer sessions for the same pull request.
   subtree (`V`) or every file matching a configurable glob pattern GROUP (`S` / `:Diffly
   sweep [group]`, `viewed_patterns` — e.g. separate "lock files"/"generated files" groups)
   in one step, with a `vim.ui.select` prompt when more than one group is configured.
+- **Line comments** (difit-style): attach notes to a line or visual range on either side
+  of the diff, rendered inline below the code they annotate. Comments live locally in the
+  same per-review state as viewed marks, follow the code when it moves (snapshot-based
+  re-anchoring — an AI agent rewriting the file under review won't strand your notes), and
+  copy out as AI-agent-ready prompts in difit's `path:L42` format. `:Diffly comments`
+  lists every comment in quickfix.
 - Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
   buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
 
 Out of scope for v1 (deliberately): arbitrary rev comparison (`difit A B`), staged/working-
-only modes, inline comments, a flat-list panel toggle, filesystem-watch-based refresh.
+only modes, a flat-list panel toggle, filesystem-watch-based refresh. Planned next for
+comments: a read-only overlay of a PR's existing review threads, then batch submission of
+local drafts as a GitHub review (see `docs/design.md`, "Comments").
 
 ## Requirements
 
@@ -65,6 +73,7 @@ the plugin works with its defaults untouched.
 :Diffly focus          " focus the panel window from wherever you currently are
 :Diffly sweep          " bulk-toggle a `viewed_patterns` group (prompts if 2+; see below)
 :Diffly sweep {name}   " bulk-toggle one specific group by name, no prompt
+:Diffly comments       " list every comment in the review in quickfix
 :Diffly clean          " remove viewed state for the current review (prompts first)
 :Diffly clean all
 ```
@@ -85,13 +94,19 @@ collide with a real file's own, unrelated keymaps).
 
 #### Universal (all diffly windows)
 
-| Key         | Action                                             |
-| ----------- | --------------------------------------------------- |
-| `<leader>v` | Toggle viewed for the current file (auto-advances)   |
-| `<leader>s` | Toggle side-by-side ⇔ unified                         |
-| `<leader>e` | Focus the panel                                       |
-| `]f`        | Open the next file (ALL files, not just un-viewed ones) |
-| `[f`        | Open the previous file (ditto)                        |
+| Key          | Action                                             |
+| ------------ | --------------------------------------------------- |
+| `<leader>v`  | Toggle viewed for the current file (auto-advances)   |
+| `<leader>s`  | Toggle side-by-side ⇔ unified                         |
+| `<leader>e`  | Focus the panel                                       |
+| `]f`         | Open the next file (ALL files, not just un-viewed ones) |
+| `[f`         | Open the previous file (ditto)                        |
+| `<leader>ca` | Add a comment on the cursor line, or the visual selection |
+| `<leader>ce` | Edit the comment under the cursor                     |
+| `<leader>cd` | Delete the comment under the cursor (confirms first)  |
+| `<leader>ct` | Collapse/expand inline comment rendering (session-wide) |
+| `<leader>cy` | Copy the comment under the cursor as an AI prompt     |
+| `<leader>cY` | Copy every comment in the review as one AI prompt     |
 
 Works everywhere: the panel, diffly-owned blob buffers, and real file buffers currently
 shown in the viewer — worktree-mode side-by-side's right-hand window, and worktree-mode
@@ -131,11 +146,54 @@ Diffly-owned buffers only — the side-by-side blob windows, and unified's own b
 (HEAD mode, or a deleted file's read-only content) — never real file buffers, which get
 only the universal layer above.
 
-| Key | Action                              |
-| --- | ------------------------------------ |
-| `v` | Toggle viewed for the current file   |
-| `s` | Toggle side-by-side ⇔ unified         |
-| `q` | Close the review UI                   |
+| Key  | Action                              |
+| ---- | ------------------------------------ |
+| `v`  | Toggle viewed for the current file   |
+| `s`  | Toggle side-by-side ⇔ unified         |
+| `q`  | Close the review UI                   |
+| `ca` | Add a comment (cursor line / visual range) |
+| `ce` | Edit the comment under the cursor    |
+| `cd` | Delete the comment under the cursor  |
+| `ct` | Collapse/expand inline comments      |
+| `cy` | Copy the comment under the cursor as an AI prompt |
+| `cY` | Copy every comment as one AI prompt  |
+
+The comment keys only exist where there is content to anchor to: never on
+binary/oversized/generated placeholders, and the base-side variants only in buffers
+showing base content (the side-by-side left window — that's also where you comment on
+deleted lines).
+
+#### Comments
+
+`<leader>ca` (real file buffers) / `ca` (diffly-owned buffers) opens a small markdown
+float anchored at the cursor — type the note, `<C-s>` to save, `q` (or an empty body) to
+cancel. In visual mode the same key comments on the whole selected range. The body renders
+inline right below the commented line (below the *deleted* lines it annotates, for a
+base-side comment on removed code); `<leader>ct` collapses every comment down to a `✎`
+end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`
+count.
+
+Comments are stored next to the viewed marks, keyed to the same review, and **follow the
+code**: each comment remembers the text it was written against, and when the file changes
+— new commits, or an AI agent rewriting it mid-review — the anchor is re-located by
+searching for that exact text near its old position. If the commented lines are gone
+entirely, the comment turns **outdated**: it stops rendering inline (a note pinned to the
+wrong line is worse than none) but stays in the panel count and `:Diffly comments`, where
+`[outdated]` / `[base]` markers flag each entry.
+
+`<leader>cy` / `<leader>cY` copy comments to the unnamed register (and the system
+clipboard when available) in difit's AI-agent prompt format — ready to paste into any
+coding agent:
+
+```
+src/api/client.ts:L42-L48
+this retry loop needs a backoff
+
+=====
+
+src/api/client.ts:L102
+copy the error message into the exception
+```
 
 `<Plug>` mappings are also available if you'd rather bind your own keys (e.g. to reach
 these actions from buffers diffly doesn't map by default):
@@ -176,7 +234,18 @@ require("diffly").setup({
       toggle_viewed_subtree = "V",  -- bulk-toggle every file under a dir row
     },
     -- applied ONLY in diffly-owned buffers (blob/unified), IN ADDITION to keymaps.universal
-    diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+    diff = {
+      toggle_viewed = "v",
+      toggle_mode = "s",
+      focus_panel = "<leader>e",
+      close = "q",
+      comment_add = "ca",      -- normal: cursor line; visual: the selected range
+      comment_edit = "ce",
+      comment_delete = "cd",
+      comment_toggle = "ct",   -- collapse/expand inline comments (session-wide)
+      comment_copy = "cy",     -- AI prompt for the comment under the cursor
+      comment_copy_all = "cY", -- AI prompt for every comment in the review
+    },
     -- the universal layer: works everywhere (panel, owned diff buffers, AND real file
     -- buffers shown in the viewer); real file buffers get ONLY this group
     universal = {
@@ -185,6 +254,12 @@ require("diffly").setup({
       focus_panel = "<leader>e",
       next_file = "]f", -- open the next file (ALL files, unaffected by keymaps.panel's H)
       prev_file = "[f", -- open the previous file (ditto)
+      comment_add = "<leader>ca",
+      comment_edit = "<leader>ce",
+      comment_delete = "<leader>cd",
+      comment_toggle = "<leader>ct",
+      comment_copy = "<leader>cy",
+      comment_copy_all = "<leader>cY",
     },
   },
 })
