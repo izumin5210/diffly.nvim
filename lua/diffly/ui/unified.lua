@@ -101,12 +101,15 @@ end
 ---@param name string
 ---@param lines string[]
 ---@param path string
+---@param side "base"|"head"|nil  -- which side's content the buffer shows; nil
+--- (placeholders) keeps the comment keys off the buffer entirely
 ---@return integer bufnr
-local function owned_buffer(self, name, lines, path)
+local function owned_buffer(self, name, lines, path, side)
   local bufnr = scratch.find_or_create(name, { lines = lines, filename = path })
   self.owned_bufs[bufnr] = true
-  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, path))
-  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, path))
+  local keymap_opts = { side = side }
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, path, keymap_opts))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, path, keymap_opts))
   return bufnr
 end
 
@@ -363,7 +366,7 @@ local function show_deleted(self, entry, spec)
   local lines = entry.base_sha and load_blob(spec.repo, entry.base_sha, entry.path, "base") or {}
   local name =
     scratch.name(scratch.short_sha(entry.base_sha) or "empty", self.ctx.anchor, entry.path)
-  local buf = owned_buffer(self, name, lines, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path, entry.base_sha and "base" or nil)
   vim.api.nvim_win_set_buf(self.win, buf)
   render_all_deleted(self, buf)
   return buf
@@ -399,7 +402,7 @@ local function show_head_blob(self, entry, spec)
   release_real_buf(self, nil)
   local lines = load_blob(spec.repo, entry.head_sha, entry.path, "head")
   local name = scratch.name(scratch.short_sha(entry.head_sha), self.ctx.anchor, entry.path)
-  local buf = owned_buffer(self, name, lines, entry.path)
+  local buf = owned_buffer(self, name, lines, entry.path, "head")
   vim.api.nvim_win_set_buf(self.win, buf)
   return buf
 end

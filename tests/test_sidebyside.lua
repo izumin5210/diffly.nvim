@@ -1057,6 +1057,62 @@ T["comments: base threads render into the left blob, head threads into the right
   eq(right[1][4].virt_lines[1][2][1], "head-side note")
 end
 
+---@param child_ table
+---@param bufnr integer
+---@param mode string
+---@param lhs string
+---@return boolean
+local function has_buf_map(child_, bufnr, mode, lhs)
+  return child_.lua(
+    [[
+      local bufnr, mode, lhs = ...
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
+        if m.lhs == lhs then
+          return true
+        end
+      end
+      return false
+    ]],
+    { bufnr, mode, lhs }
+  )
+end
+
+T["comments: owned buffers get comment keys (x-mode add included); real and placeholder buffers don't"] = function()
+  local built = build(child, "worktree")
+
+  new_view(child)
+  view_open(child, built.spec, entry_by_path(built.entries, paths.modified))
+
+  -- Owned left blob: single-key comment family, including the visual-range add.
+  local left = buf_of(child, "left_win")
+  eq(has_buf_map(child, left, "n", "ca"), true)
+  eq(has_buf_map(child, left, "x", "ca"), true)
+  eq(has_buf_map(child, left, "n", "ce"), true)
+  eq(has_buf_map(child, left, "n", "cY"), true)
+
+  -- Real right buffer: leader-prefixed universal family ONLY, never single keys.
+  local right = buf_of(child, "right_win")
+  eq(has_buf_map(child, right, "n", "ca"), false)
+  eq(has_buf_map(child, right, "n", [[\ca]]), true)
+  eq(has_buf_map(child, right, "x", [[\ca]]), true)
+
+  -- Binary placeholder: no comment keys in either layer (side == nil).
+  view_open(child, built.spec, {
+    path = "bin.dat",
+    status = "M",
+    untracked = false,
+    binary = true,
+    additions = 0,
+    deletions = 0,
+    base_sha = "aaaaaaa",
+    head_sha = "bbbbbbb",
+  })
+  local placeholder = buf_of(child, "left_win")
+  eq(has_buf_map(child, placeholder, "n", "ca"), false)
+  eq(has_buf_map(child, placeholder, "n", [[\ca]]), false)
+  eq(has_buf_map(child, placeholder, "n", "v"), true, "non-comment diff keys still apply")
+end
+
 T["comments: moving to another file strips comment marks from the previous real buffer"] = function()
   local built = build(child, "worktree")
 

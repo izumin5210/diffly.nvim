@@ -1,8 +1,11 @@
--- Comment rendering + placement math (docs/design.md "Comments"). Namespaces are OWNED BY
--- THE VIEWS (one anonymous comment ns per view instance, mirroring the unified overlay's
--- "one ns per concern" rule) -- this module never creates one, it only paints into the ns
--- a view hands it. Placement is pure data so the mapping math is testable against real
--- git hunks without any window machinery (tests/test_ui_comments.lua).
+-- Comment rendering + placement math + the compose float (docs/design.md "Comments").
+-- Namespaces are OWNED BY THE VIEWS (one anonymous comment ns per view instance,
+-- mirroring the unified overlay's "one ns per concern" rule) -- this module never creates
+-- one, it only paints into the ns a view hands it. Placement is pure data so the mapping
+-- math is testable against real git hunks without any window machinery
+-- (tests/test_ui_comments.lua).
+
+local scratch = require("diffly.ui.scratch")
 
 local M = {}
 
@@ -163,6 +166,97 @@ function M.render(buf, ns, placements, opts)
       })
     end
   end
+end
+
+---@class diffly.ui.ComposeOpts
+---@field title string          -- "path:L42" / "path:L42-L48", shown in the border
+---@field initial string[]?     -- prefill for the edit flow; empty/nil starts in insert mode
+---@field on_submit fun(lines: string[])
+---@field on_cancel fun()?
+
+--- The comment compose/edit float: a small markdown scratch anchored at the cursor.
+--- Deliberately NOT a diffly.View -- it is action-owned (opened from a keypress, where
+--- "the current window" is exactly the right reference point via `relative = "cursor"`),
+--- so the views' "never read the current window" contract doesn't apply here (documented
+--- in docs/architecture.md).
+---
+--- Lifecycle: every exit funnels through one `finish()` closure via a one-shot WinClosed
+--- autocmd -- the submit/cancel keys below, but also `:q`, `:close`, and the whole
+--- tabpage disappearing during session teardown -- so exactly one of on_submit/on_cancel
+--- ever fires, no float bookkeeping needed anywhere else. A whitespace-only body submits
+--- as a cancel: an empty comment is not a thing.
+---@param opts diffly.ui.ComposeOpts
+---@return integer win, integer buf
+function M.compose(opts)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  local initial = opts.initial or {}
+  if #initial > 0 then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial)
+  end
+  -- Markdown highlighting WITHOUT 'filetype' (the LSP-didOpen invariant, see
+  -- ui/scratch.lua): treesitter when a parser exists, legacy 'syntax' otherwise.
+  scratch.highlight(buf, { lang = "markdown" })
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "cursor",
+    row = 1,
+    col = 0,
+    width = math.min(60, math.max(20, vim.o.columns - 4)),
+    height = 6,
+    style = "minimal",
+    border = "rounded",
+    title = " " .. opts.title .. " ",
+    title_pos = "left",
+  })
+
+  local finished = false
+  ---@param submitted boolean
+  local function finish(submitted)
+    if finished then
+      return
+    end
+    finished = true
+
+    local lines = vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      or {}
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+    -- Insert mode SURVIVES the float closing (submitting with <C-s> from insert would
+    -- otherwise dump the user into insert mode in the underlying buffer, where the next
+    -- keys they type become text edits instead of commands).
+    vim.cmd("stopinsert")
+
+    if submitted and vim.trim(table.concat(lines, "\n")) ~= "" then
+      opts.on_submit(lines)
+    elseif opts.on_cancel then
+      opts.on_cancel()
+    end
+  end
+
+  vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(win),
+    once = true,
+    callback = function()
+      finish(false)
+    end,
+  })
+
+  vim.keymap.set({ "n", "i" }, "<C-s>", function()
+    finish(true)
+  end, { buffer = buf, nowait = true, silent = true, desc = "diffly: submit comment" })
+  vim.keymap.set("n", "q", function()
+    finish(false)
+  end, { buffer = buf, nowait = true, silent = true, desc = "diffly: cancel comment" })
+
+  if #initial == 0 then
+    vim.cmd.startinsert()
+  end
+
+  return win, buf
 end
 
 return M

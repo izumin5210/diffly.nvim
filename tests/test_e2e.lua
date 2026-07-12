@@ -1938,4 +1938,110 @@ T["actions resolve at call time: a stale action captured before close() notifies
   end
 end
 
+---------------------------------------------------------------------------------------
+-- comments: the full user flow, driven by keystrokes -------------------------------------
+---------------------------------------------------------------------------------------
+
+---@param child_ table
+---@param path string
+---@return table[] threads
+local function session_comments(child_, path)
+  return child_.lua([[return __diffly_entry().session:comments_for(...)]], { path })
+end
+
+T["comments: <leader>ca on the worktree buffer adds a comment that persists; cY copies; cd deletes after confirm"] = function()
+  child.cmd("Diffly")
+  -- The first un-viewed file (gone.lua) auto-opened; move to mod.lua's real worktree
+  -- buffer, where only the leader-prefixed universal layer exists.
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- Add on line 4 (the `  return "hello, world"` line): float opens in insert mode,
+  -- type the body, <C-s> submits.
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("tighten this up")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].messages[1].body, "tighten this up")
+  eq(threads[1].anchor.side, "head")
+  eq(threads[1].anchor.start_line, 4)
+  eq(threads[1].anchor.end_line, 4)
+  eq(threads[1].anchor.snapshot, { '  return "hello, world"' })
+
+  -- Persisted, not just in memory: reload the state file from disk.
+  local persisted = child.lua_get(
+    [[require("diffly.state").load(__diffly_entry().session.spec.review_key)
+        .comments[ (...) ][1].messages[1].body]],
+    { paths.modified }
+  )
+  eq(persisted, "tighten this up")
+
+  -- Copy-all writes the difit-format prompt to the unnamed register.
+  child.type_keys([[\cY]])
+  eq(child.lua_get([[vim.fn.getreg('"')]]), paths.modified .. ":L4\ntighten this up")
+
+  -- Delete from the same line; the confirmation menu is a vim.ui.select, stubbed to
+  -- pick its first choice ("Delete").
+  stub_ui_select(child, "function(items) return items[1] end")
+  child.type_keys([[\cd]])
+  eq(session_comments(child, paths.modified), {})
+  eq(select_log(child)[1].formatted, { "Delete", "Keep" })
+end
+
+T["comments: a visual range through <leader>ca records start/end and the snapshot block"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  -- Select worktree lines 3..4 and comment on the range.
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 3, 0 })]])
+  child.type_keys("Vj")
+  child.type_keys([[\ca]])
+  child.type_keys("this pair")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].anchor.start_line, 3)
+  eq(threads[1].anchor.end_line, 4)
+  eq(threads[1].anchor.snapshot, { "function M.hello()", '  return "hello, world"' })
+end
+
+T["comments: ct collapses inline rendering session-wide"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("note")
+  child.type_keys("<C-s>")
+
+  eq(session_field(child, "comments_collapsed"), false)
+  child.type_keys([[\ct]])
+  eq(session_field(child, "comments_collapsed"), true)
+  child.type_keys([[\ct]])
+  eq(session_field(child, "comments_collapsed"), false)
+end
+
+T["comments: editing via ce reopens the float prefilled and updates the body"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  child.type_keys("first draft")
+  child.type_keys("<C-s>")
+
+  -- The float opens prefilled (normal mode); rewrite the whole line and submit.
+  child.type_keys([[\ce]])
+  child.type_keys("ccsecond draft")
+  child.type_keys("<C-s>")
+
+  local threads = session_comments(child, paths.modified)
+  eq(#threads, 1)
+  eq(threads[1].messages[1].body, "second draft")
+  eq(type(threads[1].messages[1].updated_at), "string")
+end
+
 return T

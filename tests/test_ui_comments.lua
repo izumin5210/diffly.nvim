@@ -224,6 +224,110 @@ T["render(): collapsed mode paints an eol indicator instead of virt_lines"] = fu
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
+-- compose() -------------------------------------------------------------------
+
+--- Find a compose-buffer mapping by its `desc` (lhs notation for keys like <C-s> is
+--- normalization-dependent; desc is the stable handle) and return its callback.
+---@param buf integer
+---@param mode string
+---@param desc string
+---@return fun()
+local function mapping_by_desc(buf, mode, desc)
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
+    if map.desc == desc then
+      return map.callback
+    end
+  end
+  error(string.format("no %s-mode mapping with desc %q", mode, desc))
+end
+
+--- compose() with recording callbacks; returns win/buf plus the records.
+---@param opts table?
+local function composed(opts)
+  local record = { submitted = nil, submit_count = 0, cancel_count = 0 }
+  local win, buf = ui_comments.compose(vim.tbl_extend("force", {
+    title = "src/a.lua:L3",
+    on_submit = function(lines)
+      record.submit_count = record.submit_count + 1
+      record.submitted = lines
+    end,
+    on_cancel = function()
+      record.cancel_count = record.cancel_count + 1
+    end,
+  }, opts or {}))
+  return win, buf, record
+end
+
+T["compose(): a markdown float scratch that never sets 'filetype'"] = function()
+  local win, buf, _ = composed()
+
+  eq(vim.api.nvim_win_is_valid(win), true)
+  -- `relative = "cursor"` is normalized to a win-relative position once created; any
+  -- non-empty `relative` means "a floating window".
+  eq(vim.api.nvim_win_get_config(win).relative ~= "", true)
+  eq(vim.bo[buf].buftype, "nofile")
+  -- The hard invariant: markdown highlighting WITHOUT a FileType event (LSP didOpen on a
+  -- non-file buffer can crash servers) -- treesitter when available, 'syntax' otherwise.
+  eq(vim.bo[buf].filetype, "")
+  eq(vim.treesitter.highlighter.active[buf] ~= nil or vim.bo[buf].syntax == "markdown", true)
+
+  vim.api.nvim_win_close(win, true)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): submit hands over the body lines exactly once and closes the float"] = function()
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "first line", "second line" })
+
+  mapping_by_desc(buf, "n", "diffly: submit comment")()
+
+  eq(record.submit_count, 1)
+  eq(record.submitted, { "first line", "second line" })
+  eq(record.cancel_count, 0, "WinClosed firing after submit must not also cancel")
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): q cancels exactly once"] = function()
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "draft" })
+
+  mapping_by_desc(buf, "n", "diffly: cancel comment")()
+
+  eq(record.submit_count, 0)
+  eq(record.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): an empty body submits as a cancel"] = function()
+  local win, buf, record = composed()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "", "   " })
+
+  mapping_by_desc(buf, "n", "diffly: submit comment")()
+
+  eq(record.submit_count, 0)
+  eq(record.cancel_count, 1)
+  eq(vim.api.nvim_win_is_valid(win), false)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): closing the window externally funnels into cancel (teardown-safe)"] = function()
+  local win, _, record = composed()
+
+  vim.api.nvim_win_close(win, true)
+
+  eq(record.submit_count, 0)
+  eq(record.cancel_count, 1)
+  vim.cmd("stopinsert")
+end
+
+T["compose(): initial prefills the buffer for the edit flow"] = function()
+  local win, buf, _ = composed({ initial = { "existing body" } })
+  eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "existing body" })
+  vim.api.nvim_win_close(win, true)
+end
+
 T["render(): clear-and-redraw removes stale marks"] = function()
   local buf, ns = scratch_buf(6)
 

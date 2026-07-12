@@ -57,7 +57,22 @@ M.defaults = {
     -- ui/unified.lua's `setup_keymaps` for the deterministic apply order (diff first,
     -- universal second) that decides which one wins if a user configures the same lhs in
     -- both groups.
-    diff = { toggle_viewed = "v", toggle_mode = "s", focus_panel = "<leader>e", close = "q" },
+    diff = {
+      toggle_viewed = "v",
+      toggle_mode = "s",
+      focus_panel = "<leader>e",
+      close = "q",
+      -- The comment family (docs/design.md "Comments"). Single keys are safe here: owned
+      -- buffers are 'nomodifiable', so the `c` operator these shadow is dead anyway. Only
+      -- applied when the buffer shows commentable side content (never on binary/oversized/
+      -- generated placeholders -- see ui/keymaps.lua's `side` plumbing).
+      comment_add = "ca", -- n: cursor line; x: the visual range
+      comment_edit = "ce",
+      comment_delete = "cd",
+      comment_toggle = "ct", -- collapse/expand inline comment rendering, session-wide
+      comment_copy = "cy", -- difit-format prompt for the comment at the cursor
+      comment_copy_all = "cY", -- ditto, every comment in the review
+    },
     -- The two-layer model's universal layer (docs/design.md "Interface"): leader-prefixed,
     -- real-buffer-safe keys that work in EVERY diffly context -- diffly-owned buffers (panel,
     -- blob/unified; applied alongside `keymaps.panel`/`keymaps.diff` above) AND real file
@@ -78,6 +93,15 @@ M.defaults = {
       -- during navigation is what `v`'s auto-advance is already for).
       next_file = "]f",
       prev_file = "[f",
+      -- The comment family again, leader-prefixed: on a REAL file buffer (the main place
+      -- comments get written) this layer is the only one allowed, so the primary comment
+      -- gesture is `<leader>c…` by design, not a single key.
+      comment_add = "<leader>ca",
+      comment_edit = "<leader>ce",
+      comment_delete = "<leader>cd",
+      comment_toggle = "<leader>ct",
+      comment_copy = "<leader>cy",
+      comment_copy_all = "<leader>cY",
     },
   },
 }

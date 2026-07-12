@@ -87,7 +87,9 @@ View.__index = View
 --- makes their content unique, so reuse is always content-safe).
 ---@param name string
 ---@param lines string[]
----@param opts { filename: string?, entry_path: string }
+---@param opts { filename: string?, entry_path: string, side: "base"|"head"|nil }
+--- -- `side`: which side's content this buffer shows; nil (placeholders, empty
+--- no-content scratches) keeps the comment keys off the buffer entirely
 ---@return integer bufnr
 function View:owned_buffer(name, lines, opts)
   local bufnr = scratch.find_or_create(name, { lines = lines, filename = opts.filename })
@@ -96,8 +98,9 @@ function View:owned_buffer(name, lines, opts)
   -- second -- `vim.keymap.set` overwrites on a shared lhs, so a user who configures the
   -- same key in both groups gets the universal binding, consistently across every owned
   -- buffer (mirrors `ui/unified.lua`'s equivalent helper).
-  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, opts.entry_path))
-  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, opts.entry_path))
+  local keymap_opts = { side = opts.side }
+  ui_keymaps.apply(bufnr, ui_keymaps.diff_spec(self.ctx.actions, opts.entry_path, keymap_opts))
+  ui_keymaps.apply(bufnr, ui_keymaps.universal_spec(self.ctx.actions, opts.entry_path, keymap_opts))
   return bufnr
 end
 
@@ -235,11 +238,12 @@ function View:set_left(entry, spec)
       )
     end
   end
-  local bufnr = self:owned_buffer(
-    left_buffer_name(entry, spec, self.ctx.anchor),
-    lines,
-    { filename = entry.path, entry_path = entry.path }
-  )
+  local bufnr = self:owned_buffer(left_buffer_name(entry, spec, self.ctx.anchor), lines, {
+    filename = entry.path,
+    entry_path = entry.path,
+    -- An added/untracked file's empty left scratch has no base content to comment on.
+    side = entry.base_sha and "base" or nil,
+  })
   vim.api.nvim_win_set_buf(self.left_win, bufnr)
 end
 
@@ -302,11 +306,11 @@ function View:set_right_head(entry, spec)
       )
     end
   end
-  local bufnr = self:owned_buffer(
-    right_blob_buffer_name(entry, self.ctx.anchor),
-    lines,
-    { filename = entry.path, entry_path = entry.path }
-  )
+  local bufnr = self:owned_buffer(right_blob_buffer_name(entry, self.ctx.anchor), lines, {
+    filename = entry.path,
+    entry_path = entry.path,
+    side = entry.head_sha and "head" or nil,
+  })
   vim.api.nvim_win_set_buf(self.right_win, bufnr)
   -- `spec.right` never actually changes across one View instance's lifetime (see
   -- `session.lua`: a mode/right change always goes through a fresh view), but clearing
