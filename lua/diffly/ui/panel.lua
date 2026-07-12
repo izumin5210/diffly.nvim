@@ -26,6 +26,8 @@ local M = {}
 ---@field row_nodes table<integer, diffly.TreeNode> -- 1-indexed buffer line -> node
 ---@field hide_viewed boolean  -- display-only filter (toggle_hide_viewed); never persisted
 ---@field sweep_action fun()?  -- see `M.open`'s `opts.sweep`
+---@field refresh_action fun()?  -- see `M.open`'s `opts.refresh`; nil falls back to a
+--- plain `session:refresh()` (local diff only)
 local Panel = {}
 Panel.__index = Panel
 
@@ -601,7 +603,15 @@ end
 
 ---@param panel diffly.Panel
 local function on_refresh(panel)
-  panel.session:refresh()
+  -- The injected `opts.refresh` (see `M.open`) routes an EXPLICIT refresh through
+  -- init.lua so it can also refetch the remote-comment overlay -- same injection shape
+  -- as `sweep_action`. The bare fallback keeps this module drivable without init.lua in
+  -- the loop (tests, headless embedding).
+  if panel.refresh_action then
+    panel.refresh_action()
+  else
+    panel.session:refresh()
+  end
 end
 
 ---@param panel diffly.Panel
@@ -731,9 +741,10 @@ local function set_keymaps(panel)
 end
 
 ---@param session diffly.Session
----@param opts { sweep: fun()? }?  -- `sweep`: injected by `init.lua` so the `S` keymap
----  runs the exact same group-selector flow `:Diffly sweep` uses -- see `on_sweep`'s own
----  doc for why this is injected rather than implemented locally.
+---@param opts { sweep: fun()?, refresh: fun()? }?  -- both injected by `init.lua` so the
+---  panel's `S`/`R` keymaps run the exact same flows `:Diffly sweep`/`:Diffly refresh`
+---  use (group selector; explicit refresh incl. the remote-overlay refetch) -- see
+---  `on_sweep`/`on_refresh` for why these are injected rather than implemented locally.
 ---@return diffly.Panel
 function M.open(session, opts)
   opts = opts or {}
@@ -790,6 +801,7 @@ function M.open(session, opts)
     row_nodes = {},
     hide_viewed = false,
     sweep_action = opts.sweep,
+    refresh_action = opts.refresh,
   }, Panel)
 
   set_keymaps(panel)
