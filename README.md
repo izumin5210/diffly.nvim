@@ -3,42 +3,23 @@
 Inspired by [difit](https://github.com/yoshiko-pg/difit).
 
 A file-tree diff viewer for Neovim (like diffview.nvim) with per-file **viewed** marks
-that persist across viewer sessions for the same pull request.
+that persist across sessions. Diffs render on your real files — not synthetic patch
+buffers — so your syntax highlighting and LSP keep working as you review.
 
 ![diffly.nvim demo — reviewing a Go branch: unified inline-overlay diff with a live gopls hover card and marking files viewed with auto-advance](assets/demo.gif)
 
 ## Features
 
-- File-tree panel listing everything changed between your current branch and its base
-  branch (or a detected GitHub pull request), with status letters, `+`/`-` counts, folding,
-  and directory compression.
-- Diff display selectable between side-by-side (native Neovim diff mode) and unified
-  (single column). Both show the real file — not a synthetic patch buffer — so you get the
-  file's own syntax highlighting and LSP in either mode; unified overlays the diff on top
-  with extmarks (deleted lines render as read-only virtual lines).
-- Per-file **viewed** marks, persisted per PR (or per branch pair), shared across viewer
-  sessions, worktrees, and clones of the same repo — but never carried over to a different
-  PR. Marks invalidate automatically (GitHub-style) when either side of the diff changes.
-- Bulk viewed marking, still explicit-trigger only: mark/unmark an entire directory
-  subtree (`V`) or every file matching a configurable glob pattern GROUP (`S` / `:Diffly
-  sweep [group]`, `viewed_patterns` — e.g. separate "lock files"/"generated files" groups)
-  in one step, with a `vim.ui.select` prompt when more than one group is configured.
-- **Line comments** (difit-style): attach notes to a line or visual range on either side
-  of the diff, rendered inline below the code they annotate. Comments live locally in the
-  same per-review state as viewed marks, follow the code when it moves (snapshot-based
-  re-anchoring — an AI agent rewriting the file under review won't strand your notes), and
-  copy out as AI-agent-ready prompts in difit's `path:L42` format. `:Diffly comments`
-  lists every comment in quickfix.
-- **PR review threads, inline**: when the review is a GitHub PR, the existing review
-  conversations are fetched (async, never blocking open) and rendered read-only right in
-  the diff with `@author` attribution — unresolved threads by default, resolved ones a
-  toggle away.
-- **Submit your notes as one review**: `:Diffly submit` validates every draft against the
-  PR's real diff, reports what can't go (kept locally), and posts the rest as a single
-  GitHub review — comment / approve / request changes, optional summary — in one
-  notification. Drafts written before the PR existed follow it automatically.
-- Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
-  buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
+- **A GitHub-PR-style review UI** — a file-tree panel and side-by-side / unified diffs for
+  everything changed between your branch and its base (or a detected PR).
+- **On your real files, not patch buffers** — diffs render on the actual buffers, so your
+  syntax highlighting, LSP, and editing keep working throughout.
+- **Persistent viewed marks** per file, kept across sessions and invalidated automatically
+  when either side of the diff changes.
+- **Line comments** on any line or range, stored locally, rendered inline, and copyable as
+  AI-agent prompts.
+- **GitHub PR comments**: view a PR's existing review threads inline, and post your own
+  comments back as a single review.
 
 Out of scope for v1 (deliberately): arbitrary rev comparison (`difit A B`), staged/working-
 only modes, a flat-list panel toggle, filesystem-watch-based refresh.
