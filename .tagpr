@@ -12,6 +12,10 @@
 	changelog = true
 	# Cut a GitHub Release when the tag is created.
 	release = true
-	# Labels on the release PR that escalate the bump (default is patch). See docs/releasing.md.
-	majorLabels = major
-	minorLabels = minor
+	# Labels that escalate the bump (default is patch). Use the canonical "tagpr:*" names:
+	# tagpr's release-PR path only recognizes tagpr:major / tagpr:minor (hard-coded), while
+	# the majorLabels/minorLabels config below only normalizes labels on merged feature PRs.
+	# Standardizing on tagpr:major / tagpr:minor makes one label work in both places.
+	# See docs/releasing.md.
+	majorLabels = tagpr:major
+	minorLabels = tagpr:minor
