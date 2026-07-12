@@ -1794,6 +1794,232 @@ T["remote_thread_list(): flat (path, start_line) order, outdated included, toggl
   repo:destroy()
 end
 
+-- 14. submission prep + draft adoption ----------------------------------------------------
+
+T["prepare_submission(): guards -- no PR / unknown head oid / local HEAD not the PR head"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+
+  -- No PR at all.
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+  local result = child.lua([[
+    local plan, err = _G.__session:prepare_submission()
+    return { ok = plan ~= nil, err = err }
+  ]])
+  eq(result.ok, false)
+  eq(type(result.err), "string")
+
+  -- A PR whose head oid is unknown (older gh output).
+  set_pr_result(child, { number = 9, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+  result = child.lua([[
+    local plan, err = _G.__session:prepare_submission()
+    return { ok = plan ~= nil, err = err }
+  ]])
+  eq(result.ok, false)
+
+  -- A PR head oid that is NOT the local HEAD: reviewing stale state must abort.
+  set_pr_result(child, { number = 9, base_ref = "main", head_oid = ("0"):rep(40) }, nil)
+  eq(new_session(child, {}).ok, true)
+  result = child.lua([[
+    local plan, err = _G.__session:prepare_submission()
+    return { ok = plan ~= nil, err = err }
+  ]])
+  eq(result.ok, false)
+  eq(result.err:find("PR head") ~= nil, true)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["prepare_submission(): plans committed drafts and reports uncommitted-only ones as skipped"] = function()
+  local repo = comment_repo()
+  -- The fixture's feature commit IS the PR head; its worktree matches HEAD.
+  local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 9, base_ref = "main", head_oid = head_oid }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  -- A clean head-side draft on the committed change in src/one.lua (line 3)...
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "why did this change?",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+  -- ...and one that can't go: with a 5-line file, -U3 context covers every line, so the
+  -- reliable out-of-diff case here is a PATH absent from the PR diff -- an untracked
+  -- file that only exists in the worktree (in the session's entries, not in the PR's).
+  child.lua([[vim.fn.writefile({ "wip" }, _G.__session.spec.repo.toplevel .. "/scratch.txt")]])
+  child.lua([[_G.__session:refresh()]])
+  eq(
+    add_comment(child, "scratch.txt", {
+      side = "head",
+      start_line = 1,
+      end_line = 1,
+      body = "untracked musing",
+      snapshot = { "wip" },
+    }).ok,
+    true
+  )
+
+  local plan = child.lua([[return (_G.__session:prepare_submission())]])
+  eq(#plan.items, 1)
+  eq(plan.items[1].payload, {
+    path = "src/one.lua",
+    side = "head",
+    line = 3,
+    body = "why did this change?",
+  })
+  eq(#plan.skipped, 1)
+  eq(plan.skipped[1].reason:find("not in the PR diff") ~= nil, true)
+
+  child.stop()
+  repo:destroy()
+end
+
+T["remove_submitted(): deletes the submitted threads with one save and one notify"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  local a = add_comment(child, "src/one.lua", {
+    side = "head",
+    start_line = 3,
+    end_line = 3,
+    body = "goes to the PR",
+    snapshot = { "line three CHANGED" },
+  })
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 4,
+      end_line = 4,
+      body = "stays local",
+      snapshot = { "line four" },
+    }).ok,
+    true
+  )
+
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  child.lua(
+    [[
+      local id = ...
+      local threads = _G.__session:comments_for("src/one.lua")
+      local items = {}
+      for _, thread in ipairs(threads) do
+        if thread.id == id then
+          table.insert(items, { thread = thread, payload = {} })
+        end
+      end
+      _G.__session:remove_submitted(items)
+    ]],
+    { a.id }
+  )
+
+  eq(save_count(child), 1)
+  eq(notify_count(child), 1)
+  local remaining = child.lua_get([[_G.__session:comments_for("src/one.lua")]])
+  eq(#remaining, 1)
+  eq(remaining[1].messages[1].body, "stays local")
+  eq(
+    child.lua_get(
+      [[#(require("diffly.state").load(_G.__session.spec.review_key).comments["src/one.lua"])]]
+    ),
+    1,
+    "the deletion persisted"
+  )
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["M.new(): adopts branch-keyed drafts into a PR-keyed session, once, keeping viewed marks behind"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  install_notify_capture(child)
+  point_state_dir(child, tmp_state)
+
+  -- Session 1: branch-keyed (no PR yet); leave a draft and a viewed mark behind.
+  set_pr_result(child, nil, "no pr yet")
+  eq(new_session(child, {}).ok, true)
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 3,
+      end_line = 3,
+      body = "pre-PR draft",
+      snapshot = { "line three CHANGED" },
+    }).ok,
+    true
+  )
+  toggle_viewed(child, "src/added.lua")
+  child.lua("_G.__session:close()")
+  child.lua([[_G.__branch_key = _G.__session.spec.review_key]])
+
+  -- Session 2: the PR now exists -- the draft must follow into the PR-keyed store.
+  set_pr_result(child, { number = 9, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+  eq(session_field(child, "spec.review_key.kind"), "pr")
+
+  local adopted = child.lua_get([[_G.__session:comments_for("src/one.lua")]])
+  eq(#adopted, 1)
+  eq(adopted[1].messages[1].body, "pre-PR draft")
+
+  local notes = notifications(child)
+  local adoption_notes = 0
+  for _, note in ipairs(notes) do
+    if note.msg:find("adopted", 1, true) then
+      adoption_notes = adoption_notes + 1
+    end
+  end
+  eq(adoption_notes, 1)
+
+  -- The branch store keeps its viewed marks but no longer holds the draft; both stores
+  -- are re-read from DISK.
+  local branch_state = child.lua_get([[require("diffly.state").load(_G.__branch_key)]])
+  eq(next(branch_state.comments) == nil, true)
+  eq(branch_state.viewed["src/added.lua"] ~= nil, true)
+  local pr_state = child.lua_get([[require("diffly.state").load(_G.__session.spec.review_key)]])
+  eq(#pr_state.comments["src/one.lua"], 1)
+
+  -- Session 3: nothing left to adopt, no second notice.
+  eq(new_session(child, {}).ok, true)
+  adoption_notes = 0
+  for _, note in ipairs(notifications(child)) do
+    if note.msg:find("adopted", 1, true) then
+      adoption_notes = adoption_notes + 1
+    end
+  end
+  eq(adoption_notes, 1)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
 T["remote threads never reach the persisted ReviewState"] = function()
   local repo = comment_repo()
   local tmp_state = vim.fn.tempname()

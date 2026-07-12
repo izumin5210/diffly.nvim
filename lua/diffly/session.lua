@@ -329,6 +329,32 @@ function M.new(opts)
   -- 6. Viewed state.
   local review_state = state.load(review_key)
 
+  -- 6b. Draft adoption (docs/design.md "Comments"): comments written before the PR
+  -- existed live under the branch-pair key; the moment the review is PR-keyed, they
+  -- follow -- drafts are user text and must never silently strand. One-way and naturally
+  -- once (the branch store is emptied); viewed marks deliberately stay behind (the two
+  -- keyspaces never mix for them, per the original v1 decision).
+  if review_key.kind == "pr" then
+    local branch_key = {
+      kind = "branch",
+      repo = repo.id,
+      base = short_name(base_ref),
+      head = git.current_branch(repo) or "HEAD",
+    }
+    local branch_state = state.load(branch_key)
+    if next(branch_state.comments) ~= nil then
+      local adopted = comments.adopt(branch_state, review_state)
+      if adopted > 0 then
+        state.save(branch_state)
+        state.save(review_state)
+        vim.notify(
+          string.format("diffly: adopted %d comment draft(s) from the branch review", adopted),
+          vim.log.levels.INFO
+        )
+      end
+    end
+  end
+
   local self = setmetatable({
     spec = spec,
     entries = entries,
@@ -586,6 +612,72 @@ end
 ---@param by_path table<string, diffly.RemoteThread[]>
 function Session:set_remote_threads(by_path)
   self.remote_threads = by_path
+  self:_refresh_comment_render()
+  self:_notify()
+end
+
+--- Assemble everything `comments.plan_submission` needs and run it: the git-owning half
+--- of `:Diffly submit` (the decision logic stays pure in comments.lua). The PR's diff is
+--- `merge_base..HEAD` -- committed content only, untracked files excluded -- which is
+--- exactly what the forge will diff too, PROVIDED local HEAD is the PR head: submitting
+--- a review against anything else would comment on code the PR doesn't show, so that
+--- mismatch aborts.
+---@return diffly.SubmissionPlan|nil plan, string|nil err
+function Session:prepare_submission()
+  if not self.pr or not self.pr.head_oid then
+    return nil, "diffly: this review has no PR (or gh did not report its head); cannot submit"
+  end
+  local head = git.rev_parse(self.spec.repo, "HEAD")
+  if head ~= self.pr.head_oid then
+    return nil,
+      string.format(
+        "diffly: local HEAD is not the PR head (%s); push, pull, or `gh pr checkout` first",
+        self.pr.head_oid:sub(1, 7)
+      )
+  end
+
+  local pr_entries, err =
+    git.diff_files(self.spec.repo, self.spec.merge_base, "head", { include_untracked = false })
+  if not pr_entries then
+    return nil, err
+  end
+  local pr_by_path = index_by_path(pr_entries)
+
+  ---@type table<string, diffly.SubmitCtx>
+  local ctx_by_path = {}
+  for path in pairs(self.state.comments) do
+    local entry = pr_by_path[path]
+    if entry then
+      local hunks = git.hunks(self.spec.repo, entry, self.spec.merge_base, "head")
+      local head_lines = entry.head_sha
+          and git.file_content(self.spec.repo, { sha = entry.head_sha })
+        or nil
+      ctx_by_path[path] = {
+        in_pr = true,
+        head_sha = entry.head_sha,
+        head_lines = head_lines,
+        line_sets = comments.hunk_line_sets(hunks or {}),
+      }
+    end
+    -- No entry: the path isn't in the PR diff; plan_submission's missing-ctx branch
+    -- reports it.
+  end
+
+  return comments.plan_submission(self:all_comments(), ctx_by_path), nil
+end
+
+--- Post-submit cleanup: drop every submitted draft from the local store -- they live on
+--- the forge now and reappear through the overlay refetch, so keeping them would render
+--- everything twice. Batch discipline: ONE save, one comment repaint, ONE notify.
+---@param items { thread: diffly.CommentThread, payload: diffly.ReviewCommentPayload }[]
+function Session:remove_submitted(items)
+  if #items == 0 then
+    return
+  end
+  for _, item in ipairs(items) do
+    comments.delete(self.state, item.thread.path, item.thread.id)
+  end
+  state.save(self.state)
   self:_refresh_comment_render()
   self:_notify()
 end
