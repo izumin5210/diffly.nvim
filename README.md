@@ -165,6 +165,8 @@ deleted lines).
 
 #### Comments
 
+![diffly.nvim local comments demo — adding a single-line and a visual-range comment through the markdown compose float, collapsing them to eol markers, copying them as an AI-agent prompt, and listing them in quickfix via :Diffly comments](assets/demo_comments.gif)
+
 `<leader>ca` (real file buffers) / `ca` (diffly-owned buffers) opens a small markdown
 float anchored at the cursor — type the note, `<C-s>` to save, `q` (or an empty body) to
 cancel. In visual mode the same key comments on the whole selected range. The body renders
