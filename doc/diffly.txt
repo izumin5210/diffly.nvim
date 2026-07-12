@@ -136,6 +136,7 @@ defaults, exactly as declared in `lua/diffly/config.lua`: >lua
         comment_edit = "ce",
         comment_delete = "cd",
         comment_toggle = "ct",   -- collapse/expand inline comments
+        comment_toggle_resolved = "cr", -- reveal/hide resolved PR threads
         comment_copy = "cy",     -- AI prompt for the comment at the cursor
         comment_copy_all = "cY", -- AI prompt for every comment
       },
@@ -152,6 +153,7 @@ defaults, exactly as declared in `lua/diffly/config.lua`: >lua
         comment_edit = "<leader>ce",
         comment_delete = "<leader>cd",
         comment_toggle = "<leader>ct",
+        comment_toggle_resolved = "<leader>cr",
         comment_copy = "<leader>cy",
         comment_copy_all = "<leader>cY",
       },
@@ -202,6 +204,7 @@ Universal (all diffly windows) ~
   <leader>ce   Edit the comment under the cursor.
   <leader>cd   Delete the comment under the cursor (confirms first).
   <leader>ct   Collapse/expand inline comment rendering (session-wide).
+  <leader>cr   Reveal/hide resolved PR review threads (session-wide).
   <leader>cy   Copy the comment under the cursor as an AI prompt.
   <leader>cY   Copy every comment in the review as one AI prompt.
                (See |diffly-comments| for all of these.)
@@ -258,8 +261,8 @@ real file buffers, which get only the universal layer above.
                semantics as the panel's `v`).
   s            Toggle between side-by-side and unified diff modes.
   q            Close the review UI (same as `:Diffly close`/the panel's `q`).
-  ca ce cd     The comment family, single-key (|diffly-comments|): same
-  ct cy cY     actions as the `<leader>c…` universal maps above. Only present
+  ca ce cd ct  The comment family, single-key (|diffly-comments|): same
+  cr cy cY     actions as the `<leader>c…` universal maps above. Only present
                where there is content to anchor a comment to -- never on
                binary/oversized/generated placeholders, and only in buffers
                showing base content for the base side (the side-by-side left
@@ -506,8 +509,23 @@ shows a per-file `✎N` count.
 Comments are local: they are stored next to the viewed marks in the same
 per-review state file (same key, same worktree/clone sharing -- see
 |diffly-viewed-state|), whether or not a PR exists. Planned, not yet built:
-a read-only overlay of a PR's existing review threads, and batch submission
-of local drafts as one GitHub review (see docs/design.md, "Comments").
+batch submission of local drafts as one GitHub review (see docs/design.md,
+"Comments").
+
+PR review threads (the read-only overlay) ~
+When the review is keyed to a GitHub PR, its existing review conversations
+are fetched through `gh` -- asynchronously on open (the UI never waits on
+the network) and again on any EXPLICIT refresh (the panel's `R`, `:Diffly
+refresh`, a bare `:Diffly` on the viewer tab); saving a file never triggers
+a fetch. Threads render read-only in the diff like local notes, but
+attributed (`@author` lines, replies included) and visually distinct
+(|hl-DifflyCommentRemoteMarker|). Unresolved threads show by default;
+`<leader>cr`/`cr` reveals resolved ones, session-wide. Outdated threads
+(whose code is gone from the PR head) never render inline but appear in
+`:Diffly comments` marked `[outdated]`; every remote entry there is tagged
+`[@author]`. The panel's `✎N` count includes unresolved remote threads,
+independent of the toggle. Thread positions are PR-head coordinates: exact
+on a clean `gh pr checkout`, an approximation once local edits shift lines.
 
 Writing ~
 `<leader>ca` (any diffly context) / `ca` (diffly-owned buffers) opens the

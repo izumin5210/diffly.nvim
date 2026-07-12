@@ -106,8 +106,9 @@ Line comments + AI prompt copy, deferred at v1, are now designed and phased in �
 
 ### Comments
 
-Design agreed 2026-07-12. Phase 1 (local comments, everything below unless marked
-otherwise) is implemented; Phases 2–3 are agreed but not yet built.
+Design agreed 2026-07-12. Phase 1 (local comments) and Phase 2 (the read-only remote
+overlay) are implemented; Phase 3 (batch submit + draft adoption) is agreed and in
+progress.
 
 - **Purpose**: the reviewer's own tool — notes while reading a diff, feedback to hand to
   an AI coding agent (difit's flagship workflow), and drafts of PR review comments. Not a
@@ -115,12 +116,22 @@ otherwise) is implemented; Phases 2–3 are agreed but not yet built.
   2), and posting is a batch *exit* (Phase 3), never the storage.
 - **Local-first, always.** Comments live in the review's own state file whether or not a
   PR exists — the same "the PR is a metadata source only" principle v1 set for diffs.
-  GitHub becomes a read-only overlay (Phase 2: fetched threads rendered alongside local
-  drafts, never merged into local state; `isOutdated`/`isResolved` taken verbatim) and an
-  explicit submit target (Phase 3: one `POST /pulls/N/reviews` with a `comments` array —
-  one review, one notification — behind an event picker and a pre-submit validation pass,
+  GitHub is a read-only overlay (fetched threads rendered alongside local drafts, never
+  merged into local state; `isOutdated`/`isResolved` taken verbatim) and an explicit
+  submit target (Phase 3: one `POST /pulls/N/reviews` with a `comments` array — one
+  review, one notification — behind an event picker and a pre-submit validation pass,
   since the endpoint is atomic and rejects lines outside the PR's diff). Submitted drafts
   leave the local store and reappear through the overlay, so nothing renders twice.
+- **Overlay fetch timing**: asynchronously once on session open (opening never waits on
+  the network), on every *explicit* refresh (`:Diffly refresh`, a bare `:Diffly` on the
+  viewer tab, the panel's `R`), and after a submit. **Never** on the debounced
+  `BufWritePost`/`FocusGained` auto-refresh — saving a file must not become network
+  traffic. Unresolved threads render inline with `@author` attribution (full threads,
+  replies included); resolved ones hide behind a session-wide toggle (`cr` /
+  `<leader>cr`); outdated ones (GitHub nulls their live line) appear only in
+  `:Diffly comments`, marked. The panel `✎N` count adds unresolved remote threads,
+  independent of the toggle. Remote thread positions are PR-head coordinates: exact on a
+  clean `gh pr checkout`, an accepted approximation once local edits shift lines.
 - **Model**: thread-shaped (`messages[]`) for future replies, but the v1 UI creates and
   edits exactly one message per thread. Anchors are a single line or a range, on either
   side, in **diffly-neutral vocabulary** (`side = "base"|"head"`, `outdated` as a plain
