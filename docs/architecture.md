@@ -282,6 +282,24 @@ Behavior-level decisions in [design.md](./design.md)'s "Comments" section; mecha
   AND refetches the overlay; the debounced `BufWritePost`/`FocusGained` path calls
   `session:refresh()` only. *Why*: saving a file must never turn into network traffic —
   pinned by an e2e test against the gh shim's call log.
+- **Submission** splits three ways: `comments.plan_submission` (pure decisions:
+  per-hunk valid-line sets — the per-hunk grouping IS the forge's range-in-one-hunk rule
+  — worktree-drift re-anchoring via `resolve` with only the payload using the moved
+  position, skip reasons; mutates nothing), `Session:prepare_submission` (the git half:
+  the PR's own `merge_base..HEAD` diff, per-path hunks/head blobs, the HEAD == PR-head
+  guard), and `github.submit_review` (synchronous POST — the async pattern stays
+  reserved for the fetch; neutral→LEFT/RIGHT translation at the last moment; stderr
+  verbatim so a 422's reason reaches the user). `init.lua`'s `M.submit` sequences
+  report-skipped → event picker → summary compose (`allow_empty`) → POST, and ONLY a
+  successful post calls `Session:remove_submitted` (one save) + a refetch. *Why local
+  mutation last*: the endpoint is atomic — on failure nothing landed and every draft is
+  intact; a crash between POST and save merely double-displays (drafts + overlay), zero
+  data loss.
+- **Draft adoption** (`comments.adopt`, run in `session.new` for PR-keyed builds before
+  re-anchoring): moves the sibling branch-pair store's drafts in with FRESH ids from the
+  destination sequence (independently allocated ids could collide), empties the source's
+  `comments` (viewed marks untouched), saves both stores, notifies once. Naturally
+  once-only: the source has nothing left afterwards.
 
 ## Deliberately rejected designs
 

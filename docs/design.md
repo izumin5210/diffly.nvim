@@ -106,9 +106,8 @@ Line comments + AI prompt copy, deferred at v1, are now designed and phased in �
 
 ### Comments
 
-Design agreed 2026-07-12. Phase 1 (local comments) and Phase 2 (the read-only remote
-overlay) are implemented; Phase 3 (batch submit + draft adoption) is agreed and in
-progress.
+Design agreed 2026-07-12; all three phases (local comments, the read-only remote
+overlay, batch submission + draft adoption) are implemented.
 
 - **Purpose**: the reviewer's own tool — notes while reading a diff, feedback to hand to
   an AI coding agent (difit's flagship workflow), and drafts of PR review comments. Not a
@@ -118,10 +117,16 @@ progress.
   PR exists — the same "the PR is a metadata source only" principle v1 set for diffs.
   GitHub is a read-only overlay (fetched threads rendered alongside local drafts, never
   merged into local state; `isOutdated`/`isResolved` taken verbatim) and an explicit
-  submit target (Phase 3: one `POST /pulls/N/reviews` with a `comments` array — one
-  review, one notification — behind an event picker and a pre-submit validation pass,
+  submit target (`:Diffly submit`: one `POST /pulls/N/reviews` with a `comments` array —
+  one review, one notification — behind an event picker and a pre-submit validation pass,
   since the endpoint is atomic and rejects lines outside the PR's diff). Submitted drafts
   leave the local store and reappear through the overlay, so nothing renders twice.
+- **Submit safety**: local HEAD must be the PR head (else abort with a message — the diff
+  you reviewed must be what you comment on); drafts on worktree-only edits, out-of-diff
+  lines, cross-hunk ranges, or outdated anchors are excluded, reported, and kept locally;
+  only a *successful* POST mutates the local store. A worktree-drifted head-side draft
+  re-anchors onto the PR head blob for the payload only — the draft itself keeps pointing
+  at what the user sees.
 - **Overlay fetch timing**: asynchronously once on session open (opening never waits on
   the network), on every *explicit* refresh (`:Diffly refresh`, a bare `:Diffly` on the
   viewer tab, the panel's `R`), and after a submit. **Never** on the debounced
@@ -167,10 +172,10 @@ progress.
   `<leader>ca` by design. `ca` also works on a visual range. Placeholder buffers
   (binary/oversized/generated) get no comment keys at all.
 - **Storage**: the `comments` field the v1 schema reserved, inside the existing per-review
-  state file (same key scoping, version still 1). **Phase 3**: when a PR is first detected
-  for a branch that has drafts under the branch-pair key, the drafts are adopted into the
-  PR-keyed store automatically (one-way, once, with a notice) — drafts are user text and
-  must survive the key switch; viewed marks stay unmigrated as before.
+  state file (same key scoping, version still 1). When a PR is first detected for a
+  branch that has drafts under the branch-pair key, the drafts are adopted into the
+  PR-keyed store automatically (one-way, once, with a notice, fresh ids) — drafts are
+  user text and must survive the key switch; viewed marks stay unmigrated as before.
 - Rejected: fuzzy/partial snapshot matching (silently mis-anchored comments); rendering
   outdated threads at the top of the file (misattribution noise); persisting buffer rows
   (derived state that drifts); posting comments to GitHub as they're written (notification

@@ -87,6 +87,9 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 - The debounced `BufWritePost`/`FocusGained` refresh NEVER refetches remote threads —
   only explicit user actions (`:Diffly refresh`, panel `R`, post-submit) do. Saving a
   file must not become network traffic (e2e pins this against the gh shim's call log).
+- Submitting a review mutates the local store ONLY after a successful POST (the endpoint
+  is atomic; on failure every draft must remain intact), and `plan_submission` never
+  mutates the drafts it maps.
 
 ## Git workflow
 

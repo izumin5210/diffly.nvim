@@ -81,7 +81,16 @@ Call it only to override them: >lua
 :Diffly comments         List every comment in the current review in the
                         |quickfix| list -- one item per comment at its
                         last-known line, first body line only, with
-                        `[outdated]`/`[base]` markers. See |diffly-comments|.
+                        `[outdated]`/`[base]`/`[@author]` markers. See
+                        |diffly-comments|.
+
+:Diffly submit           Post the review's local comment drafts as ONE GitHub
+                        review: validates every draft against the PR's real
+                        diff (unmappable ones are reported and stay local),
+                        prompts for the review event via |vim.ui.select()|,
+                        takes an optional summary, then POSTs. Only available
+                        for PR-keyed reviews with local HEAD at the PR head.
+                        See |diffly-comments|.
 
 :Diffly clean            Prompt to delete the *current* review's persisted
                         viewed state (the key the currently open review uses,
@@ -508,9 +517,25 @@ shows a per-file `✎N` count.
 
 Comments are local: they are stored next to the viewed marks in the same
 per-review state file (same key, same worktree/clone sharing -- see
-|diffly-viewed-state|), whether or not a PR exists. Planned, not yet built:
-batch submission of local drafts as one GitHub review (see docs/design.md,
-"Comments").
+|diffly-viewed-state|), whether or not a PR exists. GitHub only ever enters
+as a read-only overlay (below) and as `:Diffly submit`'s explicit target.
+
+Submitting a review ~
+`:Diffly submit` turns the local drafts into ONE GitHub review. Every draft
+is validated against the PR's real (merge-base..head-commit) diff first:
+drafts on uncommitted edits, lines outside the diff, ranges crossing hunks,
+or outdated anchors are reported and stay local -- GitHub's reviews endpoint
+is all-or-nothing, so pre-validation keeps one bad line from failing the
+batch. Pick the event (Comment / Approve / Request changes; the forge
+rejects approving your own PR), optionally type a summary into the compose
+float (<C-s> submits, an empty summary is fine), and one review lands -- a
+single notification for your reviewers. Submitted drafts leave the local
+store and come back through the overlay, so nothing renders twice. Local
+HEAD must be the PR's head commit; push, pull, or `gh pr checkout` first.
+
+Drafts written BEFORE the PR existed are adopted automatically: the first
+time the branch's review opens PR-keyed, its branch-pair drafts move into
+the PR store (viewed marks deliberately stay behind).
 
 PR review threads (the read-only overlay) ~
 When the review is keyed to a GitHub PR, its existing review conversations

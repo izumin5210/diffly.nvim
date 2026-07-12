@@ -33,13 +33,15 @@ that persist across viewer sessions for the same pull request.
   conversations are fetched (async, never blocking open) and rendered read-only right in
   the diff with `@author` attribution — unresolved threads by default, resolved ones a
   toggle away.
+- **Submit your notes as one review**: `:Diffly submit` validates every draft against the
+  PR's real diff, reports what can't go (kept locally), and posts the rest as a single
+  GitHub review — comment / approve / request changes, optional summary — in one
+  notification. Drafts written before the PR existed follow it automatically.
 - Zero runtime dependencies: everything is built on `vim.system`, `vim.json`, and plain
   buffers/extmarks. `gh` and an icon provider are both optional, purely additive.
 
 Out of scope for v1 (deliberately): arbitrary rev comparison (`difit A B`), staged/working-
-only modes, a flat-list panel toggle, filesystem-watch-based refresh. Planned next for
-comments: batch submission of local drafts as a GitHub review (see `docs/design.md`,
-"Comments").
+only modes, a flat-list panel toggle, filesystem-watch-based refresh.
 
 ## Requirements
 
@@ -78,6 +80,7 @@ the plugin works with its defaults untouched.
 :Diffly sweep          " bulk-toggle a `viewed_patterns` group (prompts if 2+; see below)
 :Diffly sweep {name}   " bulk-toggle one specific group by name, no prompt
 :Diffly comments       " list every comment in the review in quickfix
+:Diffly submit         " post your local drafts as ONE GitHub review (PR reviews only)
 :Diffly clean          " remove viewed state for the current review (prompts first)
 :Diffly clean all
 ```
@@ -198,6 +201,21 @@ threads show by default; `<leader>cr` reveals resolved ones. Outdated threads (w
 is gone from the PR) stay out of the diff but appear in `:Diffly comments` with an
 `[outdated]` marker, and every remote entry there is tagged `[@author]`. The panel's `✎N`
 count includes unresolved remote threads.
+
+**Submitting a review.** `:Diffly submit` turns your local drafts into one GitHub review.
+Every draft is validated against the PR's *real* diff first — drafts on uncommitted
+edits, lines outside the diff, ranges crossing hunks, or outdated anchors are reported
+and stay local (nothing is ever lost; GitHub's reviews endpoint is all-or-nothing, so
+pre-validation is what keeps one bad line from failing the batch). Then you pick the
+review event (comment / approve / request changes), optionally type a summary, and one
+review lands on the PR — one notification for your reviewers, not one per comment.
+Submitted drafts leave the local store and come back through the read-only overlay, so
+nothing shows twice. Local `HEAD` must be the PR's head commit (push, pull, or
+`gh pr checkout` first — the diff you reviewed must be what you comment on).
+
+Drafts written *before* the PR existed are adopted automatically: the first time the
+branch's review opens PR-keyed, comments move from the branch-pair store into the PR
+store (viewed marks stay behind, by design).
 
 `<leader>cy` / `<leader>cY` copy comments to the unnamed register (and the system
 clipboard when available) in difit's AI-agent prompt format — ready to paste into any
