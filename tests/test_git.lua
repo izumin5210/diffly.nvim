@@ -530,6 +530,9 @@ T["hunks(): modified file hunks reconstruct the new content and match git's head
   eq(#expected_headers, 2)
   for i, hunk in ipairs(hunks) do
     eq(vim.startswith(hunk.header, expected_headers[i]), true)
+    -- old_start is kept for base-side comment anchoring (ui/comments.lua's base->row
+    -- mapping needs the old-side origin of every hunk); pin it against git's own header.
+    eq(hunk.old_start, tonumber(expected_headers[i]:match("^@@ %-(%d+)")))
   end
 
   -- Reconstruct each hunk's contribution to the new file (context + additions) and
@@ -579,6 +582,7 @@ T["hunks(): untracked file yields a single all-'+' hunk"] = function()
   eq(err, nil)
   eq(#hunks, 1)
   eq(hunks[1].header, "@@ -0,0 +1,3 @@")
+  eq(hunks[1].old_start, 0)
   eq(#hunks[1].lines, 3)
   for _, line in ipairs(hunks[1].lines) do
     eq(line:sub(1, 1), "+")

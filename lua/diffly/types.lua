@@ -36,6 +36,7 @@
 ---@field head_sha string?     -- blob SHA of right side; nil when deleted
 
 ---@class diffly.Hunk
+---@field old_start integer -- base-side origin; consumed by base-side comment anchoring
 ---@field new_start integer
 ---@field new_count integer
 ---@field header string    -- full "@@ ... @@ ..." line
