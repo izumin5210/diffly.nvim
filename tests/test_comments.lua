@@ -206,7 +206,8 @@ end
 
 T["resolve(): a moved block is found and the anchor follows it"] = function()
   local st = fresh_state()
-  local thread = comments.add(st, add_opts({ start_line = 2, end_line = 3, snapshot = { "bb", "cc" } }))
+  local thread =
+    comments.add(st, add_opts({ start_line = 2, end_line = 3, snapshot = { "bb", "cc" } }))
 
   -- Two lines were inserted above; the block now starts at line 4.
   local res = comments.resolve(thread, "sha-head-2", { "new", "new", "aa", "bb", "cc" })
@@ -227,7 +228,11 @@ T["resolve(): the nearest of several matches wins"] = function()
   local st = fresh_state()
   local thread = comments.add(st, add_opts({ start_line = 6, end_line = 6, snapshot = { "dup" } }))
 
-  local res = comments.resolve(thread, "sha-head-2", { "dup", "x", "x", "x", "dup", "x", "x", "x", "x", "dup" })
+  local res = comments.resolve(
+    thread,
+    "sha-head-2",
+    { "dup", "x", "x", "x", "dup", "x", "x", "x", "x", "dup" }
+  )
   eq(res.start_line, 5) -- |5-6| = 1 beats |1-6| = 5 and |10-6| = 4
 end
 
@@ -241,7 +246,8 @@ end
 
 T["resolve(): a multi-line snapshot only matches as a whole block"] = function()
   local st = fresh_state()
-  local thread = comments.add(st, add_opts({ start_line = 1, end_line = 2, snapshot = { "aa", "bb" } }))
+  local thread =
+    comments.add(st, add_opts({ start_line = 1, end_line = 2, snapshot = { "aa", "bb" } }))
 
   -- "aa" and "bb" both exist but never adjacently: no match.
   local res = comments.resolve(thread, "sha-head-2", { "aa", "x", "bb", "aa", "y", "bb" })
@@ -253,7 +259,8 @@ T["resolve(): blocks at line 1 and at EOF are reachable"] = function()
   local top = comments.add(st, add_opts({ start_line = 5, end_line = 5, snapshot = { "top" } }))
   eq(comments.resolve(top, "sha-2", { "top", "x", "x" }).start_line, 1)
 
-  local bottom = comments.add(st, add_opts({ start_line = 1, end_line = 2, snapshot = { "yy", "zz" } }))
+  local bottom =
+    comments.add(st, add_opts({ start_line = 1, end_line = 2, snapshot = { "yy", "zz" } }))
   eq(comments.resolve(bottom, "sha-2", { "x", "x", "yy", "zz" }).start_line, 3)
 end
 
@@ -283,13 +290,15 @@ end
 
 T["format_prompt(): single line"] = function()
   local st = fresh_state()
-  local thread = comments.add(st, add_opts({ start_line = 42, end_line = 42, body = "rename this" }))
+  local thread =
+    comments.add(st, add_opts({ start_line = 42, end_line = 42, body = "rename this" }))
   eq(comments.format_prompt(thread), "src/a.lua:L42\nrename this")
 end
 
 T["format_prompt(): range"] = function()
   local st = fresh_state()
-  local thread = comments.add(st, add_opts({ start_line = 42, end_line = 48, body = "extract a helper" }))
+  local thread =
+    comments.add(st, add_opts({ start_line = 42, end_line = 48, body = "extract a helper" }))
   eq(comments.format_prompt(thread), "src/a.lua:L42-L48\nextract a helper")
 end
 
@@ -298,10 +307,7 @@ T["format_prompt_all(): joins with ===== separators"] = function()
   local a = comments.add(st, add_opts({ start_line = 1, end_line = 1, body = "first" }))
   local b = comments.add(st, add_opts({ start_line = 2, end_line = 2, body = "second" }))
 
-  eq(
-    comments.format_prompt_all({ a, b }),
-    "src/a.lua:L1\nfirst\n\n=====\n\nsrc/a.lua:L2\nsecond"
-  )
+  eq(comments.format_prompt_all({ a, b }), "src/a.lua:L1\nfirst\n\n=====\n\nsrc/a.lua:L2\nsecond")
   eq(comments.format_prompt_all({}), "")
 end
 
