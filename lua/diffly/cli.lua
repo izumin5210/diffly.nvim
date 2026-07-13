@@ -21,6 +21,8 @@ Commands:
   comments reply <id> --body <text>|- [--author <name>]
   navigate --file <path> [--line <n>]
                                    Focus the live Neovim session on a location
+  skill install [--dir <path>]     Install the diffly-review agent skill
+                                   (default: ~/.claude/skills)
 
 Options:
   --server <addr>  Target one Neovim instance (socket path) instead of discovering
@@ -97,6 +99,8 @@ local function parse(argv)
     op, args = "reply", { id = pos[3], body = read_body(flags.body), author = flags.author }
   elseif pos[1] == "navigate" and pos[2] == nil then
     op, args = "navigate", { path = flags.file, line = flags.line }
+  elseif pos[1] == "skill" and pos[2] == "install" and pos[3] == nil then
+    op, args = "skill_install", { dir = flags.dir }
   else
     return nil, "unknown command: " .. table.concat(pos, " ")
   end
@@ -170,6 +174,42 @@ local function discover(repo, server)
   return nil
 end
 
+--- Copy the in-repo skill template to the target, baking THIS executable's absolute
+--- path in -- an installed skill keeps working regardless of the user's PATH or plugin
+--- manager layout. CLI-local: no agent op, no discovery, no repository required.
+--- Reinstall overwrites: the installed file is a generated artifact, refreshing it is
+--- the point.
+---@param argv table  -- _G.arg (argv[0] locates the bin, and thus the template)
+---@param args { dir: string? }
+---@return integer exit_code
+local function skill_install(argv, args)
+  local bin = assert(vim.uv.fs_realpath(argv[0]))
+  local root = vim.fs.dirname(vim.fs.dirname(bin))
+  local template_path = vim.fs.joinpath(root, "skills", "diffly-review", "SKILL.md")
+  if vim.fn.filereadable(template_path) == 0 then
+    io.stderr:write("diffly: skill template not found at " .. template_path .. "\n")
+    return 1
+  end
+  local template = table.concat(vim.fn.readfile(template_path), "\n")
+  -- Function replacement: the bin path is inserted literally, never as a pattern.
+  local rendered = template:gsub("{{DIFFLY_BIN}}", function()
+    return bin
+  end)
+
+  local base_dir = args.dir or vim.fs.joinpath(assert(vim.uv.os_homedir()), ".claude", "skills")
+  local target_dir = vim.fs.joinpath(base_dir, "diffly-review")
+  vim.fn.mkdir(target_dir, "p")
+  local dest = vim.fs.joinpath(target_dir, "SKILL.md")
+  if vim.fn.writefile(vim.split(rendered, "\n", { plain = true }), dest) ~= 0 then
+    io.stderr:write("diffly: could not write " .. dest .. "\n")
+    return 1
+  end
+
+  io.stdout:write(vim.json.encode({ installed = dest }) .. "\n")
+  io.stdout:flush()
+  return 0
+end
+
 ---@param argv table  -- _G.arg
 ---@return integer exit_code
 function M.main(argv)
@@ -177,6 +217,10 @@ function M.main(argv)
   if not cmd then
     io.stderr:write("diffly: " .. parse_err .. "\n\n" .. USAGE)
     return 1
+  end
+
+  if cmd.op == "skill_install" then
+    return skill_install(argv, cmd.args)
   end
 
   local repo, repo_err = git.repo_identity(vim.fn.getcwd())

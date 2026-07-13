@@ -272,6 +272,54 @@ T["discovery: the peer-socket scan finds the live instance by repo"] = function(
   stop_child()
 end
 
+-- skill install -------------------------------------------------------------------------
+
+T["skill install: bakes the bin path into SKILL.md, overwrites on re-run"] = function()
+  local dir = vim.fn.tempname()
+
+  local res = run_cli({ "skill", "install", "--dir", dir })
+  eq(res.code, 0)
+  local installed = decode(res).installed
+  eq(installed, dir .. "/diffly-review/SKILL.md")
+
+  local text = table.concat(vim.fn.readfile(installed), "\n")
+  -- The template token is gone and the CLI's own absolute path took its place.
+  eq(text:find("{{", 1, true), nil)
+  eq(text:find(vim.uv.fs_realpath(BIN), 1, true) ~= nil, true)
+  -- It is a Claude-style skill: frontmatter with a name.
+  eq(text:find("name: diffly%-review") ~= nil, true)
+
+  -- Reinstall refreshes the generated artifact rather than failing.
+  eq(run_cli({ "skill", "install", "--dir", dir }).code, 0)
+
+  vim.fn.delete(dir, "rf")
+end
+
+T["skill install: works outside any git repository"] = function()
+  local dir = vim.fn.tempname()
+  local outside = vim.fn.tempname()
+  vim.fn.mkdir(outside, "p")
+
+  -- run_cli pins cwd to the fixture repo; spawn directly to point cwd elsewhere.
+  local done, result = false, nil
+  vim.system(
+    { BIN, "skill", "install", "--dir", dir },
+    { text = true, cwd = outside, env = { XDG_DATA_HOME = data_dir, NVIM = "" } },
+    function(res)
+      result = res
+      done = true
+    end
+  )
+  vim.wait(20000, function()
+    return done
+  end, 50)
+  eq(result.code, 0)
+  eq(vim.fn.filereadable(dir .. "/diffly-review/SKILL.md"), 1)
+
+  vim.fn.delete(dir, "rf")
+  vim.fn.delete(outside, "rf")
+end
+
 T["--headless skips discovery even when a live session exists"] = function()
   local sock = live_child()
 
