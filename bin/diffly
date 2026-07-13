@@ -1,0 +1,7 @@
+#!/usr/bin/env -S nvim -l
+-- diffly agent CLI (docs/design.md "Agent bridge"). Resolving the plugin root from this
+-- script's own realpath is what keeps the CLI and the plugin from ever drifting apart:
+-- the CLI runs the very same lua the editor loads.
+local script = assert(vim.uv.fs_realpath(_G.arg[0]))
+vim.opt.runtimepath:prepend(vim.fs.dirname(vim.fs.dirname(script)))
+os.exit(require("diffly.cli").main(_G.arg))

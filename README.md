@@ -20,6 +20,9 @@ buffers — so your syntax highlighting and LSP keep working as you review.
   AI-agent prompts.
 - **GitHub PR comments**: view a PR's existing review threads inline, and post your own
   comments back as a single review.
+- **An agent bridge**: `bin/diffly` lets coding agents read and write the same review
+  comments from outside the editor — live into the open UI when one is running, against
+  the persisted review otherwise.
 
 Out of scope for v1 (deliberately): arbitrary rev comparison (`difit A B`), staged/working-
 only modes, a flat-list panel toggle, filesystem-watch-based refresh.
@@ -229,6 +232,36 @@ vim.keymap.set("n", "<leader>gp", "<Plug>(diffly-focus-panel)")
 vim.keymap.set("n", "]f", "<Plug>(diffly-next-file)")
 vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
 ```
+
+## Agent bridge
+
+![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, an agent adding two review comments through bin/diffly against the still-running session, and fg bringing the editor back with the notes already rendered inline, attributed @agent](assets/demo_agent.gif)
+
+`bin/diffly` gives coding agents the same review comments you see in the editor — no
+GitHub round-trip, no copy-paste:
+
+```sh
+diffly info                                # review metadata: key, base, per-file status
+diffly comments list [--remote]            # draft (and PR) threads as JSON
+diffly comments add --file F --line N [--end-line M] [--side base|head] --body TEXT|-
+diffly comments reply <id> --body TEXT|-   # answer a thread ("addressed in …")
+diffly comments rm <id>
+diffly navigate --file F --line N          # steer the live editor to a location
+```
+
+The CLI finds a running Neovim holding this repo's review (an explicit `--server`, the
+hosting terminal's `$NVIM`, or a scan of live instances) and performs every operation
+inside it over RPC: writes land in the open UI instantly, and never race the editor's
+own saves. Without a live session it operates on the persisted review state through the
+same plugin code (`--headless` forces this). Even a Ctrl-Z-suspended editor keeps
+answering — the Neovim core runs as a separate server process — so an agent can comment
+while the editor sleeps, and `fg` wakes up with the notes already in place.
+
+Everything an agent writes is a normal draft: rendered as `✎ draft @agent`, counted in
+the panel, tagged `[@agent]` in `:Diffly comments`, re-anchored when the code moves, and
+submitted with the rest of your review. Deliberately not exposed: marking files viewed
+(always a human action) and submitting reviews (posting under your GitHub identity is
+your call).
 
 ## Configuration
 

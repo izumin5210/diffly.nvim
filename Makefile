@@ -25,3 +25,4 @@ demo:
 	vhs scripts/demo.tape
 	vhs scripts/demo_sweep.tape
 	vhs scripts/demo_comments.tape
+	vhs scripts/demo_agent.tape

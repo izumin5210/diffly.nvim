@@ -325,6 +325,22 @@ T["open(): re-rendering the same file clears stale marks instead of accumulating
   eq(#second.marks > 0, true)
 end
 
+T["focus_line(): focuses the view window at the requested line, clamped to EOF"] = function()
+  open(paths.modified)
+
+  -- Move focus away first so the focus switch is actually observable.
+  child.lua("vim.api.nvim_set_current_win(ctx.anchor)")
+  child.lua("view:focus_line(4)")
+  eq(child.lua_get("vim.api.nvim_get_current_win()"), child.lua_get("view.win"))
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(view.win)[1]"), 4)
+
+  child.lua("view:focus_line(999)")
+  eq(
+    child.lua_get("vim.api.nvim_win_get_cursor(view.win)[1]"),
+    child.lua_get("vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(view.win))")
+  )
+end
+
 T["worktree mode: editing the real buffer then :write persists to disk"] = function()
   open(paths.modified)
   child.lua([[

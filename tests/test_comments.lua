@@ -126,6 +126,42 @@ T["delete() returns false for an unknown id"] = function()
   eq(#st.comments["src/a.lua"], 1)
 end
 
+T["reply() appends a message and returns it, leaving the root untouched"] = function()
+  local st = fresh_state()
+  local thread = comments.add(st, add_opts())
+
+  local msg = comments.reply(st, "src/a.lua", thread.id, "done in the follow-up", {
+    author = "agent",
+  })
+
+  eq(msg ~= nil, true)
+  local messages = st.comments["src/a.lua"][1].messages
+  eq(#messages, 2)
+  eq(messages[2].body, "done in the follow-up")
+  eq(messages[2].author, "agent")
+  eq(messages[2].created_at:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") ~= nil, true)
+  eq(messages[1].body, "needs a guard clause")
+  eq(messages[1].updated_at, nil)
+end
+
+T["reply() without opts appends an author-less (human) message"] = function()
+  local st = fresh_state()
+  local thread = comments.add(st, add_opts())
+
+  comments.reply(st, "src/a.lua", thread.id, "agreed")
+
+  eq(st.comments["src/a.lua"][1].messages[2].author, nil)
+end
+
+T["reply() returns nil for an unknown id or path, touching nothing"] = function()
+  local st = fresh_state()
+  comments.add(st, add_opts())
+
+  eq(comments.reply(st, "src/a.lua", "c99", "x"), nil)
+  eq(comments.reply(st, "src/other.lua", "c1", "x"), nil)
+  eq(#st.comments["src/a.lua"][1].messages, 1)
+end
+
 T["ids never get reused after a delete (comment_seq only grows)"] = function()
   local st = fresh_state()
   local a = comments.add(st, add_opts())

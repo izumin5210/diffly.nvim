@@ -493,6 +493,16 @@ function Session:_refresh_comment_render()
   end
 end
 
+--- Put the cursor on `line` of whatever the view currently shows (new-side coordinates).
+--- Optional-method delegation, same shape as `_refresh_comment_render`: views that can
+--- place a cursor implement it, placeholder/fake views simply don't.
+---@param line integer
+function Session:focus_line(line)
+  if self._view.focus_line then
+    self._view:focus_line(line)
+  end
+end
+
 ---@class diffly.session.CommentOpts
 ---@field side "base"|"head"
 ---@field start_line integer
@@ -556,6 +566,24 @@ function Session:update_comment(path, id, body)
   self:_refresh_comment_render()
   self:_notify()
   return thread
+end
+
+--- Append a reply to an existing thread, same mutation discipline as
+--- `update_comment`: mutate, ONE save, repaint, ONE notify.
+---@param path string
+---@param id string
+---@param body string
+---@param opts { author: string? }?
+---@return diffly.CommentMessage|nil @nil (and no save/notify) when no such thread exists
+function Session:reply_comment(path, id, body, opts)
+  local message = comments.reply(self.state, path, id, body, opts)
+  if not message then
+    return nil
+  end
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+  return message
 end
 
 ---@param path string

@@ -204,6 +204,31 @@ overlay, batch submission + draft adoption) are implemented.
   spam, and GitHub silently folds them into any pending review); GitHub-side pending
   reviews as the draft store (offline-hostile, per-keystroke API traffic).
 
+### Agent bridge
+
+Hunk-style local review with a coding agent (DEV-32): the human reviews in diffly, the
+agent reads those drafts, fixes code, replies, and leaves its own comments — visible
+live in the open UI.
+
+- **Bidirectional**: the agent reads *and* writes local drafts (`bin/diffly info`,
+  `comments list [--remote]`, `comments add/rm/reply`, `navigate`). Deliberately absent:
+  viewed manipulation (viewed marking is always an explicit human action) and review
+  submission (posting under the human's GitHub identity is the human's call).
+- **RPC-first, headless fallback**: when a live Neovim holds this repo's review, every
+  op runs inside it (single write authority — a live session rewrites the whole state
+  file on save, so a second writer would clobber it and collide on `comment_seq`); the
+  agent's comments appear in the human's UI the moment they're written. With no live
+  session, the CLI operates on the persisted state directly through the same plugin code
+  (`nvim -l`; no standalone binary — reimplementing key derivation/anchoring in another
+  language was rejected as guaranteed drift).
+- **Attribution**: agent-written messages carry `author` (absent = the human; schema
+  version stays 1 — absent-field defaulting is the compat strategy). Rendered as
+  `✎ draft @author` inline, `[@author]` in the quickfix. Submission deliberately does
+  NOT filter by author: drafts are drafts, the human curates before `:Diffly submit`.
+- Rejected: a Go/standalone CLI reading the state files (logic drift, and it cannot
+  talk to a live session); live-session state reload/merge on refresh (delicate seq
+  reconciliation for a case RPC routing removes outright).
+
 ### Interface
 
 - Single `:Diffly` command with subcommands: `:Diffly [base]` (open/focus), `:Diffly close`,
