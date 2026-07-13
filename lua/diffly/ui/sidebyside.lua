@@ -56,6 +56,31 @@ local function right_blob_buffer_name(entry, session_id)
   return scratch.name(scratch.short_sha(entry.head_sha), session_id, entry.path)
 end
 
+-- Window-local remap of native diff mode's highlight groups into diffly's derived
+-- asymmetric palette (see ui/hl.lua for the full rationale). Native semantics
+-- are symmetric -- a line missing on the other side is DiffAdd in whichever window has
+-- it, so the before pane paints deleted lines green -- while a reviewer scans for
+-- "red = removed / green = added". One color family per pane fixes that: everything
+-- diff-related in the left (old) window is red-family, everything in the right (new)
+-- window green-family, and filler rows are muted out of the scan on both sides.
+-- 'winhighlight' is window-local, so the user's global diff colors are untouched.
+local WINHL = {
+  left = table.concat({
+    "DiffAdd:DifflyDiffOldLine",
+    "DiffChange:DifflyDiffOldLine",
+    "DiffText:DifflyDiffOldText",
+    "DiffTextAdd:DifflyDiffOldText",
+    "DiffDelete:DifflyDiffFiller",
+  }, ","),
+  right = table.concat({
+    "DiffAdd:DifflyDiffNewLine",
+    "DiffChange:DifflyDiffNewLine",
+    "DiffText:DifflyDiffNewText",
+    "DiffTextAdd:DifflyDiffNewText",
+    "DiffDelete:DifflyDiffFiller",
+  }, ","),
+}
+
 ---@class diffly.ui.SideBySide : diffly.View
 ---@field ctx diffly.ui.ViewCtx
 ---@field left_win integer?   -- not part of the diffly.View contract; exposed for tests
@@ -192,6 +217,11 @@ function View:ensure_windows()
 
   vim.w[left].diffly = true
   vim.w[right].diffly = true
+
+  -- Both windows are owned (fresh splits, or the absorbed claim placeholder -- which
+  -- `close()` destroys like any other owned window), so the remap needs no restore path.
+  vim.wo[left].winhighlight = WINHL.left
+  vim.wo[right].winhighlight = WINHL.right
 
   self.left_win, self.right_win = left, right
   self.owned_wins = { left, right }
