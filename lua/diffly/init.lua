@@ -1240,11 +1240,13 @@ function M.comments()
   local rows = {}
   for _, thread in ipairs(locals) do
     local first_line = vim.split(thread.messages[1].body, "\n", { plain = true })[1]
+    local author = thread.messages[1].author
     table.insert(rows, {
       path = thread.path,
       lnum = thread.anchor.start_line,
       seq = #rows,
-      text = (thread.anchor.outdated and "[outdated] " or "")
+      text = (author and ("[@" .. author .. "] ") or "")
+        .. (thread.anchor.outdated and "[outdated] " or "")
         .. (thread.anchor.side == "base" and "[base] " or "")
         .. first_line,
     })

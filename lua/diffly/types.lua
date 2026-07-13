@@ -64,6 +64,9 @@
 ---@field body string           -- markdown
 ---@field created_at string     -- ISO8601 UTC
 ---@field updated_at string?
+---@field author string?        -- absent = the human reviewer (pre-author state files stay
+--- valid untouched); set for messages written on someone's behalf, e.g. "agent" via the
+--- agent bridge
 
 ---@class diffly.CommentThread
 ---@field id string             -- "c<N>" from ReviewState.comment_seq; unique per review

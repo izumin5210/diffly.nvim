@@ -70,6 +70,24 @@ T["add() records the anchor verbatim and stamps created_at"] = function()
   eq(thread.messages[1].updated_at, nil)
 end
 
+T["add() stores an optional author on the first message; absent means the human"] = function()
+  local st = fresh_state()
+  local authored = comments.add(st, add_opts({ author = "agent" }))
+  local plain = comments.add(st, add_opts({ start_line = 9, end_line = 9 }))
+
+  eq(authored.messages[1].author, "agent")
+  eq(plain.messages[1].author, nil)
+end
+
+T["update() preserves the author"] = function()
+  local st = fresh_state()
+  local thread = comments.add(st, add_opts({ author = "agent" }))
+
+  comments.update(st, "src/a.lua", thread.id, "revised")
+
+  eq(st.comments["src/a.lua"][1].messages[1].author, "agent")
+end
+
 T["update() rewrites the body and stamps updated_at"] = function()
   local st = fresh_state()
   local thread = comments.add(st, add_opts())

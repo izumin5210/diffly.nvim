@@ -1374,6 +1374,33 @@ T["add_comment(): persists, saves and notifies exactly once, and records the sid
   repo:destroy()
 end
 
+T["add_comment(): passes the author through to the stored message"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  local res = add_comment(child, "src/one.lua", {
+    side = "head",
+    start_line = 3,
+    end_line = 3,
+    body = "consider a guard clause",
+    snapshot = { "line three CHANGED" },
+    author = "agent",
+  })
+  eq(res.ok, true)
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].messages[1].author"), "agent")
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
 T["add_comment(): rejects a side without content and an unknown path, touching nothing"] = function()
   local repo = comment_repo()
 

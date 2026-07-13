@@ -2055,11 +2055,11 @@ T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers an
   child.type_keys("inline note")
   child.type_keys("<C-s>")
   -- ...one base-side comment on the deleted file via the session API (multi-line body:
-  -- quickfix must show only the first line)...
+  -- quickfix must show only the first line; authored: quickfix must carry the author)...
   child.lua(
     [[__diffly_entry().session:add_comment((...), {
         side = "base", start_line = 1, end_line = 1, body = "base note\nsecond line",
-        snapshot = { "x" } })]],
+        snapshot = { "x" }, author = "agent" })]],
     { paths.deleted }
   )
   -- ...and flip the head-side one to outdated to exercise the marker.
@@ -2075,7 +2075,7 @@ T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers an
   eq(#qf.items, 2)
   -- all_comments() orders by (path, start_line): gone.lua before mod.lua.
   eq(qf.items[1].lnum, 1)
-  eq(qf.items[1].text, "[base] base note")
+  eq(qf.items[1].text, "[@agent] [base] base note")
   -- Compare via the realpath'd repo dir: `tempname()` hands out `/var/...` on macOS
   -- while git (whose toplevel the quickfix filenames are built from) reports the
   -- resolved `/private/var/...`. The file itself is deleted, so only the directory can
