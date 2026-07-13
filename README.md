@@ -293,6 +293,31 @@ require("diffly").setup({
 
 Set any keymap value to `false` to disable it.
 
+## Highlights
+
+The side-by-side diff palette is asymmetric — the left (before) pane only ever shows
+red-family highlights, the right (after) pane green-family, and alignment filler rows are
+muted, so removed/added code reads at a glance (the same reading
+[delta](https://github.com/dandavison/delta) and
+[difftastic](https://github.com/Wilfred/difftastic) give you). Colors are derived from
+your active colorscheme and re-derived whenever it changes:
+
+| Group | Derived from | Paints |
+| --- | --- | --- |
+| `DifflyDiffOldLine` | your `DiffDelete` bg | left pane: changed + deleted lines |
+| `DifflyDiffOldText` | same hue pushed toward `Removed` fg, bold | left pane: intra-line changed region |
+| `DifflyDiffNewLine` | your `DiffAdd` bg | right pane: changed + added lines |
+| `DifflyDiffNewText` | same hue pushed toward `Added` fg, bold | right pane: intra-line changed region |
+| `DifflyDiffFiller` | link to `NonText` | `----` alignment filler rows |
+
+The unified view's `DifflyOverlayAdd` / `DifflyOverlayDelete` line highlights link into
+the same palette. Every diffly group is defined with `default = true`, so defining your
+own version of any group (in your config or a colorscheme) always wins.
+
+Intra-line emphasis comes from Neovim 0.12's default `diffopt` (`inline:char`, plus
+`linematch:40` for row alignment). diffly never mutates global options — if you removed
+those flags from your `diffopt`, side-by-side falls back to line-level coloring only.
+
 ## Large files
 
 Images and other binary files never load their content — both diff modes always render a

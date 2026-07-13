@@ -83,6 +83,21 @@ Line comments + AI prompt copy, deferred at v1, are now designed and phased in â
 - **Side-by-side**: native diff mode. Left = read-only git blob buffer (`diffly://`
   namespace), right = the real file buffer (edits and `:w` work as usual). Deleted files
   show an empty right side; untracked files an empty left side.
+  - **Asymmetric diff palette**: native diff mode's highlight semantics are symmetric --
+    a line missing on the other side is `DiffAdd` in whichever window has it, so the
+    *before* pane paints deleted lines green -- and intra-line emphasis inherits the
+    colorscheme's `DiffText` hue (often blue). A reviewer's eye scans for "red = removed
+    / green = added" (the reading delta and difftastic serve), so diffly remaps the diff
+    groups per window via `'winhighlight'`: everything in the left pane is red-family,
+    everything in the right pane green-family, alignment filler muted (`NonText`). The
+    colors are derived from the active colorscheme (`ui/hl.lua`), never hardcoded: line
+    bg = the scheme's own `DiffAdd`/`DiffDelete` bg, intra-line emphasis = that same hue
+    pushed toward the scheme's `Added`/`Removed` accent, so the emphasis always contrasts
+    with its line bg *and* stays in the right color family. Window-local, so the user's
+    diff colors outside diffly are untouched. Intra-line regions themselves come from
+    `diffopt`'s `inline:char` (a Neovim 0.12 default, alongside `linematch:40`); a user
+    who removed those flags gets line-level asymmetry only -- accepted, diffly never
+    mutates global options.
 - **Unified**: inline overlay on the real buffer (worktree file, HEAD blob, or
   deleted-file blob), not a synthetic patch buffer -- so it gets the file's own syntax
   highlighting and LSP where side-by-side already did, which the old patch-text buffer
