@@ -263,6 +263,24 @@ submitted with the rest of your review. Deliberately not exposed: marking files 
 (always a human action) and submitting reviews (posting under your GitHub identity is
 your call).
 
+### Agent skill
+
+A ready-made [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills)
+that teaches this workflow — read the human's comments as a work queue, reply to
+addressed threads, leave attributed findings, never touch viewed marks or submission —
+ships with the plugin. Install it with the CLI itself (the plugin path below is where
+lazy.nvim puts it; adjust for your plugin manager):
+
+```sh
+~/.local/share/nvim/lazy/diffly.nvim/bin/diffly skill install
+# or into one project only:
+~/.local/share/nvim/lazy/diffly.nvim/bin/diffly skill install --dir .claude/skills
+```
+
+The installed `SKILL.md` has that checkout's absolute `bin/diffly` path baked in, so
+agents need nothing on `$PATH`; re-run `skill install` if the plugin directory moves.
+(`bin/diffly` uses an `env -S` shebang — on Linux this needs coreutils ≥ 8.30.)
+
 ## Configuration
 
 Full defaults, exactly as declared in `lua/diffly/config.lua`:
