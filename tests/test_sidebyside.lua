@@ -289,6 +289,29 @@ T["modified file: two &diff windows, left is an owned non-modifiable buffer, rig
   eq(win_bufopt(child, "right_win", "modifiable"), true)
 end
 
+T["both windows remap native diff groups asymmetrically via 'winhighlight'"] = function()
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  -- Native diff mode's group semantics are symmetric ("lines missing on the other side"
+  -- are DiffAdd in BOTH windows), so the before pane would paint deleted lines green.
+  -- The window-local remap gives each pane one color family: left/old = red, right/new =
+  -- green, fillers muted out of the scan (DEV-27; docs/design.md "Side-by-side").
+  eq(
+    child.lua_get([[vim.wo[_G.__view.left_win].winhighlight]]),
+    "DiffAdd:DifflyDiffOldLine,DiffChange:DifflyDiffOldLine,"
+      .. "DiffText:DifflyDiffOldText,DiffTextAdd:DifflyDiffOldText,DiffDelete:DifflyDiffFiller"
+  )
+  eq(
+    child.lua_get([[vim.wo[_G.__view.right_win].winhighlight]]),
+    "DiffAdd:DifflyDiffNewLine,DiffChange:DifflyDiffNewLine,"
+      .. "DiffText:DifflyDiffNewText,DiffTextAdd:DifflyDiffNewText,DiffDelete:DifflyDiffFiller"
+  )
+end
+
 T["added file: left window is an empty scratch buffer"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.new)
