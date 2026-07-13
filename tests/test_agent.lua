@@ -121,6 +121,20 @@ T["run_headless('add'): base side snapshots blob content, --author overrides"] =
   eq(thread.messages[1].author, "bot")
 end
 
+T["run_headless('add'): an empty author falls back to the default, never ''"] = function()
+  shim_no_pr()
+
+  local res = run_headless("add", {
+    path = paths.modified,
+    side = "head",
+    start_line = 4,
+    body = "attributed",
+    author = "",
+  })
+  eq(res.ok, true)
+  eq(res.data.messages[1].author, "agent")
+end
+
 T["run_headless('add'): validates range, path, side content, and body"] = function()
   shim_no_pr()
 

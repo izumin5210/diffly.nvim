@@ -124,6 +124,17 @@ local function find_thread_path(session, id)
   return nil
 end
 
+--- Bridge messages are always attributed: an absent OR empty author (an agent passing
+--- `--author ""`) falls back to the default rather than storing an unlabeled message.
+---@param author string?
+---@return string
+local function author_or_default(author)
+  if author == nil or author == "" then
+    return "agent"
+  end
+  return author
+end
+
 ---@alias diffly.agent.Ctx { session: diffly.Session, tab: integer?, entry: table? }
 
 ---@type table<string, fun(ctx: diffly.agent.Ctx, args: table): diffly.agent.Result>
@@ -273,7 +284,7 @@ function ops.add(ctx, args)
     end_line = end_line,
     body = body,
     snapshot = snapshot,
-    author = args.author or "agent",
+    author = author_or_default(args.author),
   })
   if not thread then
     return { ok = false, error = err }
@@ -302,7 +313,7 @@ function ops.reply(ctx, args)
     return { ok = false, error = string.format("diffly: no comment thread %q in this review", id) }
   end
 
-  ctx.session:reply_comment(path, id, body, { author = args.author or "agent" })
+  ctx.session:reply_comment(path, id, body, { author = author_or_default(args.author) })
 
   -- Return the whole thread: the agent gets its reply in context, not just an ack.
   for _, thread in ipairs(ctx.session:comments_for(path)) do
