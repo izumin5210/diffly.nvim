@@ -1,4 +1,4 @@
--- Tests for lua/diffly/ui/hl.lua's derived side-by-side diff palette (DEV-27): the
+-- Tests for lua/diffly/ui/hl.lua's derived side-by-side diff palette: the
 -- asymmetric red/green groups computed from the active colorscheme. Each case runs in a
 -- fresh child Neovim: derivation reads global highlight state (`nvim_get_hl`), and
 -- `default = true` semantics make definitions sticky within a process, so in-process

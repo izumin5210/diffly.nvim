@@ -299,7 +299,7 @@ T["both windows remap native diff groups asymmetrically via 'winhighlight'"] = f
   -- Native diff mode's group semantics are symmetric ("lines missing on the other side"
   -- are DiffAdd in BOTH windows), so the before pane would paint deleted lines green.
   -- The window-local remap gives each pane one color family: left/old = red, right/new =
-  -- green, fillers muted out of the scan (DEV-27; docs/design.md "Side-by-side").
+  -- green, fillers muted out of the scan (docs/design.md "Side-by-side").
   eq(
     child.lua_get([[vim.wo[_G.__view.left_win].winhighlight]]),
     "DiffAdd:DifflyDiffOldLine,DiffChange:DifflyDiffOldLine,"
