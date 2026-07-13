@@ -493,6 +493,16 @@ function Session:_refresh_comment_render()
   end
 end
 
+--- Put the cursor on `line` of whatever the view currently shows (new-side coordinates).
+--- Optional-method delegation, same shape as `_refresh_comment_render`: views that can
+--- place a cursor implement it, placeholder/fake views simply don't.
+---@param line integer
+function Session:focus_line(line)
+  if self._view.focus_line then
+    self._view:focus_line(line)
+  end
+end
+
 ---@class diffly.session.CommentOpts
 ---@field side "base"|"head"
 ---@field start_line integer

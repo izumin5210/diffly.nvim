@@ -39,6 +39,9 @@ local INSTALL_FAKES = [[
       refresh_comments = function(self)
         table.insert(_G.__log, { event = "refresh_comments", mode = self.mode })
       end,
+      focus_line = function(self, line)
+        table.insert(_G.__log, { event = "focus_line", mode = self.mode, line = line })
+      end,
     }
   end
 
@@ -1397,6 +1400,26 @@ T["add_comment(): passes the author through to the stored message"] = function()
   eq(reloaded_state_field(child, ".comments['src/one.lua'][1].messages[1].author"), "agent")
 
   vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
+T["focus_line(): delegates to the view; a view without the optional method is tolerated"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  child.lua("_G.__log = {}")
+  child.lua("_G.__session:focus_line(7)")
+  eq(view_log(child), { { event = "focus_line", mode = "sidebyside", line = 7 } })
+
+  child.lua("_G.__session._view.focus_line = nil")
+  child.lua("_G.__session:focus_line(2)")
+  eq(view_log(child), { { event = "focus_line", mode = "sidebyside", line = 7 } })
+
   child.stop()
   repo:destroy()
 end

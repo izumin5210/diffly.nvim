@@ -386,6 +386,24 @@ end
 -- never even looks at "the current window", so there is nothing left to special-case).
 ---------------------------------------------------------------------------------------
 
+T["focus_line(): focuses the right window at the requested line, clamped to EOF"] = function()
+  local built = build(child, "worktree")
+  new_view(child)
+  view_open(child, built.spec, entry_by_path(built.entries, paths.modified))
+
+  -- Move focus away first so the focus switch is actually observable.
+  child.lua("vim.api.nvim_set_current_win(_G.__ctx.anchor)")
+  child.lua("_G.__view:focus_line(4)")
+  eq(child.lua_get("vim.api.nvim_get_current_win()"), win_id(child, "right_win"))
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(_G.__view.right_win)[1]"), 4)
+
+  child.lua("_G.__view:focus_line(999)")
+  eq(
+    child.lua_get("vim.api.nvim_win_get_cursor(_G.__view.right_win)[1]"),
+    child.lua_get("vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(_G.__view.right_win))")
+  )
+end
+
 T["ensure_windows: ctx.anchor is never claimed or modified, whatever it shows; two fresh windows are created to its right"] = function()
   child.lua([[
     -- Mirrors what used to require special-casing (winfixbuf, a diffly://-named buffer):

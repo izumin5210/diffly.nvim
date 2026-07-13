@@ -493,6 +493,19 @@ function View:refresh_comments()
   render_comments(self)
 end
 
+--- Optional View-contract method (`Session:focus_line`, same family as
+--- `refresh_comments`): focus the right (new-side) window and put the cursor on `line`,
+--- clamped to the buffer end so a stale line number still lands somewhere sensible.
+---@param line integer
+function View:focus_line(line)
+  if not (self.right_win and vim.api.nvim_win_is_valid(self.right_win)) then
+    return
+  end
+  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(self.right_win))
+  vim.api.nvim_set_current_win(self.right_win)
+  vim.api.nvim_win_set_cursor(self.right_win, { math.max(1, math.min(line, count)), 0 })
+end
+
 --- `diffoff` where applicable, close every owned window, then wipe every diffly-owned
 --- buffer this view created (docs/architecture.md "View contract": views own their windows now, not
 --- just their buffers -- WP-I no longer reaps them). Real file BUFFERS are still never

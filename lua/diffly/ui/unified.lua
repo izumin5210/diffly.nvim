@@ -503,6 +503,19 @@ function View:refresh_comments()
   end
 end
 
+--- Optional View-contract method (`Session:focus_line`, same family as
+--- `refresh_comments`): focus the view window and put the cursor on `line`, clamped to
+--- the buffer end so a stale line number still lands somewhere sensible.
+---@param line integer
+function View:focus_line(line)
+  if not (self.win and vim.api.nvim_win_is_valid(self.win)) then
+    return
+  end
+  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(self.win))
+  vim.api.nvim_set_current_win(self.win)
+  vim.api.nvim_win_set_cursor(self.win, { math.max(1, math.min(line, count)), 0 })
+end
+
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
 --- carried the overlay/`keymaps.universal`, then wipes every owned scratch buffer still
 --- exclusively ours (see the `win_findbuf` guard below).
