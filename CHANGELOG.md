@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.0.1](https://github.com/izumin5210/diffly.nvim/compare/v1.0.0...v1.0.1) - 2026-07-13
+
+- feat: asymmetric side-by-side diff palette derived from the colorscheme by @izumin5210 in https://github.com/izumin5210/diffly.nvim/pull/12
+
 ## [v1.0.0](https://github.com/izumin5210/diffly.nvim/commits/v1.0.0) - 2026-07-12
 
 - feat: difit.nvim v1 — file-tree diff viewer with persistent viewed marks by @izumin5210 in https://github.com/izumin5210/diffly.nvim/pull/1
