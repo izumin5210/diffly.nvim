@@ -1401,6 +1401,59 @@ T["add_comment(): passes the author through to the stored message"] = function()
   repo:destroy()
 end
 
+T["reply_comment(): appends the reply, saves and notifies exactly once"] = function()
+  local repo = comment_repo()
+  local tmp_state = vim.fn.tempname()
+  vim.fn.mkdir(tmp_state, "p")
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  point_state_dir(child, tmp_state)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  local res = add_comment(child, "src/one.lua", {
+    side = "head",
+    start_line = 3,
+    end_line = 3,
+    body = "why did this change?",
+    snapshot = { "line three CHANGED" },
+  })
+  eq(res.ok, true)
+
+  child.lua("_G.__log = {}")
+  install_save_spy(child)
+  install_notify_counter(child)
+
+  local replied = child.lua(
+    [[return _G.__session:reply_comment((...), "c1", "fixed downstream", { author = "agent" }) ~= nil]],
+    { "src/one.lua" }
+  )
+  eq(replied, true)
+  eq(save_count(child), 1)
+  eq(notify_count(child), 1)
+  eq(view_log(child), { { event = "refresh_comments", mode = "sidebyside" } })
+
+  eq(
+    reloaded_state_field(child, ".comments['src/one.lua'][1].messages[2].body"),
+    "fixed downstream"
+  )
+  eq(reloaded_state_field(child, ".comments['src/one.lua'][1].messages[2].author"), "agent")
+
+  -- Unknown id: nil, and neither save nor notify fired again.
+  local unknown = child.lua(
+    [[return _G.__session:reply_comment((...), "c99", "x") == nil]],
+    { "src/one.lua" }
+  )
+  eq(unknown, true)
+  eq(save_count(child), 1)
+  eq(notify_count(child), 1)
+
+  vim.fn.delete(tmp_state, "rf")
+  child.stop()
+  repo:destroy()
+end
+
 T["add_comment(): rejects a side without content and an unknown path, touching nothing"] = function()
   local repo = comment_repo()
 

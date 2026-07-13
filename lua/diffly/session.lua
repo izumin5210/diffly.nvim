@@ -558,6 +558,24 @@ function Session:update_comment(path, id, body)
   return thread
 end
 
+--- Append a reply to an existing thread, same mutation discipline as
+--- `update_comment`: mutate, ONE save, repaint, ONE notify.
+---@param path string
+---@param id string
+---@param body string
+---@param opts { author: string? }?
+---@return diffly.CommentMessage|nil @nil (and no save/notify) when no such thread exists
+function Session:reply_comment(path, id, body, opts)
+  local message = comments.reply(self.state, path, id, body, opts)
+  if not message then
+    return nil
+  end
+  state.save(self.state)
+  self:_refresh_comment_render()
+  self:_notify()
+  return message
+end
+
 ---@param path string
 ---@param id string
 ---@return boolean deleted

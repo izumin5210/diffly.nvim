@@ -75,6 +75,26 @@ function M.update(st, path, id, body)
   return thread
 end
 
+--- Append a reply to a thread. `messages[]` has been thread-shaped since v1 exactly for
+--- this; the compose UI still only edits the root, so replies are append-only records
+--- (the agent bridge's "addressed this" loop is the first writer).
+---@param st diffly.ReviewState
+---@param path string
+---@param id string
+---@param body string
+---@param opts { author: string? }?
+---@return diffly.CommentMessage|nil @nil when no such thread exists
+function M.reply(st, path, id, body, opts)
+  local thread = find_thread(st, path, id)
+  if not thread then
+    return nil
+  end
+  ---@type diffly.CommentMessage
+  local message = { body = body, created_at = now(), author = opts and opts.author }
+  table.insert(thread.messages, message)
+  return message
+end
+
 --- Remove a thread; the path key itself is dropped with the last thread so persisted
 --- JSON never accumulates empty lists (and never hits vim.json's `{}`-vs-`[]` ambiguity).
 ---@param st diffly.ReviewState
