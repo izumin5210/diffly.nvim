@@ -32,6 +32,7 @@ end
 ---@field body string
 ---@field sha string        -- blob sha of the commented side's current content
 ---@field snapshot string[] -- exact text of start_line..end_line at comment time
+---@field author string?    -- absent = the human reviewer (see diffly.CommentMessage)
 
 ---@param st diffly.ReviewState
 ---@param opts diffly.comments.AddOpts
@@ -50,7 +51,7 @@ function M.add(st, opts)
       sha = opts.sha,
       snapshot = opts.snapshot,
     },
-    messages = { { body = opts.body, created_at = now() } },
+    messages = { { body = opts.body, created_at = now(), author = opts.author } },
   }
 
   st.comments[opts.path] = st.comments[opts.path] or {}

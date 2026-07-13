@@ -500,6 +500,7 @@ end
 ---@field body string
 ---@field snapshot string[]  -- the commented lines' text, captured by the caller from
 --- the buffer the user was looking at when the comment was written
+---@field author string?     -- absent = the human reviewer (diffly.CommentMessage)
 
 --- Create a comment thread on `path`. The anchor's sha is filled in here from the
 --- entry's current side -- callers never handle shas. Mutation discipline (shared by
@@ -534,6 +535,7 @@ function Session:add_comment(path, opts)
     body = opts.body,
     sha = sha,
     snapshot = opts.snapshot,
+    author = opts.author,
   })
   state.save(self.state)
   self:_refresh_comment_render()

@@ -512,6 +512,48 @@ T["render(): collapsed remote threads show the author in the indicator"] = funct
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
+T["render(): an authored local thread carries its author in header and indicator"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = thread({
+    messages = { { body = "from the agent", created_at = "x", author = "agent" } },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+  local lines = marks(buf, ns)[1][4].virt_lines
+  eq(lines[1][2][1], "✎ draft")
+  eq(lines[1][3][1], " @agent")
+  eq(lines[1][3][2], "DifflyCommentAuthor")
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = true })
+  eq(marks(buf, ns)[1][4].virt_text, { { " ✎ @agent", "DifflyCommentMarker" } })
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): a local reply's author gets its own attribution line"] = function()
+  -- Pins the reply-attribution path (index > 1 messages) for LOCAL threads -- the same
+  -- box shape remote threads already exercise.
+  local buf, ns = scratch_buf(6)
+  local t = thread({
+    messages = {
+      { body = "human note", created_at = "x" },
+      { body = "fixed in the follow-up commit", created_at = "x", author = "agent" },
+    },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, { collapsed = false })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  -- header / body / @agent / body / footer.
+  eq(#lines, 5)
+  eq(lines[2][2][1], "human note")
+  eq(lines[3][2][1], "@agent")
+  eq(lines[3][2][2], "DifflyCommentAuthor")
+  eq(lines[4][2][1], "fixed in the follow-up commit")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
 T["render(): the exact local chunk shape (golden safety)"] = function()
   -- Any change here shifts every comment screenshot golden -- keep this pin in sync
   -- with deliberate redesigns only.

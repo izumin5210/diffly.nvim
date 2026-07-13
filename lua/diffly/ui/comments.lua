@@ -137,7 +137,8 @@ end
 --- Full clear-and-redraw of `ns` on `buf` -- never incremental, mirroring the overlay's
 --- own discipline so a stale mark can never linger. Expanded threads render as a BOXED
 --- block: a `╭─` header carrying the thread's identity -- `@author` (plus `[resolved]`)
---- for remote threads, a `✎ draft` label for local ones -- then one `│ ` line per body
+--- for remote threads, a `✎ draft` label (plus `@author` for drafts written on someone's
+--- behalf, e.g. the agent bridge) for local ones -- then one `│ ` line per body
 --- line (reply authors as their own `│ @login` lines), closed by `╰─`. The box is
 --- load-bearing, not decoration: two threads anchored to the SAME line would otherwise
 --- fuse into one uniform gutter block, and nothing would say which text is a local
@@ -155,7 +156,10 @@ function M.render(buf, ns, placements, opts)
     local marker_hl = thread.remote and "DifflyCommentRemoteMarker" or "DifflyCommentMarker"
 
     if opts.collapsed then
-      local indicator = thread.remote and (" ✎ @" .. thread.messages[1].author) or " ✎ comment"
+      -- Any thread whose first message carries an author shows it -- remote always does,
+      -- a local draft only when written on someone's behalf (agent bridge).
+      local root_author = thread.messages[1] and thread.messages[1].author
+      local indicator = root_author and (" ✎ @" .. root_author) or " ✎ comment"
       vim.api.nvim_buf_set_extmark(buf, ns, placement.row, 0, {
         virt_text = { { indicator, marker_hl } },
         virt_text_pos = "eol",
@@ -170,6 +174,10 @@ function M.render(buf, ns, placements, opts)
         end
       else
         table.insert(header, { "✎ draft", marker_hl })
+        local author = thread.messages[1] and thread.messages[1].author
+        if author then
+          table.insert(header, { " @" .. author, "DifflyCommentAuthor" })
+        end
       end
 
       local chunks = { header }
