@@ -21,6 +21,9 @@ warnings, not history trivia.
 | `lua/diffly/config.lua` | Defaults, `setup()`, `viewed_patterns` group normalization. |
 | `lua/diffly/types.lua` | `---@meta` LuaCATS contracts shared across modules. |
 | `lua/diffly/generated.lua` | Pure classifier ported from github-linguist's `generated.rb`: `M.generated(path, lines) -> boolean`. No git, no I/O. |
+| `lua/diffly/agent.lua` | Agent bridge ops (`info`/`list`/`add`/`rm`/`reply`/`navigate`) shared by both CLI transports: `sessions()` (side-effect-free RPC probe), `dispatch()` (live entry), `run_headless()` (data-only session, noop view). Msgpack/JSON-safe data only. |
+| `lua/diffly/cli.lua` | `bin/diffly`'s brain: argument parsing, live-instance discovery (`--server` → `$NVIM` → `serverlist({peer=true})`), transport selection, stdout/stderr/exit-code shaping. No review logic. |
+| `bin/diffly` | `#!/usr/bin/env -S nvim -l` entry point; prepends its own plugin root to `runtimepath` so the CLI always runs this checkout's own lua (no drift by construction). |
 | `lua/diffly/ui/panel.lua` | File-tree panel: render pipeline, cursor preservation, panel-local keys, hide-viewed filter. |
 | `lua/diffly/ui/sidebyside.lua` | Native diff-mode view: blob left, real file (or head blob) right. |
 | `lua/diffly/ui/unified.lua` | Inline-overlay view: real buffer + extmark overlay, deletions as `virt_lines`. |
@@ -305,6 +308,41 @@ Behavior-level decisions in [design.md](./design.md)'s "Comments" section; mecha
   destination sequence (independently allocated ids could collide), empties the source's
   `comments` (viewed marks untouched), saves both stores, notifies once. Naturally
   once-only: the source has nothing left afterwards.
+
+## Agent bridge
+
+Behavior-level decisions in [design.md](./design.md)'s "Agent bridge" section; mechanisms:
+
+- **Single write authority.** A live session holds `ReviewState` in memory and rewrites
+  the whole file on every save, so an external process writing the state JSON alongside
+  it would be clobbered (and two writers allocating from `comment_seq` would collide on
+  ids). The bridge therefore routes every op through a live instance when one exists:
+  `bin/diffly` discovers it (`--server` → `$NVIM` → `vim.fn.serverlist({peer = true})`,
+  own `v:servername` excluded, matched on `repo_identity().id` against
+  `agent.sessions()`), then runs `agent.dispatch(op, args)` there via
+  `nvim_exec_lua` — on the instance's main loop, through the same
+  `Session:add_comment`-style funnels a keypress uses, so saves/repaints/notifies happen
+  exactly as if the human had typed it. Only when no live instance holds the review does
+  `run_headless()` build a data-only session (noop view, the `:Diffly clean` shape) and
+  write directly. An explicit `--server` with no matching session refuses rather than
+  falling back — silently going headless there is exactly the two-writer race.
+- **The probe is side-effect-free**: `agent.sessions()` reads `package.loaded["diffly"]`
+  (never `require`s it) and returns plain msgpack-safe tables, so probing an instance
+  that never loaded diffly — or predates the bridge — costs one round-trip and changes
+  nothing. `vim.rpcrequest` has no timeout; an instance wedged in a blocking prompt can
+  stall discovery until dismissed (documented, accepted for v1).
+- **`nvim -l` process shape**: `print()` (and thus `vim.notify`) goes to *stderr* under
+  `-l`, so plugin notices can never corrupt the JSON stream on stdout
+  (`io.stdout:write` in cli.lua is the only stdout writer). `bin/diffly` resolves the
+  plugin root from its own realpath and prepends it to `runtimepath` — CLI and plugin
+  are the same checkout by construction, which is the whole answer to the logic-drift
+  concern that ruled out a standalone binary.
+- **Anchors from the CLI** are built from the same content source as the re-anchor pass
+  (immutable git objects for base/head-mode sides, the on-disk file for the worktree
+  right side): the loaded lines both validate the requested range and become the
+  snapshot, so they cannot disagree. Headless `list --remote` waits out the one async
+  fetch with `vim.wait` — a one-shot process pumping its own completion is not a new
+  async seam.
 
 ## Deliberately rejected designs
 

@@ -133,7 +133,8 @@ T["run_headless('add'): validates range, path, side content, and body"] = functi
   eq(res.ok, false)
   eq(res.error:find("999") ~= nil, true)
 
-  res = run_headless("add", { path = "does/not/exist.lua", side = "head", start_line = 1, body = "x" })
+  res =
+    run_headless("add", { path = "does/not/exist.lua", side = "head", start_line = 1, body = "x" })
   eq(res.ok, false)
 
   -- A deleted file has no head side to comment on.
@@ -144,17 +145,26 @@ T["run_headless('add'): validates range, path, side content, and body"] = functi
   eq(res.ok, false)
 
   -- Nothing was persisted: not one rejected add produced a state file.
-  eq(vim.tbl_filter(function(f)
-    return f:match("%.json$") ~= nil
-  end, vim.fn.readdir(state_dir)), {})
+  eq(
+    vim.tbl_filter(function(f)
+      return f:match("%.json$") ~= nil
+    end, vim.fn.readdir(state_dir)),
+    {}
+  )
 end
 
 T["run_headless: list / reply by id / rm by id, stateful across invocations"] = function()
   shim_no_pr()
 
-  eq(run_headless("add", { path = paths.modified, side = "head", start_line = 4, body = "first" }).ok, true)
   eq(
-    run_headless("add", { path = paths.new, side = "head", start_line = 3, body = "second", author = "bot" }).ok,
+    run_headless("add", { path = paths.modified, side = "head", start_line = 4, body = "first" }).ok,
+    true
+  )
+  eq(
+    run_headless(
+      "add",
+      { path = paths.new, side = "head", start_line = 3, body = "second", author = "bot" }
+    ).ok,
     true
   )
 
@@ -277,7 +287,8 @@ T["dispatch(): mutates the live session in place, rejects stale tabs and unknown
   local stale = child.lua([[return require("diffly.agent").dispatch("add", { tab = 999 })]])
   eq(stale.ok, false)
 
-  local unknown = child.lua([[return require("diffly.agent").dispatch("frobnicate", ...)]], { { tab = tab } })
+  local unknown =
+    child.lua([[return require("diffly.agent").dispatch("frobnicate", ...)]], { { tab = tab } })
   eq(unknown.ok, false)
 end
 

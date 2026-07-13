@@ -90,6 +90,12 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 - Submitting a review mutates the local store ONLY after a successful POST (the endpoint
   is atomic; on failure every draft must remain intact), and `plan_submission` never
   mutates the drafts it maps.
+- The agent bridge writes through a live session whenever one exists: `bin/diffly`
+  probes (`--server` → `$NVIM` → serverlist peers) and dispatches via RPC; headless
+  writes are only for sessionless repos, and an explicit `--server` miss refuses instead
+  of falling back (a second state writer clobbers the live session's save and collides
+  on `comment_seq`). CLI stdout is machine-readable JSON only — under `nvim -l`,
+  `print()`/`vim.notify` land on stderr; never write to stdout from plugin code.
 
 ## Git workflow
 

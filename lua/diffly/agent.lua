@@ -361,7 +361,8 @@ function M.dispatch(op, args)
     return { ok = false, error = "diffly: that session is gone (its tab was closed?)" }
   end
 
-  local ok, result = pcall(handler, { session = entry.session, tab = args.tab, entry = entry }, args)
+  local ok, result =
+    pcall(handler, { session = entry.session, tab = args.tab, entry = entry }, args)
   if not ok then
     return { ok = false, error = tostring(result) }
   end

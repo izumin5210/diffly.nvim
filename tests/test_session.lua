@@ -1464,10 +1464,8 @@ T["reply_comment(): appends the reply, saves and notifies exactly once"] = funct
   eq(reloaded_state_field(child, ".comments['src/one.lua'][1].messages[2].author"), "agent")
 
   -- Unknown id: nil, and neither save nor notify fired again.
-  local unknown = child.lua(
-    [[return _G.__session:reply_comment((...), "c99", "x") == nil]],
-    { "src/one.lua" }
-  )
+  local unknown =
+    child.lua([[return _G.__session:reply_comment((...), "c99", "x") == nil]], { "src/one.lua" })
   eq(unknown, true)
   eq(save_count(child), 1)
   eq(notify_count(child), 1)
