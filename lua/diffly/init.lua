@@ -139,6 +139,27 @@ local function open_and_sync_cursor(entry, target)
   end
 end
 
+--- Land on a `Session:next_comment`/`prev_comment` target: the shared tail behind
+--- `keymaps.universal.next_comment`/`prev_comment` (via `build_actions`) and the
+--- top-level `M.next_comment`/`M.prev_comment` -- same open+sync+focus shape as
+--- `qf_comment_jump`, except `open_file` is skipped when the target is in the file
+--- already shown (reopening re-runs the view's own cursor placement, pure churn for the
+--- common press-`]C`-through-one-file case). A nil target covers "no comments at all"
+--- AND "the only comment is where the cursor already sits" (see Session:next_comment) --
+--- one message serves both: there is nowhere to move.
+---@param entry diffly.init.Entry
+---@param target diffly.session.CommentJumpTarget?
+local function jump_to_comment(entry, target)
+  if not target then
+    vim.notify("diffly: no comment to jump to", vim.log.levels.INFO)
+    return
+  end
+  if target.path ~= entry.session.current_path then
+    open_and_sync_cursor(entry, target.path)
+  end
+  entry.session:focus_line(target.line, target.side)
+end
+
 ---@param tab integer
 local function close_tabpage_safe(tab)
   if not vim.api.nvim_tabpage_is_valid(tab) then
@@ -561,6 +582,27 @@ local function build_actions(tab)
       local entry = resolve_live_entry(tab, "prev_file")
       if entry then
         open_and_sync_cursor(entry, entry.session:prev_file(path))
+      end
+    end,
+    -- `side` is the buffer's own (nil on placeholders -- Session:next_comment treats
+    -- that as "before this file's first line"); `line` is the cursor at press time, in
+    -- that side's coordinates.
+    next_comment = function(path, side, line)
+      local entry = resolve_live_entry(tab, "next_comment")
+      if entry then
+        jump_to_comment(
+          entry,
+          entry.session:next_comment({ path = path, side = side, line = line })
+        )
+      end
+    end,
+    prev_comment = function(path, side, line)
+      local entry = resolve_live_entry(tab, "prev_comment")
+      if entry then
+        jump_to_comment(
+          entry,
+          entry.session:prev_comment({ path = path, side = side, line = line })
+        )
       end
     end,
     comment_add = function(path, side, start_line, end_line)
@@ -1061,6 +1103,28 @@ function M.prev_file()
   local entry = current_entry()
   if entry then
     open_and_sync_cursor(entry, entry.session:prev_file(entry.session.current_path))
+  end
+end
+
+--- Jump to the next inline-rendered comment thread (document order across the whole
+--- review, wrapping -- see `Session:next_comment`): the backing function for
+--- `<Plug>(diffly-next-comment)`. Reference point is `session.current_path` with no
+--- in-file position (`M.next_file`'s rationale: a `<Plug>` mapping isn't tied to any one
+--- diffly buffer, so there is no cursor in side coordinates to hand over) -- inside the
+--- view, the buffer-local `keymaps.universal.next_comment` supplies the real cursor.
+function M.next_comment()
+  local entry = current_entry()
+  if entry then
+    jump_to_comment(entry, entry.session:next_comment({ path = entry.session.current_path }))
+  end
+end
+
+--- Jump to the previous inline-rendered comment thread, mirroring `M.next_comment`: the
+--- backing function for `<Plug>(diffly-prev-comment)`.
+function M.prev_comment()
+  local entry = current_entry()
+  if entry then
+    jump_to_comment(entry, entry.session:prev_comment({ path = entry.session.current_path }))
   end
 end
 

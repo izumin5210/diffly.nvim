@@ -253,8 +253,78 @@ function M.apply_resolution(thread, resolution)
   return true
 end
 
+---@param row integer
+---@param line_count integer
+---@return integer
+local function clamp_row(row, line_count)
+  return math.max(0, math.min(row, line_count - 1))
+end
+
+--- Where base-side line `base_line` renders in the unified buffer. Mirrors
+--- `ui/unified.lua`'s `compute_overlay` walk, tracking BOTH sides: `cur_old` starts at
+--- `hunk.old_start`, `cur_new` at `hunk.new_start`; " " consumes one line of each side
+--- (a context base line maps to its own new-side row, below it), "-" consumes only the
+--- old side (a deleted base line anchors exactly where its deletion run's virt_lines
+--- render, sharing compute_overlay's clamp rules), "+" consumes only the new side. A
+--- base line outside every hunk maps to itself shifted by the cumulative (new - old)
+--- length delta of the hunks fully above it.
+---
+--- Lives HERE (not ui/comments.lua, whose placement pipeline is its main consumer)
+--- because it is pure hunk math with no vim.api in sight: `session.lua`'s comment
+--- navigation (`next_comment`/`prev_comment`) orders both sides' threads through this
+--- same walk, and session.lua deliberately never depends on `lua/diffly/ui/*`.
+---@param hunks diffly.Hunk[]
+---@param line_count integer  -- line count of the unified buffer (the new side)
+---@param base_line integer   -- 1-based base-side line
+---@return { row: integer, above: boolean }
+function M.base_target(hunks, line_count, base_line)
+  local delta = 0
+
+  for _, hunk in ipairs(hunks) do
+    local cur_old = hunk.old_start
+    local cur_new = hunk.new_start
+
+    if base_line < cur_old then
+      break -- unchanged territory before this hunk; the accumulated delta applies
+    end
+
+    for _, body_line in ipairs(hunk.lines) do
+      local marker = body_line:sub(1, 1)
+      if marker == " " then
+        if cur_old == base_line then
+          return { row = clamp_row(cur_new - 1, line_count), above = false }
+        end
+        cur_old = cur_old + 1
+        cur_new = cur_new + 1
+      elseif marker == "-" then
+        if cur_old == base_line then
+          -- The deletion-run anchor, with compute_overlay's exact clamp rules: row 0
+          -- above=true when the new side is empty; below the last real line when the
+          -- deletion runs past EOF.
+          local raw_row = cur_new - 1
+          if raw_row < 0 then
+            return { row = 0, above = true }
+          elseif raw_row > line_count - 1 then
+            return { row = math.max(line_count - 1, 0), above = false }
+          end
+          return { row = raw_row, above = true }
+        end
+        cur_old = cur_old + 1
+      elseif marker == "+" then
+        cur_new = cur_new + 1
+      end
+      -- marker == "\\": "\ No newline at end of file" -- neither side has a line here.
+    end
+
+    -- The whole hunk lies above base_line: fold its length difference into the offset.
+    delta = delta + (cur_new - hunk.new_start) - (cur_old - hunk.old_start)
+  end
+
+  return { row = clamp_row(base_line + delta - 1, line_count), above = false }
+end
+
 --- Per-hunk valid submit positions, walking each hunk's body with both side counters
---- exactly like ui/comments.lua's `base_target`: context lines (" ") are valid on BOTH
+--- exactly like `M.base_target` above: context lines (" ") are valid on BOTH
 --- sides, "-" lines only as base positions, "+" lines only as head positions. Grouped
 --- PER HUNK (not one flat set) because that grouping IS the "a multi-line range must sit
 --- inside one hunk" rule the forge enforces -- and within a hunk each side's valid lines

@@ -2256,6 +2256,111 @@ T["comments: quickfix <CR> after the review closes falls back to a plain file ju
   eq(is_open(child), false)
 end
 
+T["comments: ]C/[C walk every inline thread across files and sides, wrapping"] = function()
+  child.cmd("Diffly")
+  -- gone.lua (the first un-viewed file) auto-opened; three threads elsewhere in the
+  -- review, in document order: mod.lua head:4, mod.lua base:7 (context line "return M",
+  -- which the hunk delta shifts to worktree row 11), new.lua head:3.
+  child.lua(
+    [[
+      local mod, new = ...
+      local session = __diffly_entry().session
+      session:add_comment(mod, {
+        side = "head", start_line = 4, end_line = 4,
+        body = "head note", snapshot = { '  return "hello, world"' },
+      })
+      session:add_comment(mod, {
+        side = "base", start_line = 7, end_line = 7,
+        body = "base note", snapshot = { "return M" },
+      })
+      session:add_comment(new, {
+        side = "head", start_line = 3, end_line = 3,
+        body = "new note", snapshot = { "function M.new_feature()" },
+      })
+    ]],
+    { paths.modified, paths.new }
+  )
+
+  -- Head side of mod.lua: the real worktree buffer, anchor line 4.
+  child.type_keys("]C")
+  eq(session_field(child, "current_path"), paths.modified)
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.bo.buftype"), "")
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+
+  -- Base side of the same file: focus crosses into the LEFT base-blob window.
+  child.type_keys("]C")
+  eq(vim.startswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), "diffly://"), true)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 7)
+
+  -- Next file's thread, then wrap back to the very first one.
+  child.type_keys("]C")
+  eq(session_field(child, "current_path"), paths.new)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 3)
+  child.type_keys("]C")
+  eq(session_field(child, "current_path"), paths.modified)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+
+  -- Backward from the first thread wraps to the last; the panel cursor followed.
+  child.type_keys("[C")
+  eq(session_field(child, "current_path"), paths.new)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 3)
+  local panel_row = child.lua_get("vim.api.nvim_win_get_cursor(__diffly_entry().panel.win)[1]")
+  eq(panel_lines(child)[panel_row]:find("new.lua") ~= nil, true)
+end
+
+T["comments: ]C/[C from the panel jump relative to the file row under the cursor"] = function()
+  child.cmd("Diffly")
+  child.lua(
+    [[
+      local mod, new = ...
+      local session = __diffly_entry().session
+      session:add_comment(mod, {
+        side = "head", start_line = 4, end_line = 4,
+        body = "head note", snapshot = { '  return "hello, world"' },
+      })
+      session:add_comment(new, {
+        side = "head", start_line = 3, end_line = 3,
+        body = "new note", snapshot = { "function M.new_feature()" },
+      })
+    ]],
+    { paths.modified, paths.new }
+  )
+
+  -- ]C on mod.lua's row enters that file's own first thread (at-or-after semantics).
+  focus_panel(child)
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("]C")
+  eq(session_field(child, "current_path"), paths.modified)
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+
+  -- [C on new.lua's row leaves for the previous file's last thread.
+  focus_panel(child)
+  set_cursor(child, 6) -- src/new.lua
+  child.type_keys("[C")
+  eq(session_field(child, "current_path"), paths.modified)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+end
+
+T["comments: ]C with nothing to jump to notifies instead of moving"] = function()
+  child.cmd("Diffly")
+  child.lua([[
+    _G.__notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(_G.__notifications, { msg = msg, level = level })
+    end
+  ]])
+
+  local before = session_field(child, "current_path")
+  child.type_keys("]C")
+  eq(session_field(child, "current_path"), before)
+  local notes = child.lua_get("_G.__notifications")
+  eq(#notes, 1)
+  eq(notes[1].msg, "diffly: no comment to jump to")
+  eq(notes[1].level, vim.log.levels.INFO)
+end
+
 --- Two deterministic comments on src/mod.lua for the rendering goldens: a head-side one
 --- under worktree line 4, and a base-side one on base line 4 (the deleted
 --- `  return "hello"`) -- which, in unified mode, must render at the same anchor as the

@@ -29,6 +29,8 @@ local M = {}
 ---@field close fun()
 ---@field next_file fun(path: string)
 ---@field prev_file fun(path: string)
+---@field next_comment fun(path: string, side: "base"|"head"|nil, line: integer)
+---@field prev_comment fun(path: string, side: "base"|"head"|nil, line: integer)
 ---@field comments_for fun(path: string): diffly.CommentThread[]  -- render-time read the
 --- views' comment repaint pulls threads through (views never hold a session); stale ->
 --- `{}` silently, since a render is not a user action worth a notify
@@ -280,6 +282,23 @@ function M.universal_spec(actions, path, opts)
       key = cfg.prev_file,
       callback = function()
         actions.prev_file(path)
+      end,
+    },
+    -- Comment NAVIGATION lives outside `comment_entries` deliberately: unlike the
+    -- add/edit/... family (which needs a commentable side under the cursor), jumping
+    -- away toward the next thread is meaningful from ANY buffer, placeholders included
+    -- -- a nil side just means "no cursor position in side coordinates", which
+    -- Session:next_comment treats as "before this file's first line".
+    next_comment = {
+      key = cfg.next_comment,
+      callback = function()
+        actions.next_comment(path, opts and opts.side, vim.api.nvim_win_get_cursor(0)[1])
+      end,
+    },
+    prev_comment = {
+      key = cfg.prev_comment,
+      callback = function()
+        actions.prev_comment(path, opts and opts.side, vim.api.nvim_win_get_cursor(0)[1])
       end,
     },
   }

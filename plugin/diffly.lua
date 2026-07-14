@@ -73,3 +73,11 @@ end, { desc = "diffly: open the next file" })
 vim.keymap.set("n", "<Plug>(diffly-prev-file)", function()
   require("diffly").prev_file()
 end, { desc = "diffly: open the previous file" })
+
+vim.keymap.set("n", "<Plug>(diffly-next-comment)", function()
+  require("diffly").next_comment()
+end, { desc = "diffly: jump to the next comment" })
+
+vim.keymap.set("n", "<Plug>(diffly-prev-comment)", function()
+  require("diffly").prev_comment()
+end, { desc = "diffly: jump to the previous comment" })

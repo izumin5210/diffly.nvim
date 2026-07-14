@@ -99,6 +99,11 @@ func Parse(input string) []Token {
 	return tokens
 }
 EOF
+# Second seeded correctness bug (make(len) + append = empty-string prefix), in a
+# DIFFERENT file than token.go's classify("") one: demo_agent.tape walks the agent's
+# notes with ]C, and two reliable findings in two files keep that scene an actual
+# cross-file jump instead of a single stop (a one-comment run made ]C's wrap land on
+# "no comment to jump to" twice on camera).
 cat > render.go <<'EOF'
 package parser
 
@@ -106,7 +111,7 @@ import "strings"
 
 // Render joins tokens back into a single line.
 func Render(tokens []Token) string {
-	texts := make([]string, 0, len(tokens))
+	texts := make([]string, len(tokens))
 	for _, t := range tokens {
 		texts = append(texts, t.Text)
 	}

@@ -92,6 +92,8 @@ collide with a real file's own, unrelated keymaps).
 | `<leader>e`  | Focus the panel                                       |
 | `]f`         | Open the next file (ALL files, not just un-viewed ones) |
 | `[f`         | Open the previous file (ditto)                        |
+| `]C`         | Jump to the next comment (review-wide, wraps)         |
+| `[C`         | Jump to the previous comment (ditto)                  |
 | `<leader>ca` | Add a comment on the cursor line, or the visual selection |
 | `<leader>ce` | Edit the comment under the cursor                     |
 | `<leader>cd` | Delete the comment under the cursor (confirms first)  |
@@ -110,6 +112,15 @@ isn't "closing the review".
 filter below (see [File panel](#file-panel)) — the filter only changes what's *drawn* in
 the tree, never what's *reachable*. Skipping already-viewed files while moving forward is
 what `<leader>v`/`v`'s auto-advance is already for.
+
+`]C`/`[C` walk every *inline-rendered* comment thread in the review — local drafts and
+unresolved PR threads (resolved ones join while revealed via `cr`), both sides interleaved
+in document order — jumping across files (in panel order) and wrapping at the ends. In the
+panel, they jump relative to the file row under the cursor. Outdated threads never render
+inline and are never jump targets; `:Diffly comments` is how you reach those. Uppercase
+`C` on purpose: the side-by-side windows run in diff mode, where lowercase `]c`/`[c` is
+Vim's own jump-to-change. `<Plug>(diffly-next-comment)`/`<Plug>(diffly-prev-comment)` are
+available for global mappings.
 
 #### File panel
 
@@ -231,11 +242,13 @@ vim.keymap.set("n", "<leader>gs", "<Plug>(diffly-toggle-mode)")
 vim.keymap.set("n", "<leader>gp", "<Plug>(diffly-focus-panel)")
 vim.keymap.set("n", "]f", "<Plug>(diffly-next-file)")
 vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
+vim.keymap.set("n", "]C", "<Plug>(diffly-next-comment)")
+vim.keymap.set("n", "[C", "<Plug>(diffly-prev-comment)")
 ```
 
 ## Agent bridge
 
-![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, a real Claude Code session (Sonnet, low effort) loading the diffly-review skill and leaving a review finding through bin/diffly against the still-running session, then fg bringing the editor back and opening the flagged file to show the agent's comment rendered inline as a boxed ✎ draft @agent note on the diff, also listed and tagged [@agent] in :Diffly comments](assets/demo_agent.gif)
+![diffly.nvim agent bridge demo — a reviewer's own draft left on the diff, Neovim suspended with Ctrl-Z, a real Claude Code session (Sonnet, low effort) loading the diffly-review skill and leaving review findings through bin/diffly against the still-running session, then fg bringing the editor back and ]C walking every note — the reviewer's and the agent's — across files, each rendered inline as a boxed ✎ draft note on the diff, the agent's tagged @agent inline and [@agent] in :Diffly comments](assets/demo_agent.gif)
 
 `bin/diffly` gives coding agents the same review comments you see in the editor — no
 GitHub round-trip, no copy-paste:
@@ -330,6 +343,8 @@ require("diffly").setup({
       focus_panel = "<leader>e",
       next_file = "]f", -- open the next file (ALL files, unaffected by keymaps.panel's H)
       prev_file = "[f", -- open the previous file (ditto)
+      next_comment = "]C", -- jump to the next inline comment (review-wide, wraps)
+      prev_comment = "[C", -- jump to the previous inline comment (ditto)
       comment_add = "<leader>ca",
       comment_edit = "<leader>ce",
       comment_delete = "<leader>cd",

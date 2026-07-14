@@ -1899,6 +1899,261 @@ T["remote_thread_list(): flat (path, start_line) order, outdated included, toggl
   repo:destroy()
 end
 
+---@param child table
+---@param from table  -- diffly.session.CommentJumpFrom (omit `side` for the panel-style
+--- "before the file's first line" reference)
+---@return table|nil target
+local function next_comment(child, from)
+  return denil(child.lua([[return _G.__session:next_comment(...)]], { from }))
+end
+
+---@param child table
+---@param from table
+---@return table|nil target
+local function prev_comment(child, from)
+  return denil(child.lua([[return _G.__session:prev_comment(...)]], { from }))
+end
+
+T["next_comment()/prev_comment(): document order across files, wrapping; panel/stale references"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  -- A local head draft in each file plus a remote thread between them: document order is
+  -- added.lua:1, one.lua:2 (remote), one.lua:4 (draft) -- file_order, then line.
+  eq(
+    add_comment(child, "src/added.lua", {
+      side = "head",
+      start_line = 1,
+      end_line = 1,
+      body = "on added",
+      snapshot = { "new file line" },
+    }).ok,
+    true
+  )
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 4,
+      end_line = 4,
+      body = "on one",
+      snapshot = { "line four" },
+    }).ok,
+    true
+  )
+  child.lua([[_G.__session:set_remote_threads(...)]], {
+    { ["src/one.lua"] = { remote_thread("src/one.lua", { id = "T1", line = 2 }) } },
+  })
+
+  eq(
+    next_comment(child, { path = "src/added.lua", side = "head", line = 1 }),
+    { path = "src/one.lua", side = "head", line = 2 },
+    "strictly after the cursor's own line"
+  )
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 2 }),
+    { path = "src/one.lua", side = "head", line = 4 }
+  )
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 4 }),
+    { path = "src/added.lua", side = "head", line = 1 },
+    "wraps from the last comment to the first"
+  )
+
+  eq(
+    prev_comment(child, { path = "src/one.lua", side = "head", line = 2 }),
+    { path = "src/added.lua", side = "head", line = 1 }
+  )
+  eq(
+    prev_comment(child, { path = "src/added.lua", side = "head", line = 1 }),
+    { path = "src/one.lua", side = "head", line = 4 },
+    "wraps backward from the first comment to the last"
+  )
+
+  -- Panel-style reference (no side = before the file's first line): next enters the
+  -- file's own comments, prev leaves for the previous file's last one.
+  eq(
+    next_comment(child, { path = "src/one.lua", line = 0 }),
+    { path = "src/one.lua", side = "head", line = 2 }
+  )
+  eq(
+    prev_comment(child, { path = "src/one.lua", line = 0 }),
+    { path = "src/added.lua", side = "head", line = 1 }
+  )
+
+  -- A stale path (e.g. dropped by a refresh) degrades to "from the start"/"from the end",
+  -- mirroring next_file/prev_file.
+  eq(
+    next_comment(child, { path = "no/such.lua", side = "head", line = 9 }),
+    { path = "src/added.lua", side = "head", line = 1 }
+  )
+  eq(
+    prev_comment(child, { path = "no/such.lua", side = "head", line = 9 }),
+    { path = "src/one.lua", side = "head", line = 4 }
+  )
+
+  child.stop()
+  repo:destroy()
+end
+
+T["next_comment(): only inline-rendered threads are targets; nil when there is nowhere to go"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 1 }),
+    nil,
+    "no comments at all"
+  )
+
+  eq(
+    add_comment(child, "src/one.lua", {
+      side = "head",
+      start_line = 4,
+      end_line = 4,
+      body = "draft",
+      snapshot = { "line four" },
+    }).ok,
+    true
+  )
+  child.lua([[_G.__session:set_remote_threads(...)]], {
+    {
+      ["src/one.lua"] = {
+        remote_thread("src/one.lua", { id = "T1", line = 1, outdated = true }),
+        remote_thread("src/one.lua", { id = "T2", line = 2, resolved = true }),
+      },
+    },
+  })
+
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 1 }),
+    { path = "src/one.lua", side = "head", line = 4 },
+    "outdated never renders inline, so it is never a target; resolved hides behind the toggle"
+  )
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 4 }),
+    nil,
+    "the only target is the cursor's own position: wrapping to it would not move"
+  )
+  eq(prev_comment(child, { path = "src/one.lua", side = "head", line = 4 }), nil)
+
+  child.lua("_G.__session:toggle_remote_resolved()")
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 4 }),
+    { path = "src/one.lua", side = "head", line = 2 },
+    "the resolved toggle admits resolved threads, same as inline rendering"
+  )
+
+  child.stop()
+  repo:destroy()
+end
+
+T["next_comment(): base-side threads interleave through the hunk mapping; same-row threads are one stop"] = function()
+  local repo = comment_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, { number = 999, base_ref = "main" }, nil)
+  eq(new_session(child, {}).ok, true)
+
+  -- src/one.lua's diff replaces base line 3: a base-side thread there maps to head row 3
+  -- (the deletion run's own anchor), interleaving between head-side threads on lines 1
+  -- and 5 -- and sharing its stop with a head-side thread on line 3.
+  for _, spec in ipairs({
+    { side = "head", line = 1, snapshot = { "line one" } },
+    { side = "base", line = 3, snapshot = { "line three" } },
+    { side = "head", line = 3, snapshot = { "line three CHANGED" } },
+    { side = "head", line = 5, snapshot = { "line five" } },
+  }) do
+    eq(
+      add_comment(child, "src/one.lua", {
+        side = spec.side,
+        start_line = spec.line,
+        end_line = spec.line,
+        body = spec.side .. " " .. spec.line,
+        snapshot = spec.snapshot,
+      }).ok,
+      true
+    )
+  end
+
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "head", line = 1 }),
+    { path = "src/one.lua", side = "base", line = 3 },
+    "the mapped base thread comes before head line 5; base-first at a shared stop"
+  )
+  eq(
+    next_comment(child, { path = "src/one.lua", side = "base", line = 3 }),
+    { path = "src/one.lua", side = "head", line = 5 },
+    "a base-side cursor maps through the same walk; the shared stop is skipped as one"
+  )
+  eq(
+    prev_comment(child, { path = "src/one.lua", side = "head", line = 5 }),
+    { path = "src/one.lua", side = "base", line = 3 }
+  )
+  eq(
+    prev_comment(child, { path = "src/one.lua", side = "base", line = 3 }),
+    { path = "src/one.lua", side = "head", line = 1 }
+  )
+
+  child.stop()
+  repo:destroy()
+end
+
+T["next_comment(): a deleted file's base threads order by their own lines (no mapping)"] = function()
+  local repo = helpers.fixture_branch_repo()
+
+  local child = helpers.new_child(repo.dir)
+  install_fakes(child)
+  set_pr_result(child, nil, "no pr")
+  eq(new_session(child, {}).ok, true)
+
+  eq(
+    add_comment(child, "src/gone.lua", {
+      side = "base",
+      start_line = 3,
+      end_line = 3,
+      body = "on the deleted file",
+      snapshot = { "function M.bye()" },
+    }).ok,
+    true
+  )
+  eq(
+    add_comment(child, "src/mod.lua", {
+      side = "head",
+      start_line = 4,
+      end_line = 4,
+      body = "on mod",
+      snapshot = { '  return "hello, world"' },
+    }).ok,
+    true
+  )
+
+  eq(
+    next_comment(child, { path = "src/gone.lua", side = "base", line = 3 }),
+    { path = "src/mod.lua", side = "head", line = 4 }
+  )
+  eq(
+    prev_comment(child, { path = "src/mod.lua", side = "head", line = 4 }),
+    { path = "src/gone.lua", side = "base", line = 3 }
+  )
+  eq(
+    next_comment(child, { path = "src/mod.lua", side = "head", line = 4 }),
+    { path = "src/gone.lua", side = "base", line = 3 },
+    "wraps across files"
+  )
+
+  child.stop()
+  repo:destroy()
+end
+
 -- 14. submission prep + draft adoption ----------------------------------------------------
 
 T["prepare_submission(): guards -- no PR / unknown head oid / local HEAD not the PR head"] = function()

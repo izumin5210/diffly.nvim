@@ -65,6 +65,26 @@ Sleep 2.5s
 Type "]f"
 Sleep 2s
 
+# Leave a note of your own before handing over: the bridge is bidirectional (the agent
+# reads these drafts), and it guarantees the ]C walk after `fg` always has a second stop
+# in a second file even on a run where Claude leaves a single note.
+Type ":"
+Sleep 300ms
+Type@30ms `" leave your own note first -- the agent reads your drafts too`
+Sleep 2.2s
+Escape
+Sleep 400ms
+Type "/classify(field)"
+Sleep 500ms
+Enter
+Sleep 800ms
+Type " ca"
+Sleep 1.5s
+Type "did we lose the tab/newline handling the old loop had?"
+Sleep 800ms
+Ctrl+S
+Sleep 2.5s
+
 # Suspend the editor; the review session keeps serving in the background.
 Type ":"
 Sleep 300ms
@@ -84,7 +104,7 @@ Enter
 Sleep 2s
 
 # Hand the review to Claude Code.
-Type `claude --model sonnet --effort low "Review this branch for correctness bugs and leave your findings as diffly review comments. Comments only -- do not modify files."`
+Type `claude --model sonnet --effort low "Review this branch for correctness bugs and leave each finding as its own diffly review comment. Comments only -- do not modify files."`
 Enter
 Sleep 5s
 # Folder-trust dialog on the fresh temp dir (no-op Enter if absent).
@@ -106,26 +126,26 @@ Type "fg"
 Enter
 Sleep 3s
 
-# The panel flags which files got notes (the pencil marker); open token.go and Claude's
-# comment renders right on the diff, in the box. token.go is where the standout
-# correctness bug lives (classify() on the empty string), so the prompt reliably lands a
-# note there; it is NOT a generated file, so -- unlike schema_gen.go -- diffly renders
-# its diff (and the comment) rather than the generated-file placeholder. If a re-record
-# ever puts no note on token.go, the :Diffly comments list below still proves them out.
+# Walk the notes directly: ]C jumps to the next inline comment -- yours and Claude's,
+# review-wide in document order (DEV-34) -- each one rendered right on the diff, in the
+# box. Also more re-record-proof than the old "search for token.go in the panel" scene:
+# it lands on whichever files actually got notes instead of betting on a specific one,
+# and the human draft above plus the two seeded bugs (token.go's classify(""),
+# render.go's make(len)+append) keep at least two stops in two files on any run. The
+# cursor wakes up parked on the human draft's own line, so every press below visibly
+# moves: Claude's note(s) first, then the wrap swings back around.
 Type ":"
 Sleep 300ms
-Type@30ms `" open a flagged file -- Claude's comment renders inline on the diff`
+Type@30ms `" ]C -- walk every note, yours and Claude's, across files`
 Sleep 2.2s
 Escape
 Sleep 400ms
-Type " e"
-Sleep 800ms
-Type "gg"
-Type "/token.go"
-Enter
-Sleep 700ms
-Enter
-Sleep 4.5s
+Type "]C"
+Sleep 4s
+Type "]C"
+Sleep 4s
+Type "]C"
+Sleep 4s
 
 # The same notes as one list, each tagged [@agent].
 Type ":"
