@@ -487,7 +487,7 @@ end
 --- cursor placement (`]c`-style jumps) and would yank the cursor away right after the
 --- user typed a comment. `refresh_comments` is an OPTIONAL View-contract method: fake
 --- views in session tests implement it, placeholder-only flows may not.
-function Session:_refresh_comment_render()
+function Session:refresh_comment_render()
   if self._view.refresh_comments then
     self._view:refresh_comments()
   end
@@ -497,7 +497,7 @@ end
 --- coordinate space: "head" (the default) is new-side lines; "base" resolves through
 --- the view's own base mapping (side-by-side's left window, unified's hunk walk) so the
 --- cursor lands where base-side comments actually render. Optional-method delegation,
---- same shape as `_refresh_comment_render`: views that can place a cursor implement it,
+--- same shape as `refresh_comment_render`: views that can place a cursor implement it,
 --- placeholder/fake views simply don't.
 ---@param line integer
 ---@param side "base"|"head"|nil
@@ -552,7 +552,7 @@ function Session:add_comment(path, opts)
     author = opts.author,
   })
   state.save(self.state)
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
   return thread, nil
 end
@@ -567,7 +567,7 @@ function Session:update_comment(path, id, body)
     return nil
   end
   state.save(self.state)
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
   return thread
 end
@@ -585,7 +585,7 @@ function Session:reply_comment(path, id, body, opts)
     return nil
   end
   state.save(self.state)
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
   return message
 end
@@ -598,7 +598,7 @@ function Session:delete_comment(path, id)
     return false
   end
   state.save(self.state)
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
   return true
 end
@@ -635,7 +635,7 @@ end
 --- being looked at, not review data.
 function Session:toggle_comments_collapsed()
   self.comments_collapsed = not self.comments_collapsed
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
 end
 
@@ -646,7 +646,7 @@ end
 ---@param by_path table<string, diffly.RemoteThread[]>
 function Session:set_remote_threads(by_path)
   self.remote_threads = by_path
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
 end
 
@@ -712,7 +712,7 @@ function Session:remove_submitted(items)
     comments.delete(self.state, item.thread.path, item.thread.id)
   end
   state.save(self.state)
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
 end
 
@@ -721,7 +721,7 @@ end
 --- `toggle_comments_collapsed`.
 function Session:toggle_remote_resolved()
   self.show_resolved_remote = not self.show_resolved_remote
-  self:_refresh_comment_render()
+  self:refresh_comment_render()
   self:_notify()
 end
 
@@ -1210,6 +1210,14 @@ function Session:set_mode(mode)
   end
 
   old_view:close()
+
+  -- The open-before-close overlap above means the incoming view rendered its comments
+  -- while the outgoing view's windows still held part of the tabpage -- a transiently
+  -- narrow width, and comment wrapping is width-dependent (ui/comments.lua
+  -- `wrap_width`). Repaint synchronously now that the final geometry exists; leaving it
+  -- to the debounced WinResized re-wrap would flash mis-wrapped comments for a beat
+  -- (and made the unified comments golden nondeterministic).
+  self:refresh_comment_render()
 
   self:_notify()
 end

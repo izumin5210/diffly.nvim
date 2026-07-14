@@ -714,6 +714,10 @@ T["set_mode(): opens the new view via view_factory and reopens current_path BEFO
     { event = "open", mode = "sidebyside", path = "src/one.lua" },
     { event = "open", mode = "unified", path = "src/one.lua" },
     { event = "close", mode = "sidebyside" },
+    -- The trailing comment repaint is part of the contract too: the incoming view
+    -- rendered while the outgoing view's windows still held part of the tabpage, so its
+    -- width-dependent comment wrapping needs one repaint at the final geometry.
+    { event = "refresh_comments", mode = "unified" },
   }, "view-ownership contract: the new view opens current_path before the old view closes")
 
   child.stop()
@@ -735,7 +739,12 @@ T["set_mode(): with no current_path, only closes+recreates the view (no reopen)"
 
   set_mode(child, "unified")
 
-  eq(view_log(child), { { event = "close", mode = "sidebyside" } })
+  eq(view_log(child), {
+    { event = "close", mode = "sidebyside" },
+    -- The post-switch comment repaint runs unconditionally; with nothing shown the fake
+    -- (like the real views) treats it as a no-op beyond logging.
+    { event = "refresh_comments", mode = "unified" },
+  })
   eq(session_field(child, "current_path"), nil)
 
   child.stop()

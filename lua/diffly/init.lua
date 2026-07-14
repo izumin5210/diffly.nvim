@@ -37,8 +37,11 @@ local M = {}
 ---@field panel diffly.Panel
 ---@field origin_tab integer  -- tabpage handle the user was on before this review opened
 ---@field refresh_timer uv.uv_timer_t?             -- BufWritePost/FocusGained debounce
+---@field rewrap_timer uv.uv_timer_t?              -- WinResized/VimResized debounce (comment
+--- re-wrap only -- see `debounced_rewrap`); separate from `refresh_timer` so a resize
+--- burst can never swallow or postpone a pending full refresh, and vice versa
 ---@field remote_fetch diffly.FetchHandle?         -- in-flight review-thread fetch, if any;
---- cancelled in `close_entry` right after the timer, same teardown discipline
+--- cancelled in `close_entry` right after the timers, same teardown discipline
 
 --- The session registry itself: one entry per open review, keyed by the dedicated
 --- viewer tabpage's handle. Underscore-prefixed, in the same spirit as
@@ -174,17 +177,19 @@ local function close_tabpage_safe(tab)
 end
 
 ---@param entry diffly.init.Entry
-local function stop_entry_timer(entry)
-  if not entry.refresh_timer then
+---@param field "refresh_timer"|"rewrap_timer"
+local function stop_entry_timer(entry, field)
+  local timer = entry[field]
+  if not timer then
     return
   end
   pcall(function()
-    entry.refresh_timer:stop()
+    timer:stop()
   end)
   pcall(function()
-    entry.refresh_timer:close()
+    timer:close()
   end)
-  entry.refresh_timer = nil
+  entry[field] = nil
 end
 
 --- Debounce concurrent `BufWritePost`/`FocusGained` refresh triggers into a single
@@ -196,15 +201,39 @@ end
 --- the same guarantee the old singleton implementation had.
 ---@param entry diffly.init.Entry
 local function debounced_refresh(entry)
-  stop_entry_timer(entry)
+  stop_entry_timer(entry, "refresh_timer")
   entry.refresh_timer = assert(vim.uv.new_timer())
   entry.refresh_timer:start(REFRESH_DEBOUNCE_MS, 0, function()
-    stop_entry_timer(entry)
+    stop_entry_timer(entry, "refresh_timer")
     vim.schedule(function()
       -- Local diff only, DELIBERATELY: this debounced path fires on every save and
       -- focus change, and must never turn into network traffic. Remote-thread refetches
       -- belong exclusively to explicit user actions (`manual_refresh` below).
       entry.session:refresh()
+    end)
+  end)
+end
+
+-- A resize repaint only re-wraps already-rendered comment text (no git, no network --
+-- `Session:refresh_comment_render` is pure extmark redrawing), so it debounces on a much
+-- shorter fuse than the full refresh: long enough to coalesce a drag-resize burst, short
+-- enough to feel immediate.
+local REWRAP_DEBOUNCE_MS = 50
+
+--- Debounce WinResized/VimResized into a single comment-layer repaint. Wrapped comment
+--- virt_lines are computed for a specific window width (`ui/comments.lua`'s
+--- `wrap_width`), so after a resize they are either truncated (window narrower) or
+--- wastefully narrow (window wider) until repainted. Same capture discipline as
+--- `debounced_refresh` above: `close_entry` closes this exact timer before dropping the
+--- entry, so a stale closure can never fire into a closed review.
+---@param entry diffly.init.Entry
+local function debounced_rewrap(entry)
+  stop_entry_timer(entry, "rewrap_timer")
+  entry.rewrap_timer = assert(vim.uv.new_timer())
+  entry.rewrap_timer:start(REWRAP_DEBOUNCE_MS, 0, function()
+    stop_entry_timer(entry, "rewrap_timer")
+    vim.schedule(function()
+      entry.session:refresh_comment_render()
     end)
   end)
 end
@@ -308,6 +337,32 @@ local function setup_entry_autocmds(tab, entry)
       debounced_refresh(entry)
     end,
   })
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = group,
+    desc = "diffly: re-wrap inline comments after a window resize",
+    callback = function()
+      -- v:event.windows lists every window whose size changed; only a change inside
+      -- this review's tabpage can invalidate its comment wrapping.
+      for _, win in ipairs(vim.v.event.windows or {}) do
+        if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_tabpage(win) == tab then
+          debounced_rewrap(entry)
+          return
+        end
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = group,
+    desc = "diffly: re-wrap inline comments after a terminal resize",
+    callback = function()
+      -- WinResized only reports the CURRENT tabpage's windows; a terminal resize
+      -- reshapes this review's windows even when it is in the background, so repaint
+      -- when it is the current tab (background tabs re-fire WinResized on entry).
+      if vim.api.nvim_get_current_tabpage() == tab then
+        debounced_rewrap(entry)
+      end
+    end,
+  })
 end
 
 ---@param tab integer
@@ -329,7 +384,8 @@ local function close_entry(tab)
   end
   entries[tab] = nil
 
-  stop_entry_timer(entry)
+  stop_entry_timer(entry, "refresh_timer")
+  stop_entry_timer(entry, "rewrap_timer")
   -- An in-flight thread fetch dies with the review; its completion re-resolves the
   -- registry anyway (already emptied above), so this is belt and suspenders.
   if entry.remote_fetch then

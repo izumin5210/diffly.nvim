@@ -576,6 +576,215 @@ T["render(): the exact local chunk shape (golden safety)"] = function()
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
+-- wrap_line() -----------------------------------------------------------------
+
+T["wrap_line(): returns lines within the budget untouched"] = function()
+  eq(ui_comments.wrap_line("short note", 80), { "short note" })
+  eq(ui_comments.wrap_line("", 10), { "" })
+end
+
+T["wrap_line(): breaks at the last word boundary, consuming the space"] = function()
+  eq(ui_comments.wrap_line("hello world", 8), { "hello", "world" })
+  eq(ui_comments.wrap_line("aaaa bbbb cc", 6), { "aaaa", "bbbb", "cc" })
+  -- The break lands exactly on a space: it is consumed, not carried over.
+  eq(ui_comments.wrap_line("abc def", 3), { "abc", "def" })
+end
+
+T["wrap_line(): CJK text breaks between characters by display cells"] = function()
+  -- 2-cell chars: a budget of 4 fits exactly two of them.
+  eq(ui_comments.wrap_line("あいうえお", 4), { "あい", "うえ", "お" })
+end
+
+T["wrap_line(): a spaceless overlong token falls back to character breaks"] = function()
+  eq(ui_comments.wrap_line("https://example.com/long", 10), { "https://ex", "ample.com/", "long" })
+end
+
+T["wrap_line(): mixed-width text stays within budget and loses nothing but break spaces"] = function()
+  local text = "fix: SHAペアの永続化を確認 see docs/design.md"
+  local segments = ui_comments.wrap_line(text, 12)
+  eq(#segments > 1, true)
+  for _, segment in ipairs(segments) do
+    eq(vim.api.nvim_strwidth(segment) <= 12, true, segment)
+  end
+  eq((table.concat(segments, ""):gsub(" ", "")), (text:gsub(" ", "")))
+end
+
+T["wrap_line(): a non-positive budget disables wrapping"] = function()
+  eq(ui_comments.wrap_line("whatever text", 0), { "whatever text" })
+  eq(ui_comments.wrap_line("whatever text", -3), { "whatever text" })
+end
+
+-- wrap_width() ------------------------------------------------------------------
+
+--- Run `fn` with `comments` config overridden, restoring the full options afterwards
+--- (tests share one process; leaked config would bleed into unrelated cases).
+---@param overrides table
+---@param fn fun()
+local function with_comments_config(overrides, fn)
+  local config = require("diffly.config")
+  local saved = vim.deepcopy(config.options)
+  config.setup({ comments = overrides })
+  local ok, err = pcall(fn)
+  config.options = saved
+  if not ok then
+    error(err)
+  end
+end
+
+---@param width integer
+---@return integer win, integer buf
+local function float_win(width)
+  local buf = vim.api.nvim_create_buf(false, true)
+  local win = vim.api.nvim_open_win(
+    buf,
+    false,
+    { relative = "editor", row = 0, col = 0, width = width, height = 3 }
+  )
+  return win, buf
+end
+
+T["wrap_width(): window text width capped by comments.max_width"] = function()
+  local win, buf = float_win(40)
+
+  -- Default cap is 100: this window itself is the binding constraint.
+  eq(ui_comments.wrap_width(win), 40)
+
+  with_comments_config({ max_width = 24 }, function()
+    eq(ui_comments.wrap_width(win), 24)
+  end)
+  with_comments_config({ max_width = false }, function()
+    eq(ui_comments.wrap_width(win), 40)
+  end)
+
+  vim.api.nvim_win_close(win, true)
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["wrap_width(): subtracts the gutter columns (textoff) from the budget"] = function()
+  -- virt_lines render in the text area only (they never overlap number/sign columns
+  -- without virt_lines_leftcol), so the budget must shrink with them.
+  local win, buf = float_win(40)
+  vim.wo[win].number = true
+  vim.wo[win].numberwidth = 4
+
+  eq(ui_comments.wrap_width(win), 36)
+
+  vim.api.nvim_win_close(win, true)
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["wrap_width(): nil when comments.wrap is disabled"] = function()
+  local win, buf = float_win(40)
+  with_comments_config({ wrap = false }, function()
+    eq(ui_comments.wrap_width(win), nil)
+  end)
+  vim.api.nvim_win_close(win, true)
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["wrap_width(): an invalid window degrades to the bare cap"] = function()
+  eq(ui_comments.wrap_width(nil), 100)
+  with_comments_config({ max_width = false }, function()
+    eq(ui_comments.wrap_width(nil), nil)
+  end)
+end
+
+-- render() + wrap ---------------------------------------------------------------
+
+T["render(): wrap_width wraps body lines; the gutter prefix is part of the budget"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = thread({ messages = { { body = "aaaa bbbb", created_at = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, {
+    collapsed = false,
+    wrap_width = 8, -- "│ " takes 2 cells, leaving 6 for text
+  })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  -- header / aaaa / bbbb / footer: one body line became two virt_lines.
+  eq(#lines, 4)
+  eq(lines[2][1][1], "│ ")
+  eq(lines[2][2][1], "aaaa")
+  eq(lines[3][1][1], "│ ")
+  eq(lines[3][2][1], "bbbb")
+  eq(lines[3][2][2], "DifflyCommentBody")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): wrap leaves header, footer and reply-author lines intact"] = function()
+  local buf, ns = scratch_buf(6)
+  local t = remote({
+    messages = {
+      { author = "alexandra-the-great-reviewer", body = "yes" },
+      { author = "bartholomew-kuma", body = "ok" },
+    },
+  })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, {
+    collapsed = false,
+    wrap_width = 10,
+  })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  -- header(@alexandra…) / yes / @bartholomew… / ok / footer: attribution lines longer
+  -- than the budget stay whole instead of wrapping mid-handle.
+  eq(#lines, 5)
+  eq(lines[1][2][1], "@alexandra-the-great-reviewer")
+  eq(lines[3][2][1], "@bartholomew-kuma")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+T["render(): a wrap budget consumed by the prefix degrades to no wrapping"] = function()
+  -- 2 cells leave nothing for text after "│ "; exploding into one-cell fragments would
+  -- be worse than the truncation wrapping exists to avoid, so wrapping just turns off.
+  local buf, ns = scratch_buf(6)
+  local t = thread({ messages = { { body = "aaaa bbbb", created_at = "x" } } })
+
+  ui_comments.render(buf, ns, { { row = 1, above = false, thread = t } }, {
+    collapsed = false,
+    wrap_width = 2,
+  })
+
+  local lines = marks(buf, ns)[1][4].virt_lines
+  eq(#lines, 3)
+  eq(lines[2][2][1], "aaaa bbbb")
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+-- compose() + wrap ---------------------------------------------------------------
+
+T["compose(): the float wraps regardless of the user's global 'wrap'"] = function()
+  -- The float is diffly-owned, so forcing wrap there never touches the user's code
+  -- windows -- and typing a long comment must look like it will render.
+  local saved = vim.o.wrap
+  vim.o.wrap = false
+
+  local win, _, _ = composed()
+  eq(vim.wo[win].wrap, true)
+  eq(vim.wo[win].linebreak, true)
+
+  vim.api.nvim_win_close(win, true)
+  vim.cmd("stopinsert")
+  vim.o.wrap = saved
+end
+
+T["compose(): comments.wrap = false leaves the float's 'wrap' to the user"] = function()
+  local saved = vim.o.wrap
+  vim.o.wrap = false
+
+  with_comments_config({ wrap = false }, function()
+    local win, _, _ = composed()
+    eq(vim.wo[win].wrap, false)
+    vim.api.nvim_win_close(win, true)
+    vim.cmd("stopinsert")
+  end)
+
+  vim.o.wrap = saved
+end
+
 T["render(): clear-and-redraw removes stale marks"] = function()
   local buf, ns = scratch_buf(6)
 

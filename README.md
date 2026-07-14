@@ -169,7 +169,7 @@ deleted lines).
 
 #### Comments
 
-![diffly.nvim local comments demo — adding a single-line and a visual-range comment through the markdown compose float, collapsing them to eol markers, copying them as an AI-agent prompt, and listing them in quickfix via :Diffly comments](assets/demo_comments.gif)
+![diffly.nvim local comments demo — adding a single-line and a visual-range comment through the markdown compose float (the long one rendering soft-wrapped to the window), collapsing them to eol markers, copying them as an AI-agent prompt, and listing them in quickfix via :Diffly comments](assets/demo_comments.gif)
 
 `<leader>ca` (real file buffers) / `ca` (diffly-owned buffers) opens a small markdown
 float anchored at the cursor — type the note, then save with **`:w`** / **`:wq`** or
@@ -185,6 +185,12 @@ inline right below the commented line (below the *deleted* lines it annotates, f
 base-side comment on removed code); `<leader>ct` collapses every comment down to a `✎`
 end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`
 count.
+
+Long comment bodies wrap to the window (capped at `comments.max_width` display cells, so
+they stay readable on wide screens) and re-wrap when the window is resized. The wrapping
+is display-only — copied prompts keep your original line breaks — and your own `'wrap'`
+setting in code windows is never touched. `comments = { wrap = false }` restores the
+old truncating behavior.
 
 Comments are stored next to the viewed marks, keyed to the same review, and **follow the
 code**: each comment remembers the text it was written against, and when the file changes
@@ -308,6 +314,11 @@ require("diffly").setup({
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
   viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (`S`/`:Diffly sweep`)
+  comments = {
+    wrap = true,          -- soft-wrap inline comment bodies (display only; code windows
+                          -- keep your own 'wrap' setting)
+    max_width = 100,      -- wrap width cap in display cells; false = window width alone
+  },
   panel = { width = 35 },
   keymaps = {
     panel = {

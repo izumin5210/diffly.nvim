@@ -6,16 +6,21 @@
 -- (tests/test_ui_comments.lua).
 
 local comments = require("diffly.comments")
+local config = require("diffly.config")
 local scratch = require("diffly.ui.scratch")
 
 local M = {}
 
--- Same-(row, above) virt_lines from different extmarks stack by CREATION ORDER, with the
--- later-created mark rendering closer to the top (empirically -- extmark `priority` has
--- no effect on virt_lines ordering, only on highlights). ui/unified.lua exploits this to
--- keep a base-side comment BELOW the deleted lines it annotates: comments render first,
--- the overlay second, in both `open()` and `refresh_comments()`. Pinned by the unified
--- comments golden.
+-- Same-(row, above) virt_lines from DIFFERENT extmarks have no reliable stacking order:
+-- the marktree keeps equal keys in insertion-dependent order that clear-and-redraw
+-- repaints reshuffle, and extmark `priority` has no effect on virt_lines at all
+-- (measured on 0.12.3 -- a lone base comment rendered above the deletion run annotating
+-- it even on a fresh paint). Cross-namespace stacking must therefore never rely on
+-- paint order; ui/unified.lua keeps deletion runs above the comment boxes annotating
+-- them by anchoring the runs on a DIFFERENT marktree key (below the preceding row --
+-- see its `compute_overlay`), which renders in the same visual gap deterministically.
+-- Threads sharing one anchor all live in THIS module's single namespace, painted in one
+-- placement-order pass per repaint, so their relative order is stable.
 
 ---@class diffly.ui.CommentPlacement
 ---@field row integer     -- 0-based buffer row to anchor at
@@ -84,6 +89,78 @@ function M.mapped_base_placements(threads, hunks, line_count)
   return placements
 end
 
+--- Display-only soft wrap of one body line into segments of at most `width` display
+--- cells. virt_lines cannot wrap natively ('wrap' applies to real buffer lines only;
+--- oversized virt_lines are truncated -- :h virt_lines_overflow), so this is THE wrap
+--- mechanism for inline comments; the stored comment body is never touched. Greedy fill
+--- by cell width (CJK chars are 2 cells), breaking at the last space when one exists in
+--- the current segment ('linebreak'-style, so English words stay whole) and between
+--- characters otherwise (Japanese text, URLs, long identifiers). Spaces are consumed by
+--- the break they land on, nothing else is dropped.
+---@param text string
+---@param width integer  -- display cells; < 1 disables wrapping
+---@return string[]
+function M.wrap_line(text, width)
+  if width < 1 or vim.api.nvim_strwidth(text) <= width then
+    return { text }
+  end
+
+  local segments = {}
+  -- `break_pos`: byte index of the last space in `segment` -- the preferred break point.
+  local segment, cells, break_pos = "", 0, nil
+  for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+    local char_cells = vim.api.nvim_strwidth(char)
+    if cells + char_cells > width and cells > 0 then
+      if char == " " then
+        -- The overflowing char IS a space: break exactly here and consume it.
+        table.insert(segments, segment)
+        segment, cells, break_pos = "", 0, nil
+        char = nil
+      elseif break_pos then
+        table.insert(segments, segment:sub(1, break_pos - 1))
+        local carried = segment:sub(break_pos + 1)
+        segment, cells, break_pos = carried, vim.api.nvim_strwidth(carried), nil
+      else
+        table.insert(segments, segment)
+        segment, cells = "", 0
+      end
+    end
+    if char then
+      if char == " " and cells > 0 then
+        break_pos = #segment + 1
+      end
+      segment = segment .. char
+      cells = cells + char_cells
+    end
+  end
+  if cells > 0 then
+    table.insert(segments, segment)
+  end
+  return segments
+end
+
+--- Effective wrap budget (total virt_line cells, gutter prefix included) for comments
+--- rendered into `win`, or nil when `comments.wrap` is off. Window TEXT width -- the
+--- cells virt_lines actually get: full width minus 'textoff' (number/sign/fold columns,
+--- which virt_lines never overlap without virt_lines_leftcol) -- capped by
+--- `comments.max_width`. An invalid/absent window degrades to the bare cap: better a
+--- sane fixed wrap than none at all.
+---@param win integer?
+---@return integer?
+function M.wrap_width(win)
+  local opts = config.get().comments or {}
+  if not opts.wrap then
+    return nil
+  end
+  local cap = type(opts.max_width) == "number" and opts.max_width or nil
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return cap
+  end
+  local info = vim.fn.getwininfo(win)[1]
+  local width = vim.api.nvim_win_get_width(win) - ((info and info.textoff) or 0)
+  return cap and math.min(width, cap) or width
+end
+
 --- Full clear-and-redraw of `ns` on `buf` -- never incremental, mirroring the overlay's
 --- own discipline so a stale mark can never linger. Expanded threads render as a BOXED
 --- block: a `╭─` header carrying the thread's identity -- `@author` (plus `[resolved]`)
@@ -94,12 +171,23 @@ end
 --- fuse into one uniform gutter block, and nothing would say which text is a local
 --- draft and which is already on the forge. Collapsed mode shrinks every thread to an
 --- eol indicator so line geometry stops jumping while still marking where comments live.
+--- Body lines soft-wrap to `opts.wrap_width` (total cells, `│ ` prefix included -- see
+--- `M.wrap_line`); header/footer/attribution lines never wrap (an author handle split
+--- mid-name reads worse than a truncated one). nil keeps the raw truncating render.
 ---@param buf integer
 ---@param ns integer
 ---@param placements diffly.ui.CommentPlacement[]
----@param opts { collapsed: boolean }
+---@param opts { collapsed: boolean, wrap_width: integer? }
 function M.render(buf, ns, placements, opts)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
+  -- Cells left for body text after the box gutter; nil (wrap off, or a window so narrow
+  -- the prefix eats the whole budget) renders body lines unwrapped, as before.
+  local body_width
+  if opts.wrap_width then
+    local available = opts.wrap_width - vim.api.nvim_strwidth("│ ")
+    body_width = available >= 1 and available or nil
+  end
 
   for _, placement in ipairs(placements) do
     local thread = placement.thread
@@ -141,10 +229,12 @@ function M.render(buf, ns, placements, opts)
           })
         end
         for _, line in ipairs(vim.split(message.body, "\n", { plain = true })) do
-          table.insert(chunks, {
-            { "│ ", marker_hl },
-            { line, "DifflyCommentBody" },
-          })
+          for _, segment in ipairs(body_width and M.wrap_line(line, body_width) or { line }) do
+            table.insert(chunks, {
+              { "│ ", marker_hl },
+              { segment, "DifflyCommentBody" },
+            })
+          end
         end
       end
       table.insert(chunks, { { "╰─", marker_hl } })
@@ -217,6 +307,13 @@ function M.compose(opts)
     title = " " .. opts.title .. " ",
     title_pos = "left",
   })
+  -- Typing must look like the eventual render: comments soft-wrap when shown
+  -- (`comments.wrap`), so the compose float wraps too -- diffly-owned window, never the
+  -- user's code windows, hence forcing it here doesn't step on their 'wrap' preference.
+  if config.get().comments.wrap then
+    vim.wo[win].wrap = true
+    vim.wo[win].linebreak = true
+  end
 
   local finished = false
   ---@param submitted boolean

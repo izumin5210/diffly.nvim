@@ -68,7 +68,9 @@ Sleep 800ms
 Ctrl+S
 Sleep 2.5s
 
-# Comment on a visual RANGE: select the loop, same key.
+# Comment on a visual RANGE: select the loop, same key. A deliberately LONG body: no
+# dedicated scene for it, but it lands visibly soft-wrapped to the split's width
+# (comments.wrap) instead of truncated at the window edge.
 Type ":"
 Sleep 300ms
 Type@30ms `" ...or select a range first -- same key from visual mode`
@@ -83,7 +85,7 @@ Type "Vk"
 Sleep 800ms
 Type " ca"
 Sleep 1.5s
-Type "extract this loop into a helper"
+Type "extract this loop into a helper so classify stays testable on its own -- Render is about to grow the same append-in-a-loop shape"
 Sleep 800ms
 Ctrl+S
 Sleep 2.5s

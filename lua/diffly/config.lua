@@ -39,6 +39,15 @@ M.defaults = {
   -- "*" does not). See `M.normalize_pattern_groups()` and `Session:pattern_groups()`/
   -- `Session:sweep_patterns()`.
   viewed_patterns = {},
+  -- Inline comment display (docs/design.md "Comments"). Neovim never wraps virt_lines
+  -- natively ('wrap' applies to real buffer lines only; virt_lines wider than the window
+  -- are truncated -- see :h virt_lines_overflow), so diffly wraps comment BODY text
+  -- itself at render time. Display-only: the stored comment is untouched (`cy`/`cY` copy
+  -- the original), and the code windows' own 'wrap' is never touched either. `wrap =
+  -- false` restores the truncating behavior everywhere, including the compose float.
+  -- `max_width` caps the wrap budget in display cells so comments stay readable in very
+  -- wide windows; `false` uncaps (the window width alone decides).
+  comments = { wrap = true, max_width = 100 },
   panel = { width = 35 },
   keymaps = {
     panel = {

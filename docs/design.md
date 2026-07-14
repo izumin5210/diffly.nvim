@@ -176,6 +176,17 @@ overlay, batch submission + draft adoption) are implemented.
   identity lives — `✎ draft` for local comments, `@author` (+`[resolved]`) for remote
   ones, on top of the distinct marker highlights. Both views render both sides; the
   panel shows a per-file `✎N` count (outdated included).
+- **Wrapping** (default on, `comments = { wrap = true, max_width = 100 }`): virt_lines
+  never wrap natively — the window `'wrap'` option only affects real lines, and
+  overlong virtual lines are truncated at the window edge — so body lines soft-wrap at
+  render time to the showing window's text width, capped by `max_width` (GitHub-column
+  readability on wide screens; `false` uncaps). Word-boundary breaks when the line has
+  spaces, display-cell character breaks otherwise (Japanese text, URLs); header, footer
+  and `@author` attribution lines never wrap. Display-only: the stored body is
+  untouched, so `cy`/`cY` copy the original text, and the user's own `'wrap'` setting
+  in code windows is never modified. Resizes re-wrap via a debounced repaint; each
+  side-by-side split wraps to its own width. The compose float follows `comments.wrap`
+  (window-local `wrap`+`linebreak`) so typing looks like the eventual render.
 - **Compose**: a small markdown float at the cursor, reused for editing. Submit with
   `:w`/`:wq` (the buffer is `acwrite` with a `BufWriteCmd`; Ctrl keys can be eaten by
   terminal flow control or multiplexer bindings, so vim's own save gesture must always

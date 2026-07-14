@@ -88,7 +88,7 @@ Both views implement `diffly.View`: `open(entry, spec)` / `close()`, built by
   getters, which degrade to empty data silently (a repaint racing teardown is not worth a
   warning). *Why*: module-level callback slots were process-global mutable state — two
   sessions clobbered each other.
-- `refresh_comments()` is an OPTIONAL View method: `Session:_refresh_comment_render`
+- `refresh_comments()` is an OPTIONAL View method: `Session:refresh_comment_render`
   calls it after every comment mutation/collapse toggle to repaint only the comment
   namespace. *Why not `open_file`*: reopening runs the view's cursor placement (`gg]c`),
   which would yank the cursor away right after the user typed a comment.
@@ -212,11 +212,29 @@ Three layers, all buffer-local **and `nowait`**:
   placed. Real buffers are stripped of the comment ns whenever the view stops showing
   them (same rule as `keymaps.universal`), and `close()` clears it from surviving shared
   owned buffers so the incoming view's repaint can't double-render.
-  **virt_lines ordering**: same-(row, above) virt_lines from different extmarks stack by
-  creation order (later-created on top; extmark `priority` has no effect on virt_lines) —
-  unified renders comments BEFORE the overlay, and `refresh_comments` repaints the
-  overlay again right after the comment layer, so a base-side comment always sits below
-  the deleted lines it annotates. Pinned by the unified comments golden.
+  **virt_lines ordering**: same-(row, above) virt_lines from different namespaces have
+  NO stable stacking order — the marktree keeps equal keys in insertion-dependent order
+  that clear-and-redraw repaints reshuffle, and extmark `priority` has no effect on
+  virt_lines at all (measured on 0.12.3: a lone base comment rendered above the deletion
+  run annotating it even on a fresh paint). Cross-namespace stacking therefore never
+  relies on paint order: unified anchors deletion runs BELOW the preceding row
+  (`compute_overlay`) — a distinct marktree key that renders in the same visual gap but
+  always before the comment's `(row, above)` mark — so a base-side comment sits below
+  the deleted lines it annotates deterministically, across any number of comment-only
+  repaints. Threads sharing one anchor live in one namespace, painted in one
+  placement-order pass, so their relative order is stable. Pinned by the unified
+  comments golden and test_unified's stacking case. Residual same-key collisions
+  (accepted, pre-existing): a deletion at the very top of the file (row 0, above) and a
+  deletion running to EOF (last row, below) share their keys with `base_target`'s own
+  edge clamps.
+  **Wrapping**: comment bodies soft-wrap at render time (`wrap_line`, display-cell
+  greedy fill, word-boundary preferred) to the showing window's text width capped by
+  `comments.max_width` — virt_lines never wrap natively, and the window `'wrap'` option
+  is deliberately untouched (the user's code windows keep their own setting). Display
+  only: stored bodies and `cy`/`cY` output are the original text. Width changes repaint
+  through `Session:refresh_comment_render` — the debounced WinResized/VimResized hook in
+  `init.lua`, plus a synchronous repaint at the end of `set_mode` (the open-before-close
+  overlap renders the incoming view at a transiently narrow width).
 - **Owned-buffer close() vs. shared names**: a binary/head-mode/oversized/generated
   placeholder's buffer name (`ui/scratch.lua`) has no per-view component, so sidebyside and
   unified can end up sharing the exact same buffer for the same file. `Session:set_mode`
