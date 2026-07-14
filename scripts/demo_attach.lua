@@ -18,6 +18,20 @@ local state = require("diffly.state")
 state._dir = vim.fn.tempname()
 state._legacy_dir = vim.fn.tempname()
 
+-- Window-dimming plugins that swap other windows' highlight namespaces break the
+-- side-by-side palette on camera: vimade replaces each unfocused pane's namespace with
+-- a dim copy computed from the GLOBAL groups (so the base pane reads native green the
+-- moment the comment compose float takes focus) and restores namespace 0 -- not the
+-- previous namespace -- afterwards, leaving the panes native for the rest of the
+-- recording. The demos exist to show diffly's own rendering, so force the dimmer off
+-- for the take; a no-op on machines without vimade/lazy.nvim. (Deliberately NOT worked
+-- around in diffly itself -- out-fighting plugins that stomp `w_ns_hl` per redraw isn't
+-- worth the arms race.)
+pcall(function()
+  require("lazy").load({ plugins = { "vimade" } })
+  vim.cmd("VimadeDisable")
+end)
+
 require("diffly").setup({
   viewed_patterns = {
     { name = "generated", patterns = { "*_gen.go" } },

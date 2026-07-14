@@ -103,6 +103,53 @@ local FAMILIES = {
 local LINE_BLEND = 0.2
 local TEXT_BLEND = 0.4
 
+-- Window highlight namespaces carrying the palette into the side-by-side panes
+-- (`nvim_win_set_hl_ns`, attached in ui/sidebyside.lua). Deliberately NOT
+-- 'winhighlight': winhl is a single shared per-window string that other plugins
+-- read-modify-write (modes.nvim-class cursorline movers, float managers), so a remap
+-- parked there can be silently dropped mid-session -- reverting both panes to native
+-- symmetric colors (green deleted lines in the base pane) -- and the vim.wo write it
+-- takes to set it leaks into the GLOBAL winhighlight default on top. A namespace has
+-- exactly one writer and takes precedence over any 'winhighlight' value.
+local DIFF_NS = {
+  old = vim.api.nvim_create_namespace("diffly.diff.old"),
+  new = vim.api.nvim_create_namespace("diffly.diff.new"),
+}
+
+-- Namespace-scoped definitions are LINKS to the derived DifflyDiff* globals (not copies
+-- of their attributes), so user overrides and the ColorScheme re-derivation flow through
+-- without the namespaces ever being rewritten.
+local DIFF_NS_LINKS = {
+  old = {
+    DiffAdd = "DifflyDiffOldLine",
+    DiffChange = "DifflyDiffOldLine",
+    DiffText = "DifflyDiffOldText",
+    DiffTextAdd = "DifflyDiffOldText",
+    DiffDelete = "DifflyDiffFiller",
+  },
+  new = {
+    DiffAdd = "DifflyDiffNewLine",
+    DiffChange = "DifflyDiffNewLine",
+    DiffText = "DifflyDiffNewText",
+    DiffTextAdd = "DifflyDiffNewText",
+    DiffDelete = "DifflyDiffFiller",
+  },
+}
+
+--- The two pane namespaces, their builtin diff groups already remapped -- populating
+--- here (idempotent, a handful of `nvim_set_hl` calls) rather than in `setup()` keeps
+--- the accessor safe for callers that never ran the full setup (unit tests driving a
+--- view directly).
+---@return { old: integer, new: integer }
+function M.diff_namespaces()
+  for side, links in pairs(DIFF_NS_LINKS) do
+    for builtin, target in pairs(links) do
+      vim.api.nvim_set_hl(DIFF_NS[side], builtin, { link = target })
+    end
+  end
+  return { old = DIFF_NS.old, new = DIFF_NS.new }
+end
+
 --- Compute and (default-)define the four derived groups. Line bg prefers the
 --- colorscheme's own DiffAdd/DiffDelete bg verbatim; without one it's synthesized from
 --- Normal's bg; without even that (fg-only schemes, transparent backgrounds) the whole

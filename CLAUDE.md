@@ -59,6 +59,13 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
 - `diffly://` buffers never get `'filetype'` set — a FileType event would trigger LSP
   `didOpen` on a custom URI, which can crash servers. Use `vim.treesitter.start` or
   `'syntax'` directly (`ui/scratch.lua` owns this).
+- The side-by-side palette rides diffly-owned window highlight namespaces
+  (`hl.diff_namespaces()` → `nvim_win_set_hl_ns`) — NEVER `'winhighlight'`. winhl is a
+  contended read-modify-write string other plugins rewrite (the remap silently reverts
+  to native symmetric colors mid-session — green deleted lines in the base pane, seen
+  in real recordings), and setting it through `vim.wo` leaks into the global winhl
+  default. Namespaces take precedence over any winhl value (pinned by
+  test_sidebyside's clobber test).
 - Viewed state is keyed per review (PR number, else branch pair) and invalidated by
   blob-SHA pair comparison — never by path alone (`state.lua`).
 - Bulk viewed operations (`sweep`, subtree toggle) save state and notify subscribers

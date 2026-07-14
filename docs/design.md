@@ -88,13 +88,20 @@ Line comments + AI prompt copy, deferred at v1, are now designed and phased in â
     *before* pane paints deleted lines green -- and intra-line emphasis inherits the
     colorscheme's `DiffText` hue (often blue). A reviewer's eye scans for "red = removed
     / green = added" (the reading delta and difftastic serve), so diffly remaps the diff
-    groups per window via `'winhighlight'`: everything in the left pane is red-family,
-    everything in the right pane green-family, alignment filler muted (`NonText`). The
-    colors are derived from the active colorscheme (`ui/hl.lua`), never hardcoded: line
-    bg = the scheme's own `DiffAdd`/`DiffDelete` bg, intra-line emphasis = that same hue
-    pushed toward the scheme's `Added`/`Removed` accent, so the emphasis always contrasts
-    with its line bg *and* stays in the right color family. Window-local, so the user's
-    diff colors outside diffly are untouched. Intra-line regions themselves come from
+    groups per window: everything in the left pane is red-family, everything in the
+    right pane green-family, alignment filler muted (`NonText`). The remap rides
+    diffly-owned window highlight namespaces (`nvim_win_set_hl_ns`), NOT `'winhighlight'`
+    -- winhl is a single shared per-window string that other plugins read-modify-write
+    (mode-colored-cursorline movers, float managers), so a remap parked there can be
+    silently dropped mid-session, reverting both panes to the native symmetric colors,
+    and the `vim.wo` write it takes leaks the remap into the global winhl default on
+    top; a namespace has exactly one writer and takes precedence over any
+    `'winhighlight'` value. Accepted cost: other plugins' winhl-based tweaks don't apply
+    inside the two panes. The colors are derived from the active colorscheme
+    (`ui/hl.lua`), never hardcoded: line bg = the scheme's own `DiffAdd`/`DiffDelete`
+    bg, intra-line emphasis = that same hue pushed toward the scheme's `Added`/`Removed`
+    accent, so the emphasis always contrasts with its line bg *and* stays in the right
+    color family. Window-scoped, so the user's diff colors outside diffly are untouched. Intra-line regions themselves come from
     `diffopt`'s `inline:char` (a Neovim 0.12 default, alongside `linematch:40`); a user
     who removed those flags gets line-level asymmetry only -- accepted, diffly never
     mutates global options.

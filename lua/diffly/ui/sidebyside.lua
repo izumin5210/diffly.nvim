@@ -11,6 +11,7 @@
 -- the identical contract.
 
 local git = require("diffly.git")
+local hl = require("diffly.ui.hl")
 local ui_comments = require("diffly.ui.comments")
 local ui_keymaps = require("diffly.ui.keymaps")
 local scratch = require("diffly.ui.scratch")
@@ -55,31 +56,6 @@ local function right_blob_buffer_name(entry, session_id)
   end
   return scratch.name(scratch.short_sha(entry.head_sha), session_id, entry.path)
 end
-
--- Window-local remap of native diff mode's highlight groups into diffly's derived
--- asymmetric palette (see ui/hl.lua for the full rationale). Native semantics
--- are symmetric -- a line missing on the other side is DiffAdd in whichever window has
--- it, so the before pane paints deleted lines green -- while a reviewer scans for
--- "red = removed / green = added". One color family per pane fixes that: everything
--- diff-related in the left (old) window is red-family, everything in the right (new)
--- window green-family, and filler rows are muted out of the scan on both sides.
--- 'winhighlight' is window-local, so the user's global diff colors are untouched.
-local WINHL = {
-  left = table.concat({
-    "DiffAdd:DifflyDiffOldLine",
-    "DiffChange:DifflyDiffOldLine",
-    "DiffText:DifflyDiffOldText",
-    "DiffTextAdd:DifflyDiffOldText",
-    "DiffDelete:DifflyDiffFiller",
-  }, ","),
-  right = table.concat({
-    "DiffAdd:DifflyDiffNewLine",
-    "DiffChange:DifflyDiffNewLine",
-    "DiffText:DifflyDiffNewText",
-    "DiffTextAdd:DifflyDiffNewText",
-    "DiffDelete:DifflyDiffFiller",
-  }, ","),
-}
 
 ---@class diffly.ui.SideBySide : diffly.View
 ---@field ctx diffly.ui.ViewCtx
@@ -220,10 +196,17 @@ function View:ensure_windows()
   vim.w[left].diffly = true
   vim.w[right].diffly = true
 
-  -- Both windows are owned (fresh splits, or the absorbed claim placeholder -- which
-  -- `close()` destroys like any other owned window), so the remap needs no restore path.
-  vim.wo[left].winhighlight = WINHL.left
-  vim.wo[right].winhighlight = WINHL.right
+  -- Remap native diff mode's symmetric highlight groups into the derived asymmetric
+  -- palette -- one color family per pane, so the base pane never paints deleted lines
+  -- green (docs/design.md "Side-by-side"). The remap rides diffly-owned window highlight
+  -- namespaces, NEVER 'winhighlight' (rationale in ui/hl.lua: winhl is a contended
+  -- read-modify-write string other plugins rewrite, and writing it leaks into the global
+  -- default). Both windows are owned (fresh splits, or the absorbed claim placeholder --
+  -- which `close()` destroys like any other owned window), so the attach needs no
+  -- restore path.
+  local ns = hl.diff_namespaces()
+  vim.api.nvim_win_set_hl_ns(left, ns.old)
+  vim.api.nvim_win_set_hl_ns(right, ns.new)
 
   self.left_win, self.right_win = left, right
   self.owned_wins = { left, right }

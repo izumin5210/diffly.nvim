@@ -161,6 +161,32 @@ T["re-derives on ColorScheme so a scheme switch never leaves a stale palette"] =
   eq(get_hl_resolved("DifflyDiffOldLine").bg, 0x331111)
 end
 
+T["diff_namespaces: builtin diff groups remap to the palette inside diffly-owned namespaces"] = function()
+  setup_hl()
+
+  -- The side-by-side panes attach these via nvim_win_set_hl_ns (ui/sidebyside.lua) --
+  -- namespace-scoped definitions have one owner and take precedence over 'winhighlight',
+  -- unlike the old winhl remap other plugins could silently rewrite. Each definition is
+  -- a LINK to the derived DifflyDiff* globals, so user overrides and ColorScheme
+  -- re-derivation flow through without the namespaces ever being rewritten.
+  local ns = child.lua_get([[require("diffly.ui.hl").diff_namespaces()]])
+  local function ns_link(nsid, name)
+    return child.lua_get(([[vim.api.nvim_get_hl(%d, { name = %q }).link]]):format(nsid, name))
+  end
+
+  eq(ns_link(ns.old, "DiffAdd"), "DifflyDiffOldLine")
+  eq(ns_link(ns.old, "DiffChange"), "DifflyDiffOldLine")
+  eq(ns_link(ns.old, "DiffText"), "DifflyDiffOldText")
+  eq(ns_link(ns.old, "DiffTextAdd"), "DifflyDiffOldText")
+  eq(ns_link(ns.old, "DiffDelete"), "DifflyDiffFiller")
+
+  eq(ns_link(ns.new, "DiffAdd"), "DifflyDiffNewLine")
+  eq(ns_link(ns.new, "DiffChange"), "DifflyDiffNewLine")
+  eq(ns_link(ns.new, "DiffText"), "DifflyDiffNewText")
+  eq(ns_link(ns.new, "DiffTextAdd"), "DifflyDiffNewText")
+  eq(ns_link(ns.new, "DiffDelete"), "DifflyDiffFiller")
+end
+
 T["unified overlay + filler groups link into the shared palette"] = function()
   setup_hl()
 
