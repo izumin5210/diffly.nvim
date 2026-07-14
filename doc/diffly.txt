@@ -13,6 +13,7 @@ CONTENTS                                                      *diffly-contents*
   8. Bulk viewed marking ..................... |diffly-bulk-viewed|
   9. Comments ................................ |diffly-comments|
   10. GitHub integration ..................... |diffly-github|
+  11. Agent bridge ........................... |diffly-agent|
 
 ==============================================================================
 1. Introduction                                           *diffly-introduction*
@@ -609,5 +610,47 @@ things: as a fallback source for the base branch (still beaten by `:Diffly
 always generated from local git against your current worktree/HEAD --
 reviewing someone else's PR still requires checking it out locally first
 (e.g. via `gh pr checkout`).
+
+==============================================================================
+11. Agent bridge                                                 *diffly-agent*
+
+`bin/diffly` (in the plugin directory) lets coding agents read and write the
+same review comments you see in the editor: >
+  diffly info                                # review metadata as JSON
+  diffly comments list [--remote]            # draft (and PR) threads
+  diffly comments add --file {path} --line {n} [--end-line {m}]
+                      [--side base|head] --body {text}|- [--author {name}]
+  diffly comments reply {id} --body {text}|-
+  diffly comments rm {id}
+  diffly navigate --file {path} [--line {n}]
+  diffly skill install [--dir {path}]
+<
+Run it from inside the repository under review. Output is JSON on stdout,
+errors on stderr; exit codes: 0 ok, 1 error, 2 `navigate` without a live
+editor.
+
+Live first ~
+The CLI finds a running Neovim that holds this repository's review -- an
+explicit `--server {addr}`, the hosting terminal's `$NVIM`, or a scan of
+live instances -- and performs every operation inside it over RPC: writes
+render in the open UI immediately and never race the editor's own saves.
+Without a live session it operates on the persisted review state through
+the same plugin code; `--headless` forces that path. A Ctrl-Z-suspended
+editor still answers: the Neovim core runs as a separate server process,
+only the TUI sleeps.
+
+Agent comments are normal drafts ~
+Messages written through the CLI carry an author (default "agent"): they
+render as `✎ draft @agent`, count in the panel's `✎N`, are tagged
+`[@agent]` in `:Diffly comments`, re-anchor when the code moves, and submit
+with the rest of your review (|diffly-comments|). Deliberately not exposed
+to agents: marking files viewed, and `:Diffly submit`.
+
+Agent skill ~
+`diffly skill install` writes a ready-made Claude Code skill to
+`~/.claude/skills/diffly-review/` (or `--dir {path}`, e.g. a project's
+`.claude/skills`), with this checkout's absolute `bin/diffly` path baked
+in. Reinstall after moving the plugin directory; the file is a generated
+artifact and is simply overwritten.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

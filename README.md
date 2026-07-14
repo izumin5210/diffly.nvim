@@ -235,7 +235,7 @@ vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
 
 ## Agent bridge
 
-![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, an agent adding two review comments through bin/diffly against the still-running session, and fg bringing the editor back with the notes already rendered inline, attributed @agent](assets/demo_agent.gif)
+![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, a real Claude Code session (Sonnet, low effort) loading the diffly-review skill and leaving a review finding through bin/diffly against the still-running session, then fg bringing the editor back and opening the flagged file to show the agent's comment rendered inline as a boxed ✎ draft @agent note on the diff, also listed and tagged [@agent] in :Diffly comments](assets/demo_agent.gif)
 
 `bin/diffly` gives coding agents the same review comments you see in the editor — no
 GitHub round-trip, no copy-paste:
@@ -262,6 +262,24 @@ the panel, tagged `[@agent]` in `:Diffly comments`, re-anchored when the code mo
 submitted with the rest of your review. Deliberately not exposed: marking files viewed
 (always a human action) and submitting reviews (posting under your GitHub identity is
 your call).
+
+### Agent skill
+
+A ready-made [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills)
+that teaches this workflow — read the human's comments as a work queue, reply to
+addressed threads, leave attributed findings, never touch viewed marks or submission —
+ships with the plugin. Install it with the CLI itself (the plugin path below is where
+lazy.nvim puts it; adjust for your plugin manager):
+
+```sh
+~/.local/share/nvim/lazy/diffly.nvim/bin/diffly skill install
+# or into one project only:
+~/.local/share/nvim/lazy/diffly.nvim/bin/diffly skill install --dir .claude/skills
+```
+
+The installed `SKILL.md` has that checkout's absolute `bin/diffly` path baked in, so
+agents need nothing on `$PATH`; re-run `skill install` if the plugin directory moves.
+(`bin/diffly` uses an `env -S` shebang — on Linux this needs coreutils ≥ 8.30.)
 
 ## Configuration
 
