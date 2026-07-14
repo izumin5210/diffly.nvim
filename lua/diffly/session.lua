@@ -1009,6 +1009,177 @@ function Session:prev_file(before_path)
   return order[((start_idx - 2) % n) + 1]
 end
 
+---@class diffly.session.CommentJumpFrom
+---@field path string?  -- reference file; nil, or a path a refresh dropped, degrades to
+--- "from the start" (next) / "from the end" (prev), mirroring next_file/prev_file
+---@field side "base"|"head"|nil  -- nil = "before the file's first line": the reference
+--- a panel row or a <Plug> mapping has (a file, but no cursor position inside it)
+---@field line integer?  -- 1-based cursor line in `side`'s own coordinates
+
+---@class diffly.session.CommentJumpTarget
+---@field path string
+---@field side "base"|"head"
+---@field line integer  -- the anchor's end line, in the side's own coordinates: exactly
+--- what `Session:focus_line` takes (the view does its own render-side mapping)
+
+--- `git diff` hunks for `entry`, exactly as the unified view computes them for rendering
+--- (same merge_base/right pair), degraded to {} on failure: comment navigation only uses
+--- them for ORDERING, where "unmapped" is an approximation, not an error worth notifying
+--- about on every keypress.
+---@param self diffly.Session
+---@param entry diffly.FileEntry
+---@return diffly.Hunk[]
+local function nav_hunks(self, entry)
+  local hunks = git.hunks(self.spec.repo, entry, self.spec.merge_base, self.spec.right)
+  return hunks or {}
+end
+
+-- `comments.base_target`'s line_count parameter only CLAMPS rows to the rendered buffer's
+-- end; for ordering, monotonicity is all that matters, so an infinite buffer keeps the
+-- walk exact without reading any file content (math.huge: LuaJIT has no math.maxinteger).
+local UNCLAMPED = math.huge
+
+--- Where `(side, line)` of `entry` falls in head/new-side document order. Base-side
+--- positions in a file that still has head content map through the same hunk walk the
+--- unified view renders with (`comments.base_target`); a deleted file's positions are
+--- base coordinates already ordered among themselves, mirroring `focus_line`'s "the
+--- buffer IS the base blob, no mapping" rule.
+---@param self diffly.Session
+---@param entry diffly.FileEntry?
+---@param hunks diffly.Hunk[]?  -- caller's lazy per-file cache; nil = not computed yet
+---@param side "base"|"head"
+---@param line integer
+---@return integer mapped, diffly.Hunk[]? hunks
+local function mapped_line(self, entry, hunks, side, line)
+  if side ~= "base" or not entry or not entry.head_sha then
+    return line, hunks
+  end
+  hunks = hunks or nav_hunks(self, entry)
+  return comments.base_target(hunks, UNCLAMPED, line).row + 1, hunks
+end
+
+--- The review-wide, document-ordered list of comment jump stops: every inline-rendered
+--- thread (`threads_for_render` minus outdated -- jumping to something that does not
+--- render would land the cursor on an unremarkable line), ordered by (file_order,
+--- mapped row), with same-position threads collapsed into ONE stop so a jump always
+--- changes position. The surviving representative is the first thread by (base side
+--- first, then creation order) -- the vertical order the boxes stack in.
+---@param self diffly.Session
+---@return { path: string, file_idx: integer, mapped: integer, side: "base"|"head", line: integer }[]
+local function comment_stops(self)
+  local stops = {}
+  for file_idx, path in ipairs(file_order(self)) do
+    local entry = self._entries_by_path[path]
+    local hunks
+    local file_stops = {}
+    for seq, thread in ipairs(self:threads_for_render(path)) do
+      if not thread.anchor.outdated then
+        local mapped
+        mapped, hunks = mapped_line(self, entry, hunks, thread.anchor.side, thread.anchor.end_line)
+        table.insert(file_stops, {
+          path = path,
+          file_idx = file_idx,
+          mapped = mapped,
+          side = thread.anchor.side,
+          line = thread.anchor.end_line,
+          rank = thread.anchor.side == "base" and 0 or 1,
+          seq = seq,
+        })
+      end
+    end
+    table.sort(file_stops, function(a, b)
+      if a.mapped ~= b.mapped then
+        return a.mapped < b.mapped
+      end
+      if a.rank ~= b.rank then
+        return a.rank < b.rank
+      end
+      return a.seq < b.seq
+    end)
+    for _, stop in ipairs(file_stops) do
+      local last = stops[#stops]
+      if not (last and last.file_idx == stop.file_idx and last.mapped == stop.mapped) then
+        table.insert(stops, stop)
+      end
+    end
+  end
+  return stops
+end
+
+---@param self diffly.Session
+---@param from diffly.session.CommentJumpFrom
+---@param dir 1|-1
+---@return diffly.session.CommentJumpTarget|nil
+local function comment_jump(self, from, dir)
+  local stops = comment_stops(self)
+  if #stops == 0 then
+    return nil
+  end
+
+  local order = file_order(self)
+  local key_idx
+  for i, path in ipairs(order) do
+    if path == from.path then
+      key_idx = i
+      break
+    end
+  end
+
+  local key_mapped = 0 -- side == nil: before the file's first line (real lines are >= 1)
+  if not key_idx then
+    -- Stale/absent reference: a sentinel before every stop (next) / after every stop
+    -- (prev), so the wrap below lands on the first/last one.
+    key_idx = dir == 1 and 0 or (#order + 1)
+  elseif from.side ~= nil then
+    key_mapped = mapped_line(self, self._entries_by_path[from.path], nil, from.side, from.line or 0)
+  end
+
+  local chosen
+  if dir == 1 then
+    for _, stop in ipairs(stops) do
+      if stop.file_idx > key_idx or (stop.file_idx == key_idx and stop.mapped > key_mapped) then
+        chosen = stop
+        break
+      end
+    end
+    chosen = chosen or stops[1] -- wrap around
+  else
+    for i = #stops, 1, -1 do
+      local stop = stops[i]
+      if stop.file_idx < key_idx or (stop.file_idx == key_idx and stop.mapped < key_mapped) then
+        chosen = stop
+        break
+      end
+    end
+    chosen = chosen or stops[#stops] -- wrap around
+  end
+
+  if chosen.file_idx == key_idx and chosen.mapped == key_mapped then
+    -- Wrapped all the way back to the reference position itself: nowhere to go.
+    return nil
+  end
+  return { path = chosen.path, side = chosen.side, line = chosen.line }
+end
+
+--- The next inline-rendered comment thread after `from`, in document order across the
+--- whole review -- (file_order, then rendered row, both sides interleaved through the
+--- hunk mapping), wrapping past the end. Returns nil when there is no position to move
+--- to at all: no rendered threads, or the only stop is `from`'s own position (wrapping
+--- to it would not move the cursor, so callers can say so instead).
+---@param from diffly.session.CommentJumpFrom
+---@return diffly.session.CommentJumpTarget|nil
+function Session:next_comment(from)
+  return comment_jump(self, from, 1)
+end
+
+--- The previous inline-rendered comment thread before `from`, mirroring `next_comment`
+--- in the opposite direction (wraps past the start).
+---@param from diffly.session.CommentJumpFrom
+---@return diffly.session.CommentJumpTarget|nil
+function Session:prev_comment(from)
+  return comment_jump(self, from, -1)
+end
+
 ---@return {viewed: integer, total: integer}
 function Session:progress()
   local viewed = 0
