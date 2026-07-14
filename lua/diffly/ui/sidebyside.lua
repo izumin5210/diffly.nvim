@@ -494,16 +494,20 @@ function View:refresh_comments()
 end
 
 --- Optional View-contract method (`Session:focus_line`, same family as
---- `refresh_comments`): focus the right (new-side) window and put the cursor on `line`,
---- clamped to the buffer end so a stale line number still lands somewhere sensible.
+--- `refresh_comments`): put the cursor on `line` and focus its window -- the LEFT
+--- window for side "base" (its buffer is base content 1:1, so the line needs no
+--- mapping), the right (new-side) one otherwise -- clamped to that buffer's end so a
+--- stale line number still lands somewhere sensible.
 ---@param line integer
-function View:focus_line(line)
-  if not (self.right_win and vim.api.nvim_win_is_valid(self.right_win)) then
+---@param side "base"|"head"|nil
+function View:focus_line(line, side)
+  local win = side == "base" and self.left_win or self.right_win
+  if not (win and vim.api.nvim_win_is_valid(win)) then
     return
   end
-  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(self.right_win))
-  vim.api.nvim_set_current_win(self.right_win)
-  vim.api.nvim_win_set_cursor(self.right_win, { math.max(1, math.min(line, count)), 0 })
+  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win))
+  vim.api.nvim_set_current_win(win)
+  vim.api.nvim_win_set_cursor(win, { math.max(1, math.min(line, count)), 0 })
 end
 
 --- `diffoff` where applicable, close every owned window, then wipe every diffly-owned

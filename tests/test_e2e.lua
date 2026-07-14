@@ -2141,9 +2141,7 @@ T["comments: quickfix <CR> jumps inside the diff view, honoring the anchor's sid
   eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
 
   -- The panel followed: its cursor row is the jumped-to file.
-  local panel_row = child.lua_get(
-    "vim.api.nvim_win_get_cursor(__diffly_entry().panel.win)[1]"
-  )
+  local panel_row = child.lua_get("vim.api.nvim_win_get_cursor(__diffly_entry().panel.win)[1]")
   eq(panel_lines(child)[panel_row]:find("mod.lua") ~= nil, true)
 
   -- Base side: lands in the LEFT base-blob window at the base line itself.

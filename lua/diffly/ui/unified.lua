@@ -505,15 +505,26 @@ end
 
 --- Optional View-contract method (`Session:focus_line`, same family as
 --- `refresh_comments`): focus the view window and put the cursor on `line`, clamped to
---- the buffer end so a stale line number still lands somewhere sensible.
+--- the buffer end so a stale line number still lands somewhere sensible. Side "base"
+--- resolves through the same hunk walk the comment layer renders with
+--- (`ui_comments.base_target`), so the cursor lands exactly where a base-side thread's
+--- virt_lines sit; a deleted file needs no mapping (the buffer IS the base blob), and a
+--- placeholder render (`shown == nil`) degrades to the plain clamp.
 ---@param line integer
-function View:focus_line(line)
+---@param side "base"|"head"|nil
+function View:focus_line(line, side)
   if not (self.win and vim.api.nvim_win_is_valid(self.win)) then
     return
   end
-  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(self.win))
+  local buf = vim.api.nvim_win_get_buf(self.win)
+  local count = vim.api.nvim_buf_line_count(buf)
+  local target = line
+  local shown = self.shown
+  if side == "base" and shown and not shown.deleted and shown.buf == buf then
+    target = ui_comments.base_target(shown.hunks, count, line).row + 1
+  end
   vim.api.nvim_set_current_win(self.win)
-  vim.api.nvim_win_set_cursor(self.win, { math.max(1, math.min(line, count)), 0 })
+  vim.api.nvim_win_set_cursor(self.win, { math.max(1, math.min(target, count)), 0 })
 end
 
 --- Closes the owned window (docs/architecture.md "View contract"), releases whatever real buffer
