@@ -186,6 +186,12 @@ base-side comment on removed code); `<leader>ct` collapses every comment down to
 end-of-line marker when the inline text gets in the way. The panel shows a per-file `✎N`
 count.
 
+Long comment bodies wrap to the window (capped at `comments.max_width` display cells, so
+they stay readable on wide screens) and re-wrap when the window is resized. The wrapping
+is display-only — copied prompts keep your original line breaks — and your own `'wrap'`
+setting in code windows is never touched. `comments = { wrap = false }` restores the
+old truncating behavior.
+
 Comments are stored next to the viewed marks, keyed to the same review, and **follow the
 code**: each comment remembers the text it was written against, and when the file changes
 — new commits, or an AI agent rewriting it mid-review — the anchor is re-located by
@@ -308,6 +314,11 @@ require("diffly").setup({
   auto_advance = true,    -- jump to next un-viewed file after marking
   icons = true,           -- use mini.icons / nvim-web-devicons when present
   viewed_patterns = {},   -- glob pattern GROUPS for bulk-viewed marking (`S`/`:Diffly sweep`)
+  comments = {
+    wrap = true,          -- soft-wrap inline comment bodies (display only; code windows
+                          -- keep your own 'wrap' setting)
+    max_width = 100,      -- wrap width cap in display cells; false = window width alone
+  },
   panel = { width = 35 },
   keymaps = {
     panel = {

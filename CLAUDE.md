@@ -74,10 +74,20 @@ tabline, and icon providers (goldens run with icons off, `showtabline=0`).
   `session.lua`'s build/refresh re-anchor pass — render code never writes state. Outdated
   threads never render inline (panel `✎N` + `:Diffly comments` are the discoverability
   channels).
-- Same-position virt_lines stack by extmark creation order (`priority` has no effect on
-  them): unified renders comments before the overlay, and `refresh_comments` repaints the
-  overlay right after the comment layer, to keep deleted lines above the comments
-  annotating them. Don't reorder those calls; the unified comments golden pins this.
+- Same-position virt_lines from different namespaces have NO stable stacking order
+  (`priority` has no effect on them; the marktree reshuffles equal keys across
+  clear-and-redraw repaints — measured on 0.12.3). Never make cross-namespace stacking
+  depend on paint order: unified anchors deletion runs BELOW the preceding row
+  (`compute_overlay`), a distinct marktree key that renders in the same visual gap but
+  deterministically above the comment box's `(row, above)` mark. Pinned by the unified
+  comments golden and test_unified's stacking case.
+- Comment bodies soft-wrap at render time to the showing window's width capped by
+  `comments.max_width` (`ui/comments.lua` `wrap_line`/`wrap_width`) — virt_lines never
+  wrap natively, and the window `'wrap'` option is never touched (code windows keep the
+  user's setting). Display-only: stored bodies and `cy`/`cY` output stay original. Width
+  changes repaint via `Session:refresh_comment_render`: the debounced
+  WinResized/VimResized hook in `init.lua` plus a synchronous repaint at the end of
+  `set_mode` (the open-before-close overlap opens the new view transiently narrow).
 - Remote review threads are session-held and read-only — never written into the
   persisted ReviewState. The views render them through `threads_for_render`; cursor
   actions read `state.comments` only.
