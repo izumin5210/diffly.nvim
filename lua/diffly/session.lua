@@ -1211,6 +1211,14 @@ function Session:set_mode(mode)
 
   old_view:close()
 
+  -- The open-before-close overlap above means the incoming view rendered its comments
+  -- while the outgoing view's windows still held part of the tabpage -- a transiently
+  -- narrow width, and comment wrapping is width-dependent (ui/comments.lua
+  -- `wrap_width`). Repaint synchronously now that the final geometry exists; leaving it
+  -- to the debounced WinResized re-wrap would flash mis-wrapped comments for a beat
+  -- (and made the unified comments golden nondeterministic).
+  self:refresh_comment_render()
+
   self:_notify()
 end
 
