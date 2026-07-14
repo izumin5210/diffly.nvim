@@ -289,7 +289,7 @@ T["modified file: two &diff windows, left is an owned non-modifiable buffer, rig
   eq(win_bufopt(child, "right_win", "modifiable"), true)
 end
 
-T["both windows remap native diff groups asymmetrically via 'winhighlight'"] = function()
+T["both windows carry the asymmetric palette via diffly-owned window highlight namespaces"] = function()
   local built = build(child, "worktree")
   local entry = entry_by_path(built.entries, paths.modified)
 
@@ -298,18 +298,61 @@ T["both windows remap native diff groups asymmetrically via 'winhighlight'"] = f
 
   -- Native diff mode's group semantics are symmetric ("lines missing on the other side"
   -- are DiffAdd in BOTH windows), so the before pane would paint deleted lines green.
-  -- The window-local remap gives each pane one color family: left/old = red, right/new =
-  -- green, fillers muted out of the scan (docs/design.md "Side-by-side").
-  eq(
-    child.lua_get([[vim.wo[_G.__view.left_win].winhighlight]]),
-    "DiffAdd:DifflyDiffOldLine,DiffChange:DifflyDiffOldLine,"
-      .. "DiffText:DifflyDiffOldText,DiffTextAdd:DifflyDiffOldText,DiffDelete:DifflyDiffFiller"
-  )
-  eq(
-    child.lua_get([[vim.wo[_G.__view.right_win].winhighlight]]),
-    "DiffAdd:DifflyDiffNewLine,DiffChange:DifflyDiffNewLine,"
-      .. "DiffText:DifflyDiffNewText,DiffTextAdd:DifflyDiffNewText,DiffDelete:DifflyDiffFiller"
-  )
+  -- The per-window highlight namespace gives each pane one color family: left/old = red,
+  -- right/new = green, fillers muted out of the scan (docs/design.md "Side-by-side").
+  local ns = child.lua_get([[require("diffly.ui.hl").diff_namespaces()]])
+  eq(child.lua_get([[vim.api.nvim_win_get_hl_ns(_G.__view.left_win)]]), ns.old)
+  eq(child.lua_get([[vim.api.nvim_win_get_hl_ns(_G.__view.right_win)]]), ns.new)
+end
+
+T["regression: the palette never touches 'winhighlight' -- neither the panes' nor the global default"] = function()
+  -- The palette used to ride window-local 'winhighlight', which broke two ways: the
+  -- vim.wo write behaves like :set and leaked each pane's remap into the GLOBAL default
+  -- (every window created afterwards -- floats, user splits -- inherited a diff remap),
+  -- and winhl itself is a contended read-modify-write string that other plugins
+  -- (modes.nvim-class cursorline movers, float managers) rewrite, silently reverting the
+  -- panes to native symmetric colors mid-session.
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  local winhl = function(target)
+    return child.lua_get(
+      ([[vim.api.nvim_get_option_value("winhighlight", { %s })]]):format(target)
+    )
+  end
+  eq(winhl("win = _G.__view.left_win"), "")
+  eq(winhl("win = _G.__view.right_win"), "")
+  eq(winhl('scope = "global"'), "")
+end
+
+T["regression: rendering survives another plugin clobbering 'winhighlight'"] = function()
+  -- What broke the recorded demos: a winhl-writing plugin dropped the palette's remap
+  -- and both panes reverted to native symmetric colors. The namespace attach takes
+  -- precedence over ANY 'winhighlight' value, so a clobber must not change one cell.
+  child.lua([[require("diffly.ui.hl").setup()]])
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  view_open(child, built.spec, entry)
+
+  local before = child.get_screenshot()
+  child.lua([[
+    vim.api.nvim_set_option_value(
+      "winhighlight",
+      "",
+      { scope = "local", win = _G.__view.left_win }
+    )
+    vim.api.nvim_set_option_value(
+      "winhighlight",
+      "DiffAdd:ErrorMsg,DiffText:ErrorMsg,CursorLine:Visual",
+      { scope = "local", win = _G.__view.right_win }
+    )
+  ]])
+  eq(child.get_screenshot(), before)
 end
 
 T["added file: left window is an empty scratch buffer"] = function()
