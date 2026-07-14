@@ -490,7 +490,7 @@ function View:open(entry, spec)
   vim.api.nvim_set_current_win(self.win)
 end
 
---- Optional View-contract method (`Session:_refresh_comment_render`): repaint the
+--- Optional View-contract method (`Session:refresh_comment_render`): repaint the
 --- comment namespace of whatever this view currently shows -- no window churn, no cursor
 --- movement, exactly what a comment mutation or collapse toggle needs. The overlay is
 --- repainted right after, NOT because its data changed, but to restore the

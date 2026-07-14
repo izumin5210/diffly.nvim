@@ -88,7 +88,7 @@ Both views implement `diffly.View`: `open(entry, spec)` / `close()`, built by
   getters, which degrade to empty data silently (a repaint racing teardown is not worth a
   warning). *Why*: module-level callback slots were process-global mutable state — two
   sessions clobbered each other.
-- `refresh_comments()` is an OPTIONAL View method: `Session:_refresh_comment_render`
+- `refresh_comments()` is an OPTIONAL View method: `Session:refresh_comment_render`
   calls it after every comment mutation/collapse toggle to repaint only the comment
   namespace. *Why not `open_file`*: reopening runs the view's cursor placement (`gg]c`),
   which would yank the cursor away right after the user typed a comment.

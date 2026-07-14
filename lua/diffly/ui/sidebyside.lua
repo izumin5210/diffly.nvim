@@ -488,7 +488,7 @@ function View:open(entry, spec)
   self:focus_right_first_change()
 end
 
---- Optional View-contract method (`Session:_refresh_comment_render`): repaint ONLY the
+--- Optional View-contract method (`Session:refresh_comment_render`): repaint ONLY the
 --- comment namespace of whatever this view currently shows -- no window churn, no cursor
 --- movement, exactly what a comment mutation or collapse toggle needs.
 function View:refresh_comments()

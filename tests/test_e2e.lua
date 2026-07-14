@@ -2836,6 +2836,64 @@ T["submit: validates, reports kept-locally drafts, POSTs one review, refetches"]
   restore()
 end
 
+---------------------------------------------------------------------------------------
+-- comments: resize re-wrap (wrapped virt_lines are computed for a window width) ----------
+---------------------------------------------------------------------------------------
+
+T["comments: resizing the view re-wraps inline bodies after the debounce"] = function()
+  child.cmd("Diffly")
+  child.type_keys("]f")
+  eq(session_field(child, "current_path"), paths.modified)
+
+  child.lua([[vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+  child.type_keys([[\ca]])
+  local body = "aaaa bbbb cccc dddd eeee"
+  child.type_keys(body)
+  child.type_keys("<C-s>")
+
+  -- Reads the rendered body segments of the current buffer's comment marks.
+  child.lua([[
+    _G.__comment_bodies = function()
+      local view = __diffly_entry().session._view
+      local buf = vim.api.nvim_get_current_buf()
+      local bodies = {}
+      local marks = vim.api.nvim_buf_get_extmarks(buf, view.comment_ns, 0, -1, { details = true })
+      for _, m in ipairs(marks) do
+        for _, vl in ipairs(m[4].virt_lines or {}) do
+          if vl[2] and vl[2][2] == "DifflyCommentBody" then
+            table.insert(bodies, vl[2][1])
+          end
+        end
+      end
+      return bodies
+    end
+  ]])
+
+  -- The split is already narrow on the 80-col child (panel + two splits), so the body
+  -- may render pre-wrapped; only the resize-driven DELTA is this test's subject.
+  local initial = child.lua_get("#_G.__comment_bodies()")
+  eq(initial >= 1, true)
+
+  -- Shrink the window well under the current budget: WinResized -> the debounced
+  -- re-wrap repaints the comment layer for the new budget, no user action needed.
+  child.cmd("vertical resize 12")
+  eq(wait_child("#_G.__comment_bodies() > " .. initial), true, "the resize re-wrapped the body")
+
+  local budget =
+    child.lua_get([[require("diffly.ui.comments").wrap_width(vim.api.nvim_get_current_win())]])
+  local segments = child.lua_get("_G.__comment_bodies()")
+  for _, segment in ipairs(segments) do
+    -- Every segment fits the new budget ("│ " gutter is 2 of its cells)...
+    eq(vim.api.nvim_strwidth(segment) <= budget - 2, true, segment)
+  end
+  -- ...and wrapping lost nothing but the spaces the breaks landed on.
+  eq((table.concat(segments, ""):gsub(" ", "")), (body:gsub(" ", "")))
+
+  -- Growing the window back re-joins the body into a single segment.
+  child.cmd("vertical resize 40")
+  eq(wait_child("#_G.__comment_bodies() == 1"), true, "the grow re-joined the body")
+end
+
 T["submit: cancelling the event picker changes nothing; zero drafts just notifies"] = function()
   repo:git({ "remote", "add", "origin", "https://github.com/acme/widgets.git" })
   local head_oid = vim.trim(repo:git({ "rev-parse", "HEAD" }))
