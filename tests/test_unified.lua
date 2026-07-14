@@ -1220,6 +1220,22 @@ T["comments: a base thread on the replaced line maps through the hunks to the de
   eq(got[1][4].virt_lines_above, true)
 end
 
+T["comments: bodies soft-wrap to the wrap budget (comments.max_width)"] = function()
+  -- The view passes its own window's budget into ui_comments.render; capping max_width
+  -- well under the window width makes the expectation window-geometry-independent.
+  child.lua("require('diffly.config').setup({ comments = { max_width = 20 } })")
+  set_fake_threads({
+    [paths.modified] = { fake_thread(paths.modified, "head", 4, "aaaa bbbb cccc dddd eeee") },
+  })
+  local result = open(paths.modified)
+
+  local lines = comment_marks(result.buf)[1][4].virt_lines
+  -- header / two wrapped segments (20 cells minus the "│ " gutter = 18) / footer.
+  eq(#lines, 4)
+  eq(lines[2][2][1], "aaaa bbbb cccc")
+  eq(lines[3][2][1], "dddd eeee")
+end
+
 T["comments: outdated threads render nothing inline"] = function()
   set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "head", 4, "old", true) } })
   local result = open(paths.modified)

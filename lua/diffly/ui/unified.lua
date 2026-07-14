@@ -163,6 +163,7 @@ local function render_comments(self)
 
   ui_comments.render(shown.buf, self.comment_ns, placements, {
     collapsed = actions.comments_collapsed(),
+    wrap_width = ui_comments.wrap_width(self.win),
   })
 end
 

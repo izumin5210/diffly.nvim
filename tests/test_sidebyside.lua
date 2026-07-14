@@ -1118,6 +1118,27 @@ T["comments: base threads render into the left blob, head threads into the right
   eq(right[1][4].virt_lines[2][2][1], "head-side note")
 end
 
+T["comments: bodies soft-wrap per window (comments.max_width)"] = function()
+  local built = build(child, "worktree")
+  local entry = entry_by_path(built.entries, paths.modified)
+
+  new_view(child)
+  -- Capping max_width well under either split's width keeps the expectation
+  -- window-geometry-independent (each side computes its own window's budget).
+  child.lua("require('diffly.config').setup({ comments = { max_width = 20 } })")
+  child.lua("_G.__fake_threads = ...", {
+    { [paths.modified] = { fake_thread(paths.modified, "head", 4, "aaaa bbbb cccc dddd eeee") } },
+  })
+  view_open(child, built.spec, entry)
+
+  local right = comment_marks(child, buf_of(child, "right_win"))
+  local lines = right[1][4].virt_lines
+  -- header / two wrapped segments (20 cells minus the "│ " gutter = 18) / footer.
+  eq(#lines, 4)
+  eq(lines[2][2][1], "aaaa bbbb cccc")
+  eq(lines[3][2][1], "dddd eeee")
+end
+
 ---@param child_ table
 ---@param bufnr integer
 ---@param mode string

@@ -161,8 +161,8 @@ local function render_comments(self)
   local collapsed = actions.comments_collapsed()
 
   for _, target in ipairs({
-    { buf = shown.left_buf, side = "base" },
-    { buf = shown.right_buf, side = "head" },
+    { buf = shown.left_buf, side = "base", win = self.left_win },
+    { buf = shown.right_buf, side = "head", win = self.right_win },
   }) do
     if vim.api.nvim_buf_is_valid(target.buf) then
       local line_count = vim.api.nvim_buf_line_count(target.buf)
@@ -170,7 +170,9 @@ local function render_comments(self)
         target.buf,
         self.comment_ns,
         ui_comments.direct_placements(threads, target.side, line_count),
-        { collapsed = collapsed }
+        -- Each side wraps to its OWN window's budget: the two splits can differ in
+        -- width (gutter columns, an uneven manual resize).
+        { collapsed = collapsed, wrap_width = ui_comments.wrap_width(target.win) }
       )
     end
   end
