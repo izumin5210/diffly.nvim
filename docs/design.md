@@ -187,7 +187,12 @@ overlay, batch submission + draft adoption) are implemented.
 - **AI prompt copy**: difit-compatible — `path:L42` (or `:L42-L48`) + body, `=====`
   between comments for copy-all — to the unnamed register, best-effort to the clipboard.
 - **`:Diffly comments`**: every thread into quickfix (`[outdated]`/`[base]` markers, first
-  body line), rather than a bespoke list UI.
+  body line), rather than a bespoke list UI. `<CR>` in the quickfix window jumps *inside*
+  the diff view — the base window/mapped row for base-side threads, at the anchor's end
+  line where the thread renders — and degrades to the vanilla file jump whenever the
+  diffly context is gone (a foreign list, a closed review, a dropped path), so the list
+  stays useful for its whole quickfix-native lifetime (`:cnext`/`:cdo` stay vanilla —
+  there is no hook for them, and their batch semantics want real files anyway).
 - **Keys**: a `c` family (`ca/ce/cd/ct/cy/cY`) on diffly-owned buffers; the same family
   leader-prefixed everywhere else — on a real file buffer (where most comments get
   written) the universal layer is the only one allowed, so the primary gesture is

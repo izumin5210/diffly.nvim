@@ -493,13 +493,17 @@ function Session:_refresh_comment_render()
   end
 end
 
---- Put the cursor on `line` of whatever the view currently shows (new-side coordinates).
---- Optional-method delegation, same shape as `_refresh_comment_render`: views that can
---- place a cursor implement it, placeholder/fake views simply don't.
+--- Put the cursor on `line` of whatever the view currently shows. `side` picks the
+--- coordinate space: "head" (the default) is new-side lines; "base" resolves through
+--- the view's own base mapping (side-by-side's left window, unified's hunk walk) so the
+--- cursor lands where base-side comments actually render. Optional-method delegation,
+--- same shape as `_refresh_comment_render`: views that can place a cursor implement it,
+--- placeholder/fake views simply don't.
 ---@param line integer
-function Session:focus_line(line)
+---@param side "base"|"head"|nil
+function Session:focus_line(line, side)
   if self._view.focus_line then
-    self._view:focus_line(line)
+    self._view:focus_line(line, side)
   end
 end
 

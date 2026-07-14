@@ -1212,14 +1212,59 @@ function M.open(args)
   open_new(first)
 end
 
+--- The `<CR>` interception for the "diffly comments" quickfix list: jump INSIDE the
+--- diff view -- `open_file` + side-aware `focus_line`, landing on the anchor's END line
+--- where the thread's virt_lines render -- instead of vanilla quickfix's plain `:edit`
+--- of the worktree path. Everything resolves at press time through the tabpage registry
+--- (the list outlives any single review, so nothing may be captured), and anything
+--- stale degrades to the vanilla jump (`:[count]cc`, exactly what `<CR>` means in a
+--- quickfix window): a foreign list without our user_data (Neovim REUSES one quickfix
+--- buffer for every list, so this map outlives ours), no live session on this tabpage,
+--- or a path a refresh dropped from the review. The items point at real files, so the
+--- vanilla path keeps the list useful as a plain file list after the review closes.
+local function qf_comment_jump()
+  local idx = vim.api.nvim_win_get_cursor(0)[1]
+  local item = vim.fn.getqflist({ items = 1 }).items[idx]
+  local target = item
+      and type(item.user_data) == "table"
+      and item.user_data.diffly
+      and item.user_data
+    or nil
+
+  local entry = target and current_entry() or nil
+  local in_review = false
+  if entry then
+    for _, file in ipairs(entry.session.entries) do
+      if file.path == target.path then
+        in_review = true
+        break
+      end
+    end
+  end
+
+  if not in_review then
+    local ok, err = pcall(vim.cmd, idx .. "cc")
+    if not ok then
+      vim.notify(err --[[@as string]], vim.log.levels.ERROR)
+    end
+    return
+  end
+
+  entry.session:open_file(target.path)
+  entry.panel:set_cursor(target.path)
+  entry.session:focus_line(target.line, target.side)
+end
+
 --- `:Diffly comments`: every comment thread in the current review into the quickfix
 --- list -- the review-wide overview and the discoverability channel for outdated threads
 --- (which never render inline; see ui/comments.lua). One item per thread at its
---- last-known start line, first body line only, with `[outdated]`/`[base]` markers. A
---- base-side item's line number references BASE content while quickfix jumps into the
---- worktree file -- an accepted approximation, which is exactly what the `[base]` marker
---- flags. No dedicated comment-list UI: quickfix already does navigation, persistence
---- across the review, and :cdo-style batching for free.
+--- last-known start line, first body line only, with `[outdated]`/`[base]` markers.
+--- `<CR>` jumps inside the diff view (see `qf_comment_jump`); raw `:cc`/`:cnext`/`:cdo`
+--- keep vanilla semantics, where a base-side item's line number references BASE content
+--- while quickfix jumps into the worktree file -- an accepted approximation on that
+--- path, which is exactly what the `[base]` marker flags. No dedicated comment-list UI:
+--- quickfix already does navigation, persistence across the review, and :cdo-style
+--- batching for free.
 function M.comments()
   local entry = current_entry()
   if not entry then
@@ -1244,6 +1289,8 @@ function M.comments()
     table.insert(rows, {
       path = thread.path,
       lnum = thread.anchor.start_line,
+      side = thread.anchor.side,
+      jump_line = thread.anchor.end_line,
       seq = #rows,
       text = (author and ("[@" .. author .. "] ") or "")
         .. (thread.anchor.outdated and "[outdated] " or "")
@@ -1256,6 +1303,8 @@ function M.comments()
     table.insert(rows, {
       path = thread.path,
       lnum = thread.anchor.start_line,
+      side = thread.anchor.side,
+      jump_line = thread.anchor.end_line,
       seq = #rows,
       text = "[@"
         .. thread.messages[1].author
@@ -1283,6 +1332,9 @@ function M.comments()
       filename = vim.fs.joinpath(toplevel, row.path),
       lnum = row.lnum,
       text = row.text,
+      -- What `qf_comment_jump` needs for the side-aware landing; vanilla consumers
+      -- (`:cnext`, `:cdo`) never read it.
+      user_data = { diffly = true, path = row.path, side = row.side, line = row.jump_line },
     })
   end
 
@@ -1290,6 +1342,15 @@ function M.comments()
   -- Full-width at the very bottom of the viewer tab; the panel's winfixwidth/height keep
   -- its geometry intact.
   vim.cmd("botright copen")
+  -- Buffer-local + nowait like every diffly map. Attached to the quickfix buffer Neovim
+  -- reuses for every list, hence qf_comment_jump's press-time user_data guard instead of
+  -- teardown bookkeeping here.
+  vim.keymap.set("n", "<CR>", qf_comment_jump, {
+    buffer = vim.api.nvim_get_current_buf(),
+    nowait = true,
+    silent = true,
+    desc = "diffly: open the comment in the diff view",
+  })
 end
 
 --- `:Diffly submit`: every mappable local draft into ONE review on the PR

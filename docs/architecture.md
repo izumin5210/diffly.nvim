@@ -92,6 +92,11 @@ Both views implement `diffly.View`: `open(entry, spec)` / `close()`, built by
   calls it after every comment mutation/collapse toggle to repaint only the comment
   namespace. *Why not `open_file`*: reopening runs the view's cursor placement (`gg]c`),
   which would yank the cursor away right after the user typed a comment.
+- `focus_line(line, side?)` is OPTIONAL in the same family: the agent bridge's
+  `navigate` and the quickfix comment jump land the cursor through it. Side `"base"`
+  resolves through the view's own base geometry — side-by-side's left window (base
+  content 1:1), unified's `base_target` hunk walk — so a jump lands exactly where the
+  view renders base-side threads, never on an approximated worktree line.
 - The compose float (`ui/comments.lua`'s `M.compose`) is deliberately NOT a View: it is
   action-owned, opens `relative = "cursor"` (a keypress context is exactly where "the
   current window" is the right reference), and funnels every exit — submit key, `q`,
