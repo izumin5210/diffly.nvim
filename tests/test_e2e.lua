@@ -2095,6 +2095,169 @@ T["comments: `:Diffly comments` fills quickfix with [outdated]/[base] markers an
   eq(vim.tbl_contains(completions, "comments"), true)
 end
 
+--- Focus the quickfix window on the current tabpage (jumping moves focus into the diff
+--- view; tests that select a second item must come back first).
+---@param child_ table
+local function focus_qf(child_)
+  child_.lua([[
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "quickfix" then
+        vim.api.nvim_set_current_win(win)
+        return
+      end
+    end
+    error("no quickfix window on this tabpage")
+  ]])
+end
+
+T["comments: quickfix <CR> jumps inside the diff view, honoring the anchor's side"] = function()
+  child.cmd("Diffly")
+  -- A head-side thread ending at worktree line 4 and a base-side one on base line 7
+  -- (`return M`) -- sorted by start_line, so quickfix items 1 and 2 respectively.
+  child.lua(
+    [[
+      local path = ...
+      local session = __diffly_entry().session
+      session:add_comment(path, {
+        side = "head", start_line = 4, end_line = 4,
+        body = "head note", snapshot = { '  return "hello, world"' },
+      })
+      session:add_comment(path, {
+        side = "base", start_line = 7, end_line = 7,
+        body = "base note", snapshot = { "return M" },
+      })
+    ]],
+    { paths.modified }
+  )
+
+  child.cmd("Diffly comments")
+  eq(child.lua_get("vim.bo[vim.api.nvim_win_get_buf(0)].buftype"), "quickfix")
+
+  -- Head side: lands in the right (worktree) window, not a bare `:edit` of the path --
+  -- and on the anchor's END line, directly above where the thread's virt_lines render.
+  child.type_keys("<CR>")
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.bo.buftype"), "")
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+
+  -- The panel followed: its cursor row is the jumped-to file.
+  local panel_row = child.lua_get(
+    "vim.api.nvim_win_get_cursor(__diffly_entry().panel.win)[1]"
+  )
+  eq(panel_lines(child)[panel_row]:find("mod.lua") ~= nil, true)
+
+  -- Base side: lands in the LEFT base-blob window at the base line itself.
+  focus_qf(child)
+  child.lua("vim.api.nvim_win_set_cursor(0, { 2, 0 })")
+  child.type_keys("<CR>")
+  eq(vim.startswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), "diffly://"), true)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 7)
+
+  -- The quickfix window survives both jumps (vanilla `<CR>` keeps it open too).
+  focus_qf(child)
+end
+
+T["comments: quickfix <CR> in unified mode maps a base-side anchor through the hunks"] = function()
+  child.cmd("Diffly")
+  child.lua(
+    [[
+      __diffly_entry().session:add_comment((...), {
+        side = "base", start_line = 7, end_line = 7,
+        body = "base note", snapshot = { "return M" },
+      })
+    ]],
+    { paths.modified }
+  )
+  set_cursor(child, 5) -- src/mod.lua
+  child.type_keys("<CR>")
+  focus_panel(child)
+  child.type_keys("s")
+  eq(session_field(child, "mode"), "unified")
+
+  child.cmd("Diffly comments")
+  child.type_keys("<CR>")
+
+  -- Base line 7 (`return M`) sits below the added block: the hunk delta shifts it to
+  -- worktree line 11 -- the exact row the thread's virt_lines render at.
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 11)
+end
+
+T["comments: quickfix <CR> on an outdated thread still jumps (approximate landing)"] = function()
+  child.cmd("Diffly")
+  child.lua(
+    [[
+      __diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4,
+        body = "stale note", snapshot = { '  return "hello, world"' },
+      })
+    ]],
+    { paths.modified }
+  )
+  child.lua(
+    [[__diffly_entry().session.state.comments[(...)][1].anchor.outdated = true]],
+    { paths.modified }
+  )
+
+  child.cmd("Diffly comments")
+  child.type_keys("<CR>")
+
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+end
+
+T["comments: quickfix <CR> falls back to vanilla on a list without diffly user_data"] = function()
+  child.cmd("Diffly")
+  child.lua(
+    [[
+      __diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4,
+        body = "note", snapshot = { '  return "hello, world"' },
+      })
+    ]],
+    { paths.modified }
+  )
+  child.cmd("Diffly comments") -- attaches the <CR> map to the (reused) qf buffer
+
+  -- Replace the list with a foreign one through the same buffer/window: the map stays,
+  -- the guard must notice the items are not ours.
+  child.lua(
+    [[vim.fn.setqflist({ { filename = (...) .. "/README.md", lnum = 1, text = "foreign" } })]],
+    { repo.dir }
+  )
+  child.type_keys("<CR>")
+
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), "README.md"), true)
+end
+
+T["comments: quickfix <CR> after the review closes falls back to a plain file jump"] = function()
+  child.cmd("Diffly")
+  child.lua(
+    [[
+      __diffly_entry().session:add_comment((...), {
+        side = "head", start_line = 4, end_line = 4,
+        body = "note", snapshot = { '  return "hello, world"' },
+      })
+    ]],
+    { paths.modified }
+  )
+  child.cmd("Diffly comments")
+  child.cmd("Diffly close")
+  eq(is_open(child), false)
+
+  -- The list (and the qf buffer carrying our map) outlives the review by design --
+  -- quickfix IS the persistence. With no session on this tabpage the map degrades to
+  -- the vanilla jump: the plain worktree file at the item's own lnum.
+  child.cmd("botright copen")
+  child.lua("vim.api.nvim_win_set_cursor(0, { 1, 0 })")
+  child.type_keys("<CR>")
+
+  eq(vim.endswith(child.lua_get("vim.api.nvim_buf_get_name(0)"), paths.modified), true)
+  eq(child.lua_get("vim.bo.buftype"), "")
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(0)[1]"), 4)
+  eq(is_open(child), false)
+end
+
 --- Two deterministic comments on src/mod.lua for the rendering goldens: a head-side one
 --- under worktree line 4, and a base-side one on base line 4 (the deleted
 --- `  return "hello"`) -- which, in unified mode, must render at the same anchor as the

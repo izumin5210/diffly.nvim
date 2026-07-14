@@ -341,6 +341,30 @@ T["focus_line(): focuses the view window at the requested line, clamped to EOF"]
   )
 end
 
+T['focus_line(): side "base" maps base coordinates through the hunks onto display rows'] = function()
+  open(paths.modified)
+
+  -- Base line 4 is the deleted `  return "hello"`: it lands on its deletion run's
+  -- anchor row (0-based 3 -> line 4), sharing the comment layer's clamp rules -- the
+  -- cursor ends up exactly where a base-side thread's virt_lines render.
+  child.lua("vim.api.nvim_set_current_win(ctx.anchor)")
+  child.lua([[view:focus_line(4, "base")]])
+  eq(child.lua_get("vim.api.nvim_get_current_win()"), child.lua_get("view.win"))
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(view.win)[1]"), 4)
+
+  -- Base line 7 (`return M`) sits below the added block: the cumulative hunk delta
+  -- shifts it to worktree line 11.
+  child.lua([[view:focus_line(7, "base")]])
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(view.win)[1]"), 11)
+end
+
+T['focus_line(): side "base" on a deleted file needs no mapping -- the buffer IS the base blob'] = function()
+  open(paths.deleted)
+
+  child.lua([[view:focus_line(4, "base")]])
+  eq(child.lua_get("vim.api.nvim_win_get_cursor(view.win)[1]"), 4)
+end
+
 T["worktree mode: editing the real buffer then :write persists to disk"] = function()
   open(paths.modified)
   child.lua([[

@@ -39,8 +39,8 @@ local INSTALL_FAKES = [[
       refresh_comments = function(self)
         table.insert(_G.__log, { event = "refresh_comments", mode = self.mode })
       end,
-      focus_line = function(self, line)
-        table.insert(_G.__log, { event = "focus_line", mode = self.mode, line = line })
+      focus_line = function(self, line, side)
+        table.insert(_G.__log, { event = "focus_line", mode = self.mode, line = line, side = side })
       end,
     }
   end
@@ -1416,9 +1416,13 @@ T["focus_line(): delegates to the view; a view without the optional method is to
   child.lua("_G.__session:focus_line(7)")
   eq(view_log(child), { { event = "focus_line", mode = "sidebyside", line = 7 } })
 
+  -- The side selector (quickfix comment jumps) passes through verbatim.
+  child.lua([[_G.__session:focus_line(3, "base")]])
+  eq(view_log(child)[2], { event = "focus_line", mode = "sidebyside", line = 3, side = "base" })
+
   child.lua("_G.__session._view.focus_line = nil")
   child.lua("_G.__session:focus_line(2)")
-  eq(view_log(child), { { event = "focus_line", mode = "sidebyside", line = 7 } })
+  eq(#view_log(child), 2)
 
   child.stop()
   repo:destroy()
