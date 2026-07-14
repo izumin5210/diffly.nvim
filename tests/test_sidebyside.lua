@@ -301,8 +301,8 @@ T["both windows carry the asymmetric palette via diffly-owned window highlight n
   -- The per-window highlight namespace gives each pane one color family: left/old = red,
   -- right/new = green, fillers muted out of the scan (docs/design.md "Side-by-side").
   local ns = child.lua_get([[require("diffly.ui.hl").diff_namespaces()]])
-  eq(child.lua_get([[vim.api.nvim_win_get_hl_ns(_G.__view.left_win)]]), ns.old)
-  eq(child.lua_get([[vim.api.nvim_win_get_hl_ns(_G.__view.right_win)]]), ns.new)
+  eq(child.lua_get([[vim.api.nvim_get_hl_ns({ winid = _G.__view.left_win })]]), ns.old)
+  eq(child.lua_get([[vim.api.nvim_get_hl_ns({ winid = _G.__view.right_win })]]), ns.new)
 end
 
 T["regression: the palette never touches 'winhighlight' -- neither the panes' nor the global default"] = function()
@@ -319,9 +319,7 @@ T["regression: the palette never touches 'winhighlight' -- neither the panes' no
   view_open(child, built.spec, entry)
 
   local winhl = function(target)
-    return child.lua_get(
-      ([[vim.api.nvim_get_option_value("winhighlight", { %s })]]):format(target)
-    )
+    return child.lua_get(([[vim.api.nvim_get_option_value("winhighlight", { %s })]]):format(target))
   end
   eq(winhl("win = _G.__view.left_win"), "")
   eq(winhl("win = _G.__view.right_win"), "")
