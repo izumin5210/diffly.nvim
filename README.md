@@ -391,6 +391,12 @@ The unified view's `DifflyOverlayAdd` / `DifflyOverlayDelete` line highlights li
 the same palette. Every diffly group is defined with `default = true`, so defining your
 own version of any group (in your config or a colorscheme) always wins.
 
+Inside the two side-by-side panes the palette is applied through window highlight
+namespaces (`nvim_win_set_hl_ns`), which take precedence over `'winhighlight'` — so
+plugins (or config) that restyle windows via `'winhighlight'` won't affect those two
+panes, and can't knock the palette out either. Restyle the `DifflyDiff*` groups above
+instead.
+
 Intra-line emphasis comes from Neovim 0.12's default `diffopt` (`inline:char`, plus
 `linematch:40` for row alignment). diffly never mutates global options — if you removed
 those flags from your `diffopt`, side-by-side falls back to line-level coloring only.

@@ -31,7 +31,7 @@ warnings, not history trivia.
 | `lua/diffly/ui/keymaps.lua` | Keymap specs (diff/universal layers incl. the side-gated comment family), attach/detach lifecycle, ownership tokens. |
 | `lua/diffly/ui/scratch.lua` | All `diffly://` buffer naming/options/reuse + LSP-safe highlighting. |
 | `lua/diffly/ui/guard.lua` | `config.max_file_size` AND `config.collapse_generated` decisions + placeholder messages/`L` key, shared by both views (formerly `ui/size_guard.lua`, generalized once the generated-file guard needed the same shape). |
-| `lua/diffly/ui/hl.lua` | Highlight groups: `default = true` links + the derived asymmetric diff palette (re-derived on `ColorScheme`). |
+| `lua/diffly/ui/hl.lua` | Highlight groups: `default = true` links + the derived asymmetric diff palette (re-derived on `ColorScheme`) + the pane window-highlight namespaces (`diff_namespaces()`). |
 
 Dependency direction: `init` → `session`/`ui/*` → `git`/`state`/`tree`/`config`.
 `ui/panel.lua` and `init.lua` stay require-acyclic: anything the panel needs from init
@@ -137,12 +137,14 @@ Three layers, all buffer-local **and `nowait`**:
 
 - **Side-by-side**: Neovim's native diff mode. Left = read-only blob buffer of the
   merge-base file; right = the real worktree buffer via `:edit` (so editing, `:w`, LSP
-  all behave normally) or a head blob in `right = "head"` mode. Both windows get a
-  window-local `'winhighlight'` remap of the native diff groups into the derived
-  asymmetric palette (left/old = red-family, right/new = green-family, filler muted --
-  see `ui/hl.lua` and docs/design.md "Side-by-side" for why); alignment and intra-line
-  regions stay native (`linematch`/`inline:char` from the user's `diffopt`), diffly only
-  recolors them.
+  all behave normally) or a head blob in `right = "head"` mode. Both windows get the
+  native diff groups remapped into the derived asymmetric palette (left/old =
+  red-family, right/new = green-family, filler muted -- see `ui/hl.lua` and
+  docs/design.md "Side-by-side" for why) via diffly-owned window highlight namespaces
+  (`hl.diff_namespaces()` + `nvim_win_set_hl_ns`) -- NEVER `'winhighlight'`, which other
+  plugins read-modify-write and which leaks into the global default when set through
+  `vim.wo`; alignment and intra-line regions stay native (`linematch`/`inline:char` from
+  the user's `diffopt`), diffly only recolors them.
 - **Unified (inline overlay)**: one window showing the real buffer (or head/deleted-file
   blob), with the diff overlaid in a per-view namespace: `+` lines get
   `DifflyOverlayAdd` line extmarks; each contiguous `-` run renders as one `virt_lines`
