@@ -235,7 +235,7 @@ vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
 
 ## Agent bridge
 
-![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, an agent adding two review comments through bin/diffly against the still-running session, and fg bringing the editor back with the notes already rendered inline, attributed @agent](assets/demo_agent.gif)
+![diffly.nvim agent bridge demo — Neovim suspended with Ctrl-Z, a real Claude Code session (Sonnet, low effort) loading the diffly-review skill and leaving two review findings through bin/diffly against the still-running session, then fg bringing the editor back with the notes already rendered inline and tagged @agent in :Diffly comments](assets/demo_agent.gif)
 
 `bin/diffly` gives coding agents the same review comments you see in the editor — no
 GitHub round-trip, no copy-paste:

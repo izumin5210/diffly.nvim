@@ -11,6 +11,13 @@ git config user.name "diffly demo"
 git config user.email "demo@example.com"
 git config commit.gpgsign false
 
+# Keep agent-session droppings (skill install target, permission settings) out of the
+# review: diffly includes untracked files, and demo_agent.tape seeds `.claude/` on the
+# fly -- gitignored paths never reach the panel.
+cat > .gitignore <<'EOF'
+.claude/
+EOF
+
 cat > go.mod <<'EOF'
 module example.com/parser
 

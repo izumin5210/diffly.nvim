@@ -1,15 +1,26 @@
-# README demo recording for the agent bridge (bin/diffly). Regenerate with: make demo
-# (needs vhs from aqua.yaml plus ttyd and ffmpeg via brew). Same setup as demo.tape: the
-# USER'S real Neovim config (no --clean) with the local diffly checkout injected on top
-# (scripts/demo_attach.lua), against the same throwaway Go repo (scripts/demo_repo.sh).
+# README demo recording for the agent bridge (bin/diffly + the diffly-review skill).
+# Regenerate with: make demo (needs vhs from aqua.yaml plus ttyd and ffmpeg via brew,
+# AND a logged-in `claude` CLI -- this recording runs a real Claude Code session on
+# --model sonnet --effort low). Same setup as demo.tape otherwise: the USER'S real
+# Neovim config with the local diffly checkout injected on top (scripts/demo_attach.lua)
+# against the throwaway Go repo (scripts/demo_repo.sh).
 # Narration inside Neovim: typed Ex comments (`" ...`), held, then Escaped -- never run.
 # Narration at the shell: plain `# ...` comment lines.
 #
 # Why Ctrl-Z works mid-scene: on Neovim 0.11+ the core runs as a separate `nvim --embed`
 # server process -- Ctrl-Z stops only the TUI client, while the server (which owns the
-# diffly session AND its RPC socket) keeps running. bin/diffly therefore answers
-# synchronously against a suspended editor, and `fg` redraws with the comments already
-# in place.
+# diffly session AND its RPC socket) keeps running. Claude Code's bin/diffly calls land
+# in the suspended editor's session, and `fg` redraws with the comments already there.
+#
+# Recording-stability notes: the demo repo is a fresh temp dir, so Claude Code shows its
+# folder-trust dialog -- the tape answers it with a blind Enter (a no-op if the dialog
+# doesn't appear). The agent's working time is nondeterministic: the tape shows the
+# session start, Hides through the long middle, and Shows the finished state -- the
+# hidden Sleep is sized generously; if a recording captures a still-running session,
+# extend it and re-record. Claude Code runs with IS_DEMO=1 (exported in the hidden
+# setup) to keep account details out of the frame, and only Bash/Read/Grep/Glob are
+# pre-allowed via the repo's settings.local.json so no permission prompt can stall the
+# recording.
 Output assets/demo_agent.gif
 
 Set Theme "Catppuccin Frappe"
@@ -26,11 +37,15 @@ Set Margin 24
 Set MarginFill "#babbf1"
 Set BorderRadius 10
 
-# Build the throwaway demo repo off-screen; keep the plugin root reachable.
+# Build the throwaway demo repo off-screen; keep the plugin root reachable, pre-allow
+# Claude Code's read-only tools + Bash, and keep account details out of the frame.
 Hide
-Type `export ROOT="$PWD" && cd "$(scripts/demo_repo.sh)" && clear`
+Type `export ROOT="$PWD" && cd "$(scripts/demo_repo.sh)" && export IS_DEMO=1 && clear`
 Enter
 Sleep 1s
+Type `mkdir -p .claude && printf '%s' '{"permissions":{"allow":["Bash","Read","Grep","Glob"]}}' > .claude/settings.local.json && clear`
+Enter
+Sleep 500ms
 Type `nvim "+lua dofile('$ROOT/scripts/demo_attach.lua')"`
 Enter
 Sleep 4s
@@ -39,7 +54,7 @@ Show
 # Open the review and land on parser.go's diff.
 Type ":"
 Sleep 300ms
-Type@30ms `" :Diffly -- reviewing a branch; now let an agent look at it too`
+Type@30ms `" :Diffly -- reviewing a branch; let's have Claude Code look at it too`
 Sleep 2.2s
 Escape
 Sleep 400ms
@@ -60,34 +75,48 @@ Sleep 400ms
 Ctrl+Z
 Sleep 1.5s
 
-# The agent's turn: bin/diffly discovers the suspended editor's session over RPC and
-# writes straight into it -- the JSON responses are the agent's view of the review.
-Type `# an agent comments through bin/diffly -- no GitHub, no copy-paste`
+# One-time setup: install the diffly-review skill (absolute bin path baked in).
+Type `# one-time setup: install the diffly-review skill for Claude Code`
 Enter
-Sleep 1.8s
-Type `"$ROOT"/bin/diffly comments add --file parser.go --line 7 --body 'preallocate: make([]Token, 0, n)'`
+Sleep 1.5s
+Type `"$ROOT"/bin/diffly skill install --dir .claude/skills`
 Enter
-Sleep 2.5s
-Type `"$ROOT"/bin/diffly comments add --file token.go --line 11 --end-line 15 --body 'unicode digits slip through classify -- unicode.IsDigit?'`
-Enter
-Sleep 2.5s
+Sleep 2s
 
-# Wake the editor: the agent's notes are already in place, attributed @agent.
+# Hand the review to Claude Code.
+Type `claude --model sonnet --effort low "Review this branch and leave your findings as diffly review comments. Comments only -- do not modify files."`
+Enter
+Sleep 5s
+# Folder-trust dialog on the fresh temp dir (no-op Enter if absent).
+Enter
+Sleep 12s
+
+# The long middle: skip ahead to the finished session.
+Hide
+Sleep 150s
+Show
+Sleep 6s
+Type "/exit"
+Sleep 1s
+Enter
+Sleep 2s
+
+# Wake the editor: Claude's notes are already in place, attributed in the diff.
 Type "fg"
 Enter
-Sleep 3.5s
+Sleep 4s
 
-# Both notes, listed: :Diffly comments tags agent entries [@agent].
+# Every note in one list, agent entries tagged.
 Type ":"
 Sleep 300ms
-Type@30ms `" :Diffly comments -- every note in one list, agent entries tagged [@agent]`
+Type@30ms `" :Diffly comments -- Claude's notes, in your review, no GitHub round-trip`
 Sleep 2.2s
 Escape
 Sleep 400ms
 Type ":Diffly comments"
 Sleep 500ms
 Enter
-Sleep 3s
+Sleep 3.5s
 
 # Close: quickfix, then the review from the panel.
 Type ":cclose"
