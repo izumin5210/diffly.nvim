@@ -68,8 +68,9 @@ Sleep 800ms
 Ctrl+S
 Sleep 2.5s
 
-# Comment on a visual RANGE: select the loop, same key. A deliberately LONG body: it
-# soft-wraps to the split's width on save, setting up the resize scene below.
+# Comment on a visual RANGE: select the loop, same key. A deliberately LONG body: no
+# dedicated scene for it, but it lands visibly soft-wrapped to the split's width
+# (comments.wrap) instead of truncated at the window edge.
 Type ":"
 Sleep 300ms
 Type@30ms `" ...or select a range first -- same key from visual mode`
@@ -88,27 +89,6 @@ Type "extract this loop into a helper so classify stays testable on its own -- R
 Sleep 800ms
 Ctrl+S
 Sleep 2.5s
-
-# Long notes soft-wrap to the window and re-flow on resize (the code windows' own 'wrap'
-# is never touched).
-Type ":"
-Sleep 300ms
-Type@30ms `" long notes wrap to the window -- and re-flow when it resizes`
-Sleep 2.2s
-Escape
-Sleep 400ms
-Type ":vertical resize -30"
-Sleep 300ms
-Enter
-Sleep 2s
-Type ":wincmd ="
-Sleep 300ms
-Enter
-Sleep 1.2s
-# The narrow beat h-scrolled the code windows to keep the cursor visible ('nowrap');
-# jump back to column 1 so the remaining scenes show the lines from their start.
-Type "0"
-Sleep 1.2s
 
 # <leader>ct collapses every comment to an eol ✎ marker (and back).
 Type ":"
