@@ -176,15 +176,29 @@ end
 --- " "/"+" lines occupy the real new-file line at `cur_new`, then advance it; "+" lines
 --- additionally get an add row. "-" lines never advance `cur_new` -- they accumulate into
 --- a pending run that gets flushed (as one virt_lines entry) the moment a non-"-" line is
---- seen, or the hunk ends. The flush's anchor row is `cur_new - 1` (0-based: "immediately
---- before the real line now sitting at `cur_new`"), with two edge cases confirmed against
---- real git output (see the empirical cases in tests/test_unified.lua):
----   - `cur_new == 0` (git reports this ONLY when the whole hunk -- and, in practice with
----     `-U3` context, the whole new-side file -- is empty; there is no "line 0" to anchor
----     before) -- clamp to row 0, still `virt_lines_above = true` (renders at the very top).
----   - the anchor would land past the buffer's last real line (a deletion running to EOF,
----     where the following line simply doesn't exist) -- clamp to the last line instead,
----     with `virt_lines_above = false` so the run renders BELOW it rather than overlapping.
+--- seen, or the hunk ends.
+---
+--- The flush's visual slot is "immediately before the real line now sitting at
+--- `cur_new`", i.e. the gap above 0-based row `cur_new - 1` -- but the mark is anchored
+--- BELOW THE PRECEDING ROW (`cur_new - 2`, `virt_lines_above = false`), which renders in
+--- that same gap. Anchoring above `cur_new - 1` directly would collide with base-side
+--- comment boxes: `comments.base_target` sends a deleted line's thread to exactly
+--- (`cur_new - 1`, above), and same-(row, above) virt_lines from different namespaces
+--- have NO stable order -- the marktree keeps equal keys in insertion-dependent order
+--- that clear-and-redraw repaints reshuffle (observed on 0.12.3: a lone base comment
+--- rendered ABOVE the deletion annotating it even on a fresh open). Distinct keys make
+--- the order deterministic: the run always renders above the box (pinned in
+--- tests/test_unified.lua and by the unified comments golden). Edge cases, confirmed
+--- against real git output (see the empirical cases in tests/test_unified.lua):
+---   - `cur_new <= 1` (a deletion before the first real line; `cur_new == 0` is git's
+---     whole-file-empty report) -- there is no preceding row, so anchor at row 0 with
+---     `virt_lines_above = true`. A base comment there shares the key and MAY reshuffle
+---     against the run: the one residual collision, accepted (top-of-file deletion plus
+---     a comment on it), same as the EOF clamp below sharing its key with
+---     `base_target`'s own EOF clamp.
+---   - the anchor would land past the buffer's last real line (a deletion running to
+---     EOF, where the following line simply doesn't exist) -- clamp to the last line,
+---     `virt_lines_above = false` (renders BELOW it rather than overlapping).
 --- "\ No newline at end of file" markers are skipped (neither a real line nor a deletion).
 ---@param hunks diffly.Hunk[]
 ---@param line_count integer  -- `nvim_buf_line_count` of the buffer this overlay targets
@@ -204,12 +218,14 @@ local function compute_overlay(hunks, line_count)
       end
       local raw_row = cur_new - 1
       local row, above
-      if raw_row < 0 then
+      if raw_row <= 0 then
         row, above = 0, true
       elseif raw_row > line_count - 1 then
         row, above = math.max(line_count - 1, 0), false
       else
-        row, above = raw_row, true
+        -- Below the preceding row -- the same visual gap as "above raw_row", on a
+        -- marktree key no comment box shares (see the function doc above).
+        row, above = raw_row - 1, false
       end
       table.insert(delete_runs, { row = row, above = above, lines = pending })
       pending = nil
@@ -477,11 +493,9 @@ function View:open(entry, spec)
       )
       hunks = {}
     end
-    -- Comments BEFORE the overlay, deliberately: same-(row, above) virt_lines stack by
-    -- creation order with the later-created mark on top, so a base-side comment sharing
-    -- a deletion run's anchor renders BELOW the deleted lines it annotates only when the
-    -- overlay's mark is created after the comment's (see ui/comments.lua; pinned by the
-    -- unified comments golden).
+    -- Comment/overlay paint order is free: a deletion run and the base comment box
+    -- annotating it occupy DIFFERENT marktree keys on purpose (see `compute_overlay`),
+    -- so their visual stacking never depends on which namespace painted last.
     self.shown = { buf = buf, path = entry.path, hunks = hunks, deleted = false }
     render_comments(self)
     render_overlay(self, buf, hunks)
@@ -492,16 +506,13 @@ end
 
 --- Optional View-contract method (`Session:refresh_comment_render`): repaint the
 --- comment namespace of whatever this view currently shows -- no window churn, no cursor
---- movement, exactly what a comment mutation or collapse toggle needs. The overlay is
---- repainted right after, NOT because its data changed, but to restore the
---- comments-first creation order that keeps deletion runs above the comments annotating
---- them (see `View:open`).
+--- movement, exactly what a comment mutation, collapse toggle, or resize re-wrap needs.
+--- The overlay is deliberately NOT touched: deletion runs sit on marktree keys no
+--- comment mark shares (see `compute_overlay`), so a comment-only repaint can never
+--- reshuffle them, and repainting the overlay here would just be wasted work on every
+--- keystroke-driven mutation.
 function View:refresh_comments()
   render_comments(self)
-  local shown = self.shown
-  if shown and not shown.deleted and vim.api.nvim_buf_is_valid(shown.buf) then
-    render_overlay(self, shown.buf, shown.hunks)
-  end
 end
 
 --- Optional View-contract method (`Session:focus_line`, same family as

@@ -11,12 +11,16 @@ local scratch = require("diffly.ui.scratch")
 
 local M = {}
 
--- Same-(row, above) virt_lines from different extmarks stack by CREATION ORDER, with the
--- later-created mark rendering closer to the top (empirically -- extmark `priority` has
--- no effect on virt_lines ordering, only on highlights). ui/unified.lua exploits this to
--- keep a base-side comment BELOW the deleted lines it annotates: comments render first,
--- the overlay second, in both `open()` and `refresh_comments()`. Pinned by the unified
--- comments golden.
+-- Same-(row, above) virt_lines from DIFFERENT extmarks have no reliable stacking order:
+-- the marktree keeps equal keys in insertion-dependent order that clear-and-redraw
+-- repaints reshuffle, and extmark `priority` has no effect on virt_lines at all
+-- (measured on 0.12.3 -- a lone base comment rendered above the deletion run annotating
+-- it even on a fresh paint). Cross-namespace stacking must therefore never rely on
+-- paint order; ui/unified.lua keeps deletion runs above the comment boxes annotating
+-- them by anchoring the runs on a DIFFERENT marktree key (below the preceding row --
+-- see its `compute_overlay`), which renders in the same visual gap deterministically.
+-- Threads sharing one anchor all live in THIS module's single namespace, painted in one
+-- placement-order pass per repaint, so their relative order is stable.
 
 ---@class diffly.ui.CommentPlacement
 ---@field row integer     -- 0-based buffer row to anchor at

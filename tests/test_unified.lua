@@ -270,7 +270,9 @@ local T = MiniTest.new_set({
 -- so the real (post-change) file's 11 lines are: 1 local M={}, 2 blank, 3 function
 -- M.hello(), 4 return "hello, world", 5 end, 6 blank, 7 function M.extra(), 8 return
 -- true, 9 end, 10 blank, 11 return M -- rows 3..7 (0-based) are "+", and the deleted
--- `  return "hello"` sits right before row 3 (i.e. anchored AT row 3, virt_lines_above).
+-- `  return "hello"` renders right before row 3, anchored BELOW row 2 (see
+-- compute_overlay: below-the-preceding-row on purpose, so a base comment's own
+-- (row 3, above) mark can never reshuffle against it).
 ---------------------------------------------------------------------------------------
 
 T["open(): worktree mode shows the real file -- editable, real filetype (LSP-able), correct bufname"] = function()
@@ -292,8 +294,9 @@ T["open(): the deleted line renders as ONE virt_lines run anchored right before 
   local runs = delete_runs(result.marks)
 
   eq(#runs, 1)
-  eq(runs[1].row, 3)
-  eq(runs[1].above, true)
+  -- Below row 2, i.e. the visual gap right before row 3's replacement text.
+  eq(runs[1].row, 2)
+  eq(runs[1].above, false)
   eq(runs[1].lines, { '  return "hello"' })
 end
 
@@ -307,10 +310,13 @@ T["open(): context lines carry no overlay marks"] = function()
     deleted[run.row] = true
   end
 
-  for _, row in ipairs({ 0, 1, 2, 8, 9, 10 }) do
+  -- Row 2 is context text, but the deleted run legitimately hangs BELOW it (the gap
+  -- before row 3's replacement) -- hence absent from the "no deleted run" list.
+  for _, row in ipairs({ 0, 1, 8, 9, 10 }) do
     eq(added[row], nil, "row " .. row .. " is context -- must not be DifflyOverlayAdd")
     eq(deleted[row], nil, "row " .. row .. " is context -- must not anchor a deleted run")
   end
+  eq(added[2], nil, "row 2 is context -- must not be DifflyOverlayAdd")
 end
 
 T["open(): re-rendering the same file clears stale marks instead of accumulating them"] = function()
@@ -1027,7 +1033,8 @@ end
 --    L9
 --    L10
 -- new_start=2 (context lines still land at real rows 1,2,3); the run flushes right
--- before "L8" (now at 1-based line 5, row 4) -- exactly where L5..L7 used to be.
+-- before "L8" (now at 1-based line 5, row 4) -- exactly where L5..L7 used to be,
+-- anchored below the preceding row ("L4", row 3; see compute_overlay).
 T["overlay edge case: pure deletion in the middle of the file anchors exactly where the text was removed"] = function()
   local numbered = {}
   for i = 1, 10 do
@@ -1040,8 +1047,8 @@ T["overlay edge case: pure deletion in the middle of the file anchors exactly wh
 
   local runs = delete_runs(result.marks)
   eq(#runs, 1)
-  eq(runs[1].row, 4)
-  eq(runs[1].above, true)
+  eq(runs[1].row, 3)
+  eq(runs[1].above, false)
   eq(runs[1].lines, { "L5", "L6", "L7" })
   eq(add_rows(result.marks), {})
 
@@ -1057,8 +1064,9 @@ end
 --    L5
 --    L6
 -- new_start=1: the run flushes at raw_row = new_start - 1 = 0 BEFORE any real line has
--- been consumed -- row 0 falls out naturally here, no clamping needed (contrast with the
--- "whole file emptied" case below, where new_start itself is 0 and clamping IS needed).
+-- been consumed -- no preceding row exists to hang below, so this stays an
+-- (above, row 0) anchor (contrast with the "whole file emptied" case below, where
+-- new_start itself is 0 and clamping IS needed).
 T["overlay edge case: deletion at the very top of the file anchors at row 0"] = function()
   local numbered = {}
   for i = 1, 10 do
@@ -1234,6 +1242,45 @@ T["comments: bodies soft-wrap to the wrap budget (comments.max_width)"] = functi
   eq(#lines, 4)
   eq(lines[2][2][1], "aaaa bbbb cccc")
   eq(lines[3][2][1], "dddd eeee")
+end
+
+T["comments: a deletion run renders above the base comment box, stably across repaints"] = function()
+  -- Same-key (row, above) virt_lines from different namespaces have NO stable order --
+  -- the marktree keeps equal keys in insertion-dependent order that clear-and-redraw
+  -- cycles reshuffle (observed on 0.12.3: a lone base comment rendered ABOVE the
+  -- deletion annotating it even on a fresh open). The overlay therefore anchors its
+  -- deletion runs BELOW the preceding real line -- a DIFFERENT marktree key that renders
+  -- in the same visual gap but always before the comment's (row, above=true) mark.
+  set_fake_threads({ [paths.modified] = { fake_thread(paths.modified, "base", 4, "was fine") } })
+  open(paths.modified)
+
+  local function screen_order()
+    local shot = child.get_screenshot()
+    local deletion_row, box_row
+    for i, _ in ipairs(shot.text) do
+      local row = table.concat(shot.text[i], "")
+      if row:find('return "hello"', 1, true) and not row:find("world", 1, true) then
+        deletion_row = i
+      end
+      if row:find("╭─", 1, true) then
+        box_row = i
+      end
+    end
+    return deletion_row, box_row
+  end
+
+  local deletion_row, box_row = screen_order()
+  eq(deletion_row ~= nil, true)
+  eq(box_row ~= nil, true)
+  eq(deletion_row < box_row, true, "fresh open: deletion above the box")
+
+  -- Comment-only repaints (mutations, collapse toggles, resize re-wraps) must not
+  -- reshuffle the stack.
+  child.lua("view:refresh_comments()")
+  child.lua("view:refresh_comments()")
+  local deletion_row2, box_row2 = screen_order()
+  eq(deletion_row2, deletion_row)
+  eq(box_row2, box_row)
 end
 
 T["comments: outdated threads render nothing inline"] = function()
