@@ -84,7 +84,7 @@ Enter
 Sleep 2s
 
 # Hand the review to Claude Code.
-Type `claude --model sonnet --effort low "Review this branch and leave your findings as diffly review comments. Comments only -- do not modify files."`
+Type `claude --model sonnet --effort low "Review this branch for correctness bugs and leave your findings as diffly review comments. Comments only -- do not modify files."`
 Enter
 Sleep 5s
 # Folder-trust dialog on the fresh temp dir (no-op Enter if absent).
@@ -101,15 +101,36 @@ Sleep 1s
 Enter
 Sleep 2s
 
-# Wake the editor: Claude's notes are already in place, attributed in the diff.
+# Wake the editor: Claude's notes are already waiting in the review.
 Type "fg"
 Enter
-Sleep 4s
+Sleep 3s
 
-# Every note in one list, agent entries tagged.
+# The panel flags which files got notes (the pencil marker); open token.go and Claude's
+# comment renders right on the diff, in the box. token.go is where the standout
+# correctness bug lives (classify() on the empty string), so the prompt reliably lands a
+# note there; it is NOT a generated file, so -- unlike schema_gen.go -- diffly renders
+# its diff (and the comment) rather than the generated-file placeholder. If a re-record
+# ever puts no note on token.go, the :Diffly comments list below still proves them out.
 Type ":"
 Sleep 300ms
-Type@30ms `" :Diffly comments -- Claude's notes, in your review, no GitHub round-trip`
+Type@30ms `" open a flagged file -- Claude's comment renders inline on the diff`
+Sleep 2.2s
+Escape
+Sleep 400ms
+Type " e"
+Sleep 800ms
+Type "gg"
+Type "/token.go"
+Enter
+Sleep 700ms
+Enter
+Sleep 4.5s
+
+# The same notes as one list, each tagged [@agent].
+Type ":"
+Sleep 300ms
+Type@30ms `" :Diffly comments -- every note in your review, no GitHub round-trip`
 Sleep 2.2s
 Escape
 Sleep 400ms
