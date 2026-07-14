@@ -94,6 +94,12 @@ M.defaults = {
       -- during navigation is what `v`'s auto-advance is already for).
       next_file = "]f",
       prev_file = "[f",
+      -- Comment navigation: every INLINE-RENDERED thread in the review, in document
+      -- order across files (both sides interleaved; see Session:next_comment), wrapping.
+      -- Uppercase C: the side-by-side windows run in diff mode, where lowercase `]c`/`[c`
+      -- is the builtin change-jump reviewers rely on -- these must never shadow it.
+      next_comment = "]C",
+      prev_comment = "[C",
       -- The comment family again, leader-prefixed: on a REAL file buffer (the main place
       -- comments get written) this layer is the only one allowed, so the primary comment
       -- gesture is `<leader>c…` by design, not a single key.

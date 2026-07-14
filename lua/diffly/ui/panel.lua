@@ -667,6 +667,37 @@ local function on_prev_file(panel)
   end
 end
 
+--- `]C`/`[C` in the panel: same reference-point rule as `on_next_file` (the file row
+--- under the cursor), handed to `Session:next_comment` with no in-file position -- a
+--- panel row has a file but no cursor inside it, so `]C` enters that file's own first
+--- thread and `[C` leaves for the previous file's last one. Unlike `]f`, the jump then
+--- FOCUSES the landing line (`focus_line`, exactly like the quickfix `<CR>` jump):
+--- "take me to the comment" is the whole point of the key, where `]f` only changes what
+--- the view shows.
+---@param panel diffly.Panel
+---@param target diffly.session.CommentJumpTarget?
+local function jump_to_comment(panel, target)
+  if not target then
+    vim.notify("diffly: no comment to jump to", vim.log.levels.INFO)
+    return
+  end
+  if target.path ~= panel.session.current_path then
+    panel.session:open_file(target.path)
+  end
+  panel:set_cursor(target.path)
+  panel.session:focus_line(target.line, target.side)
+end
+
+---@param panel diffly.Panel
+local function on_next_comment(panel)
+  jump_to_comment(panel, panel.session:next_comment({ path = reference_path(panel) }))
+end
+
+---@param panel diffly.Panel
+local function on_prev_comment(panel)
+  jump_to_comment(panel, panel.session:prev_comment({ path = reference_path(panel) }))
+end
+
 --- `H`: toggle whether already-viewed files are hidden from the tree, then re-render.
 --- Display-only -- `hide_viewed` lives only on this `diffly.Panel` instance, is never
 --- persisted, and never affects navigation (`next_unviewed`/`next_file`/`prev_file` all
@@ -723,6 +754,8 @@ local function set_keymaps(panel)
     end,
     next_file = on_next_file,
     prev_file = on_prev_file,
+    next_comment = on_next_comment,
+    prev_comment = on_prev_comment,
   }
   local universal = config.get().keymaps.universal
   for name, fn in pairs(universal_actions) do

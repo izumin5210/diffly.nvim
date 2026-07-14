@@ -198,6 +198,20 @@ overlay, batch submission + draft adoption) are implemented.
   written) the universal layer is the only one allowed, so the primary gesture is
   `<leader>ca` by design. `ca` also works on a visual range. Placeholder buffers
   (binary/oversized/generated) get no comment keys at all.
+- **Navigation** (`]C`/`[C`, DEV-34): jump to the next/previous *inline-rendered* thread —
+  exactly what the eye can find: local drafts plus displayable remote threads, never
+  outdated ones (their position is a memory, not a location; `:Diffly comments` remains
+  their channel), resolved ones only while revealed. Review-wide in document order —
+  `tree.file_order` (the panel's own order, same source as `]f`), then rendered row, with
+  base-side anchors interleaved through the same `base_target` hunk walk the unified view
+  renders with — wrapping at the ends, silently (the `]f` precedent). Same-row threads
+  collapse into one stop, so a jump always moves. Landing reuses the quickfix `<CR>`
+  machinery (`focus_line`): side-by-side focuses the base window for base-side threads.
+  Lives in the universal layer (navigation, like `]f`/`[f` — not part of the `c` family:
+  jumping away is meaningful from any buffer, placeholders included); in the panel the
+  reference point is the file row under the cursor. Uppercase `C` because the diff windows
+  run in diff mode, where lowercase `]c`/`[c` is vim's own change-jump — shadowing it
+  would break hunk navigation.
 - **Storage**: the `comments` field the v1 schema reserved, inside the existing per-review
   state file (same key scoping, version still 1). When a PR is first detected for a
   branch that has drafts under the branch-pair key, the drafts are adopted into the

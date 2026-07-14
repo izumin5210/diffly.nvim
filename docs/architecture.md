@@ -27,7 +27,7 @@ warnings, not history trivia.
 | `lua/diffly/ui/panel.lua` | File-tree panel: render pipeline, cursor preservation, panel-local keys, hide-viewed filter. |
 | `lua/diffly/ui/sidebyside.lua` | Native diff-mode view: blob left, real file (or head blob) right. |
 | `lua/diffly/ui/unified.lua` | Inline-overlay view: real buffer + extmark overlay, deletions as `virt_lines`. |
-| `lua/diffly/ui/comments.lua` | Comment placement math (direct + base-line→unified-row mapping), extmark rendering into a view-owned namespace, and the compose float. Never creates a namespace itself. |
+| `lua/diffly/ui/comments.lua` | Comment placement math, extmark rendering into a view-owned namespace, and the compose float. Never creates a namespace itself. The base-line→unified-row walk (`base_target`) lives in `comments.lua` (pure hunk math; session.lua's comment navigation needs it and never requires `ui/*`) and is re-exported here. |
 | `lua/diffly/ui/keymaps.lua` | Keymap specs (diff/universal layers incl. the side-gated comment family), attach/detach lifecycle, ownership tokens. |
 | `lua/diffly/ui/scratch.lua` | All `diffly://` buffer naming/options/reuse + LSP-safe highlighting. |
 | `lua/diffly/ui/guard.lua` | `config.max_file_size` AND `config.collapse_generated` decisions + placeholder messages/`L` key, shared by both views (formerly `ui/size_guard.lua`, generalized once the generated-file guard needed the same shape). |
@@ -93,10 +93,12 @@ Both views implement `diffly.View`: `open(entry, spec)` / `close()`, built by
   namespace. *Why not `open_file`*: reopening runs the view's cursor placement (`gg]c`),
   which would yank the cursor away right after the user typed a comment.
 - `focus_line(line, side?)` is OPTIONAL in the same family: the agent bridge's
-  `navigate` and the quickfix comment jump land the cursor through it. Side `"base"`
-  resolves through the view's own base geometry — side-by-side's left window (base
-  content 1:1), unified's `base_target` hunk walk — so a jump lands exactly where the
-  view renders base-side threads, never on an approximated worktree line.
+  `navigate`, the quickfix comment jump, and `]C`/`[C` (`Session:next_comment`/
+  `prev_comment`, which order both sides' threads through the same `base_target` walk)
+  land the cursor through it. Side `"base"` resolves through the view's own base
+  geometry — side-by-side's left window (base content 1:1), unified's `base_target` hunk
+  walk — so a jump lands exactly where the view renders base-side threads, never on an
+  approximated worktree line.
 - The compose float (`ui/comments.lua`'s `M.compose`) is deliberately NOT a View: it is
   action-owned, opens `relative = "cursor"` (a keypress context is exactly where "the
   current window" is the right reference), and funnels every exit — submit key, `q`,
@@ -111,7 +113,7 @@ Three layers, all buffer-local **and `nowait`**:
 
 | Layer | Keys (defaults) | Applied to |
 |---|---|---|
-| `keymaps.universal` | `<leader>v/s/e`, `]f`, `[f`, `<leader>c a/e/d/t/y/Y` | every diffly context: panel (comment keys excluded — its own explicit list), owned buffers, and the real file buffer currently shown |
+| `keymaps.universal` | `<leader>v/s/e`, `]f`, `[f`, `]C`, `[C`, `<leader>c a/e/d/t/y/Y` | every diffly context: panel (comment keys excluded — its own explicit list; `]C`/`[C` included, jumping relative to the file row under the cursor), owned buffers, and the real file buffer currently shown |
 | `keymaps.panel` | `v s R q za H S V <CR>` | panel buffer only |
 | `keymaps.diff` | `v s q <leader>e`, `c a/e/d/t/y/Y` | diffly-owned diff buffers only (blob, head blob) — never real buffers |
 

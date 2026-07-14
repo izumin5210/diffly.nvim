@@ -92,6 +92,8 @@ collide with a real file's own, unrelated keymaps).
 | `<leader>e`  | Focus the panel                                       |
 | `]f`         | Open the next file (ALL files, not just un-viewed ones) |
 | `[f`         | Open the previous file (ditto)                        |
+| `]C`         | Jump to the next comment (review-wide, wraps)         |
+| `[C`         | Jump to the previous comment (ditto)                  |
 | `<leader>ca` | Add a comment on the cursor line, or the visual selection |
 | `<leader>ce` | Edit the comment under the cursor                     |
 | `<leader>cd` | Delete the comment under the cursor (confirms first)  |
@@ -110,6 +112,15 @@ isn't "closing the review".
 filter below (see [File panel](#file-panel)) — the filter only changes what's *drawn* in
 the tree, never what's *reachable*. Skipping already-viewed files while moving forward is
 what `<leader>v`/`v`'s auto-advance is already for.
+
+`]C`/`[C` walk every *inline-rendered* comment thread in the review — local drafts and
+unresolved PR threads (resolved ones join while revealed via `cr`), both sides interleaved
+in document order — jumping across files (in panel order) and wrapping at the ends. In the
+panel, they jump relative to the file row under the cursor. Outdated threads never render
+inline and are never jump targets; `:Diffly comments` is how you reach those. Uppercase
+`C` on purpose: the side-by-side windows run in diff mode, where lowercase `]c`/`[c` is
+Vim's own jump-to-change. `<Plug>(diffly-next-comment)`/`<Plug>(diffly-prev-comment)` are
+available for global mappings.
 
 #### File panel
 
@@ -231,6 +242,8 @@ vim.keymap.set("n", "<leader>gs", "<Plug>(diffly-toggle-mode)")
 vim.keymap.set("n", "<leader>gp", "<Plug>(diffly-focus-panel)")
 vim.keymap.set("n", "]f", "<Plug>(diffly-next-file)")
 vim.keymap.set("n", "[f", "<Plug>(diffly-prev-file)")
+vim.keymap.set("n", "]C", "<Plug>(diffly-next-comment)")
+vim.keymap.set("n", "[C", "<Plug>(diffly-prev-comment)")
 ```
 
 ## Agent bridge
@@ -330,6 +343,8 @@ require("diffly").setup({
       focus_panel = "<leader>e",
       next_file = "]f", -- open the next file (ALL files, unaffected by keymaps.panel's H)
       prev_file = "[f", -- open the previous file (ditto)
+      next_comment = "]C", -- jump to the next inline comment (review-wide, wraps)
+      prev_comment = "[C", -- jump to the previous inline comment (ditto)
       comment_add = "<leader>ca",
       comment_edit = "<leader>ce",
       comment_delete = "<leader>cd",
